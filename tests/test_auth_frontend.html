@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend Auth Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        .info { background-color: #d1ecf1; border-color: #bee5eb; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        input { padding: 8px; margin: 5px; width: 200px; }
+        .log { background: #f8f9fa; padding: 10px; margin: 10px 0; border-radius: 3px; font-family: monospace; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Frontend Authentication Test</h1>
+        
+        <div class="test-section info">
+            <h3>Test Credentials</h3>
+            <p>This test will use the credentials from your .env file to test the authentication flow.</p>
+        </div>
+        
+        <div class="test-section">
+            <h3>1. Test Backend Authentication</h3>
+            <button onclick="testBackendAuth()">Test Backend Auth</button>
+            <div id="backend-result" class="log"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>2. Test Frontend Token Storage</h3>
+            <button onclick="testFrontendTokens()">Test Frontend Tokens</button>
+            <div id="frontend-result" class="log"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>3. Test API Client</h3>
+            <button onclick="testApiClient()">Test API Client</button>
+            <div id="apiclient-result" class="log"></div>
+        </div>
+        
+        <div class="test-section">
+            <h3>4. Test Full Flow</h3>
+            <button onclick="testFullFlow()">Test Full Flow</button>
+            <div id="fullflow-result" class="log"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let sessionToken = null;
+        let refreshToken = null;
+        
+        function log(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.textContent += new Date().toLocaleTimeString() + ': ' + message + '\n';
+        }
+        
+        async function testBackendAuth() {
+            const resultDiv = document.getElementById('backend-result');
+            resultDiv.textContent = '';
+            
+            log('backend-result', '🚀 Testing backend authentication...');
+            
+            try {
+                // Test login
+                const loginResponse = await fetch(`${API_BASE}/api/v1/hosts/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'benedikt.perak@gmail.com',
+                        password: 'test123'
+                    })
+                });
+                
+                if (loginResponse.ok) {
+                    const loginData = await loginResponse.json();
+                    sessionToken = loginData.session_token;
+                    refreshToken = loginData.refresh_token;
+                    
+                    log('backend-result', '✅ Login successful!');
+                    log('backend-result', `📋 Session Token: ${sessionToken.substring(0, 20)}...`);
+                    log('backend-result', `📋 Refresh Token: ${refreshToken.substring(0, 20)}...`);
+                    
+                    // Test getting current host
+                    const meResponse = await fetch(`${API_BASE}/api/v1/hosts/me`, {
+                        headers: { 'X-Session-Token': sessionToken }
+                    });
+                    
+                    if (meResponse.ok) {
+                        const meData = await meResponse.json();
+                        log('backend-result', '✅ GET /hosts/me successful!');
+                        log('backend-result', `📋 Host: ${meData.first_name} ${meData.last_name}`);
+                    } else {
+                        log('backend-result', `❌ GET /hosts/me failed: ${meResponse.status}`);
+                    }
+                    
+                } else {
+                    log('backend-result', `❌ Login failed: ${loginResponse.status}`);
+                    const errorText = await loginResponse.text();
+                    log('backend-result', `📋 Error: ${errorText}`);
+                }
+                
+            } catch (error) {
+                log('backend-result', `💥 Error: ${error.message}`);
+            }
+        }
+        
+        function testFrontendTokens() {
+            const resultDiv = document.getElementById('frontend-result');
+            resultDiv.textContent = '';
+            
+            log('frontend-result', '🔍 Testing frontend token storage...');
+            
+            // Check if we're in a browser environment
+            if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+                log('frontend-result', '✅ Browser environment detected');
+                
+                // Check current tokens
+                const currentSessionToken = localStorage.getItem('session_token');
+                const currentRefreshToken = localStorage.getItem('refresh_token');
+                
+                if (currentSessionToken) {
+                    log('frontend-result', `📋 Current session token: ${currentSessionToken.substring(0, 20)}...`);
+                } else {
+                    log('frontend-result', '⚠️ No session token in localStorage');
+                }
+                
+                if (currentRefreshToken) {
+                    log('frontend-result', `📋 Current refresh token: ${currentRefreshToken.substring(0, 20)}...`);
+                } else {
+                    log('frontend-result', '⚠️ No refresh token in localStorage');
+                }
+                
+                // Store the tokens we got from backend test
+                if (sessionToken && refreshToken) {
+                    localStorage.setItem('session_token', sessionToken);
+                    localStorage.setItem('refresh_token', refreshToken);
+                    log('frontend-result', '💾 Tokens stored in localStorage');
+                    
+                    // Verify storage
+                    const storedSessionToken = localStorage.getItem('session_token');
+                    const storedRefreshToken = localStorage.getItem('refresh_token');
+                    
+                    if (storedSessionToken === sessionToken) {
+                        log('frontend-result', '✅ Session token stored correctly');
+                    } else {
+                        log('frontend-result', '❌ Session token storage failed');
+                    }
+                    
+                    if (storedRefreshToken === refreshToken) {
+                        log('frontend-result', '✅ Refresh token stored correctly');
+                    } else {
+                        log('frontend-result', '❌ Refresh token storage failed');
+                    }
+                }
+                
+            } else {
+                log('frontend-result', '❌ Not in browser environment');
+            }
+        }
+        
+        async function testApiClient() {
+            const resultDiv = document.getElementById('apiclient-result');
+            resultDiv.textContent = '';
+            
+            log('apiclient-result', '🔧 Testing API client simulation...');
+            
+            // Simulate what the ApiClient would do
+            const currentSessionToken = localStorage.getItem('session_token');
+            
+            if (!currentSessionToken) {
+                log('apiclient-result', '❌ No session token available for API client');
+                return;
+            }
+            
+            log('apiclient-result', `📤 API client would send token: ${currentSessionToken.substring(0, 20)}...`);
+            
+            // Test the API call that the frontend would make
+            try {
+                const response = await fetch(`${API_BASE}/api/v1/hosts/me`, {
+                    headers: { 
+                        'X-Session-Token': currentSessionToken,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    log('apiclient-result', '✅ API client call successful!');
+                    log('apiclient-result', `📋 Response: ${JSON.stringify(data, null, 2)}`);
+                } else {
+                    log('apiclient-result', `❌ API client call failed: ${response.status}`);
+                    const errorText = await response.text();
+                    log('apiclient-result', `📋 Error: ${errorText}`);
+                }
+                
+            } catch (error) {
+                log('apiclient-result', `💥 Error: ${error.message}`);
+            }
+        }
+        
+        async function testFullFlow() {
+            const resultDiv = document.getElementById('fullflow-result');
+            resultDiv.textContent = '';
+            
+            log('fullflow-result', '🔄 Testing full authentication flow...');
+            
+            // Step 1: Login
+            log('fullflow-result', '1️⃣ Logging in...');
+            await testBackendAuth();
+            
+            if (!sessionToken) {
+                log('fullflow-result', '❌ Login failed, cannot continue');
+                return;
+            }
+            
+            // Step 2: Store tokens
+            log('fullflow-result', '2️⃣ Storing tokens...');
+            testFrontendTokens();
+            
+            // Step 3: Test API calls
+            log('fullflow-result', '3️⃣ Testing API calls...');
+            await testApiClient();
+            
+            log('fullflow-result', '✅ Full flow test complete!');
+        }
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,18 @@
+{
+  "name": "TouristGuideLocal",
+  "short_name": "TouristGuide",
+  "description": "Your personal AI-powered local guide for Croatia",
+  "start_url": "/guest/join",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "orientation": "portrait"
+}

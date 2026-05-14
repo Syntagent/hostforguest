@@ -1,0 +1,19 @@
+{
+  "name": "touristguidelocal",
+  "private": true,
+  "description": "Local dev: npm run dev -> UI :3055 + API :8000. Do not use Docker api/frontend for coding (see AGENTS.md).",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm run dev:api\" \"npm run dev:frontend\"",
+    "dev:8010": "concurrently -k -n api,web -c blue,magenta \"npm run dev:api:8010\" \"npm run dev:frontend\"",
+    "dev:api": "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000",
+    "dev:api:8010": "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8010",
+    "dev:frontend": "npm run dev:3055 --prefix frontend",
+    "dev:frontend:3060": "npm run dev:3060 --prefix frontend",
+    "docker:db": "docker compose up -d postgres neo4j",
+    "docker:stop-api": "docker compose stop api frontend",
+    "check:ports": "powershell -ExecutionPolicy Bypass -File scripts/check-dev-ports.ps1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

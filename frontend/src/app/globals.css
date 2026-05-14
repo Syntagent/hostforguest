@@ -1,0 +1,279 @@
+@import "tailwindcss";
+
+/* Load legacy JS config (theme, tailwindcss-animate, content paths) — without this, most utilities never generate. */
+@config "../../tailwind.config.js";
+
+@layer base {
+  :root {
+    --background: 42 40% 97%;
+    --foreground: 222 36% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 36% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 36% 16%;
+    --primary: 207 75% 39%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 34 45% 92%;
+    --secondary-foreground: 222 36% 16%;
+    --muted: 35 28% 93%;
+    --muted-foreground: 220 12% 38%;
+    --accent: 19 72% 58%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 74% 52%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 210 18% 84%;
+    --input: 210 18% 84%;
+    --ring: 207 75% 39%;
+    --radius: 1rem;
+  }
+
+  .dark {
+    --background: 218 33% 10%;
+    --foreground: 206 30% 94%;
+    --card: 218 32% 13%;
+    --card-foreground: 206 30% 94%;
+    --popover: 218 32% 13%;
+    --popover-foreground: 206 30% 94%;
+    --primary: 199 82% 56%;
+    --primary-foreground: 220 30% 12%;
+    --secondary: 217 24% 20%;
+    --secondary-foreground: 206 30% 94%;
+    --muted: 217 24% 18%;
+    --muted-foreground: 216 16% 70%;
+    --accent: 22 80% 62%;
+    --accent-foreground: 220 30% 12%;
+    --destructive: 0 68% 56%;
+    --destructive-foreground: 206 30% 94%;
+    --border: 216 18% 27%;
+    --input: 216 18% 27%;
+    --ring: 199 82% 56%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 15% 15%, hsl(199 70% 96%) 0%, transparent 45%),
+      radial-gradient(circle at 85% 20%, hsl(31 90% 92%) 0%, transparent 38%),
+      linear-gradient(180deg, hsl(var(--background)) 0%, hsl(40 34% 95%) 100%);
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-body), "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display), "Segoe UI", sans-serif;
+    letter-spacing: -0.015em;
+  }
+}
+
+/* Croatian Tourism Theme */
+.croatian-gradient {
+  background: linear-gradient(135deg, #1e40af 0%, #059669 50%, #dc2626 100%);
+}
+
+.istria-gradient {
+  background: linear-gradient(135deg, #0ea5e9 0%, #10b981 100%);
+}
+
+.dalmatia-gradient {
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+}
+
+/* Custom animations for Croatian theme */
+@keyframes croatian-wave {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+.croatian-wave {
+  animation: croatian-wave 3s ease-in-out infinite;
+}
+
+/* Hero blobs — CSS only (avoids Framer SSR/hydration drift) */
+@keyframes tg-hero-drift-a {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(10px, -20px); }
+}
+@keyframes tg-hero-drift-b {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-10px, 20px); }
+}
+.tg-hero-float-a {
+  animation: tg-hero-drift-a 6s ease-in-out infinite;
+}
+.tg-hero-float-b {
+  animation: tg-hero-drift-b 8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tg-hero-float-a,
+  .tg-hero-float-b,
+  .croatian-wave {
+    animation: none;
+  }
+}
+
+.surface-card {
+  border-radius: calc(var(--radius) + 0.5rem);
+  border: 1px solid hsl(var(--border) / 0.7);
+  background: hsl(var(--card) / 0.92);
+  box-shadow:
+    0 8px 28px -16px hsl(206 60% 14% / 0.4),
+    0 1px 0 hsl(0 0% 100% / 0.8) inset;
+}
+
+.surface-glass {
+  border-radius: calc(var(--radius) + 0.5rem);
+  border: 1px solid hsl(var(--border) / 0.45);
+  background: hsl(0 0% 100% / 0.7);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 16px 44px -26px hsl(206 52% 22% / 0.55);
+}
+
+.dark .surface-glass {
+  background: hsl(218 28% 14% / 0.66);
+}
+
+.section-shell {
+  border-radius: calc(var(--radius) + 0.75rem);
+  border: 1px solid hsl(var(--border) / 0.6);
+  background: linear-gradient(
+    160deg,
+    hsl(var(--card) / 0.96) 0%,
+    hsl(var(--secondary) / 0.65) 100%
+  );
+}
+
+.skeleton {
+  background: linear-gradient(
+    100deg,
+    hsl(var(--muted) / 0.65) 25%,
+    hsl(var(--muted) / 0.95) 50%,
+    hsl(var(--muted) / 0.65) 75%
+  );
+  background-size: 200% 100%;
+  animation: tg-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes tg-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.7) 0%,
+    hsl(var(--accent) / 0.7) 100%
+  );
+  border-radius: 999px;
+  border: 2px solid hsl(var(--muted) / 0.3);
+}
+
+/* Markdown Content Styles */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-content h1 {
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+
+.markdown-content h2 {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+}
+
+.markdown-content h3 {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+}
+
+.markdown-content p {
+  margin-bottom: 1rem;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.markdown-content li {
+  margin-bottom: 0.5rem;
+  line-height: 1.5;
+}
+
+.markdown-content strong {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.markdown-content em {
+  font-style: italic;
+}
+
+.markdown-content a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+}
+
+.markdown-content a:hover {
+  color: hsl(var(--primary-foreground));
+}
+
+.markdown-content blockquote {
+  border-left: 4px solid hsl(var(--border));
+  padding-left: 1rem;
+  margin: 1rem 0;
+  font-style: italic;
+  color: hsl(var(--muted-foreground));
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary)) 0%,
+    hsl(var(--accent)) 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .skeleton {
+    animation: none;
+  }
+}

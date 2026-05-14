@@ -1,0 +1,56 @@
+---
+description: TouristGuideLocal — how we run the app locally
+alwaysApply: true
+---
+
+> **CRITICAL — do not skip:** Day‑to‑day work = **host only**: UI **3055**, API **8000**, `NEXT_PUBLIC_API_URL=http://localhost:8000`. **Never** assume Docker `api` on 8000 is the code you are editing. Stop `api`/`frontend` containers if ports clash. See repo **`AGENTS.md`**.
+
+## Canonical local setup (no Docker for app code)
+
+This is how you always know what you are developing: **one UI port, one API port, both on the host.**
+
+| Piece | Where to open / run |
+|-------|---------------------|
+| **UI** | **http://127.0.0.1:3055** — from `frontend/`: `npm run dev:3055` (or repo root: `npm run dev:frontend`) |
+| **API** | **http://127.0.0.1:8000** (same as `http://localhost:8000`) — from repo root: `npm run dev:api` or `uvicorn app.main:app --reload --host 127.0.0.1 --port 8000` |
+
+- In **root `.env`**, set **`NEXT_PUBLIC_API_URL=http://localhost:8000`** (or `http://127.0.0.1:8000`) so the UI on **3055** calls the API you are editing.
+- **Quick sanity check:** open **`http://localhost:8000/api/v1/docs`** (OpenAPI/Swagger). **`/docs`** alone may 404 — this app mounts docs under **`/api/v1/docs`**.
+
+**Rule of thumb**
+
+- **TouristGuideLocal in the browser = 3055** (not Docker’s published **3001** unless you intentionally use the container-built frontend).
+- **The API you are editing = reload uvicorn on 8000** (or **8010** if 8000 is blocked on Windows).
+- **Ignore 3001** for this app unless you deliberately want the Docker-built Next image.
+
+## Why it felt messy
+
+- **Docker** can expose **8000** (container API) and **3001** (container frontend). Your real local app for this repo is **3055**, not **3001**.
+- Running **Docker `api` and local uvicorn both targeting 8000** means only one wins — you may think your code changed while still hitting the other process.
+
+**Day-to-day dev without Docker:** stop the competing services, then run host UI + API:
+
+```bash
+docker compose stop api frontend
+```
+
+Postgres/Neo4j can stay up if your local API still uses the same DB URL (e.g. `localhost:5434`).
+
+Compose note: **`docker compose up -d`** is wired so **Postgres + Neo4j** start by default; containerized **`api` / `frontend`** need **`docker compose --profile docker-api up`** (CI / parity). If you ever started the old container API: **`npm run docker:stop-api`** or `docker compose stop api frontend`.
+
+## One command (optional)
+
+From repo root: **`npm run dev`** — runs API + Next together (requires root **`npm install`** once for `concurrently`). Same ports: **8000** + **3055**.
+
+## Fallback ports
+
+| Issue | Use |
+|-------|-----|
+| **WinError 10013** on 8000 | `npm run dev:api:8010` and set **`NEXT_PUBLIC_API_URL=http://127.0.0.1:8010`**, restart Next |
+| **3055 in use** | `npm run dev:frontend:3060` → open **http://127.0.0.1:3060** |
+
+**Port audit:** `powershell -ExecutionPolicy Bypass -File scripts/check-dev-ports.ps1`
+
+## Agents
+
+Prefer **`npm run dev`** or the canonical two-process setup above. Do not ask the user to rebuild Docker images to verify normal UI/API changes.

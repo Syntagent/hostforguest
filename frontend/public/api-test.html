@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>TouristGuideLocal API Connection Test</h1>
+    <div style="margin:10px 0">
+        <label>Email: <input id="email" type="email" placeholder="your@email.com"></label>
+        <label>Password: <input id="password" type="password" placeholder="password"></label>
+    </div>
+    <button onclick="testHealth()">Test Health Endpoint</button>
+    <button onclick="testLogin()">Test Login Endpoint</button>
+    <button onclick="testOptions()">Test CORS Preflight</button>
+    <pre id="output"></pre>
+
+    <script>
+        const output = document.getElementById('output');
+        const API_URL = 'http://localhost:8000';
+        
+        function log(message) {
+            output.textContent += message + '\n';
+            console.log(message);
+        }
+
+        async function testHealth() {
+            output.textContent = '';
+            log('Testing Health Endpoint...\n');
+            
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                log(`✅ Health check successful!`);
+                log(`Status: ${response.status}`);
+                log(`Data: ${JSON.stringify(data, null, 2)}`);
+            } catch (error) {
+                log(`❌ Health check failed:`);
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        async function testLogin() {
+            output.textContent = '';
+            log('Testing Login Endpoint...\n');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/v1/hosts/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        email: document.getElementById('email').value,
+                        password: document.getElementById('password').value
+                    })
+                });
+                
+                const data = await response.json();
+                log(`Status: ${response.status}`);
+                log(`Response: ${JSON.stringify(data, null, 2)}`);
+                
+                if (response.ok) {
+                    log(`✅ Login request completed`);
+                } else {
+                    log(`⚠️ Login failed: ${data.message || data.error}`);
+                }
+            } catch (error) {
+                log(`❌ Login request failed:`);
+                log(`Error: ${error.message}`);
+                log(`\nThis usually means:`);
+                log(`1. Backend not running`);
+                log(`2. CORS not configured`);
+                log(`3. Network issue`);
+            }
+        }
+
+        async function testOptions() {
+            output.textContent = '';
+            log('Testing CORS Preflight (OPTIONS request)...\n');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/v1/hosts/login`, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Origin': 'http://localhost:3002',
+                        'Access-Control-Request-Method': 'POST',
+                        'Access-Control-Request-Headers': 'content-type'
+                    }
+                });
+                
+                log(`Status: ${response.status}`);
+                log(`CORS Headers:`);
+                log(`  Access-Control-Allow-Origin: ${response.headers.get('Access-Control-Allow-Origin')}`);
+                log(`  Access-Control-Allow-Methods: ${response.headers.get('Access-Control-Allow-Methods')}`);
+                log(`  Access-Control-Allow-Headers: ${response.headers.get('Access-Control-Allow-Headers')}`);
+                
+                if (response.ok && response.headers.get('Access-Control-Allow-Origin')) {
+                    log(`\n✅ CORS is properly configured!`);
+                } else {
+                    log(`\n❌ CORS issue detected!`);
+                }
+            } catch (error) {
+                log(`❌ OPTIONS request failed:`);
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        // Run health test on load
+        window.onload = () => {
+            log('Page loaded. Click buttons to test API connection.\n');
+        };
+    </script>
+</body>
+</html>
