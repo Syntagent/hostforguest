@@ -87,14 +87,14 @@ async def get_current_host_optional(
     """Get current host if authenticated, otherwise return None."""
     if not credentials:
         return None
-    
+
     try:
         token = credentials.credentials
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         host_id: str = payload.get("sub")
         if not host_id:
             return None
-        
+
         host_service = HostService(db)
         return await host_service.get_by_id(uuid.UUID(host_id))
     except:
@@ -111,28 +111,28 @@ async def generate_profile_suggestions(
 ):
     """
     Generate AI-powered profile suggestions for hosts.
-    
+
     This endpoint helps hosts create authentic profiles using AI assistance
     based on their location, property type, and personal interests.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Convert to dict for service
         basic_info_dict = basic_info.model_dump()
-        
+
         # Generate AI suggestions
         result = await onboarding_service.generate_host_profile_suggestions(
             basic_info=basic_info_dict,
             ai_preferences={"style": basic_info.profile_style, "target_guests": basic_info.target_guests}
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate profile suggestions"
             )
-        
+
         # Create UI components for Aceternity UI
         ui_components = {
             "hero_section": {
@@ -159,7 +159,7 @@ async def generate_profile_suggestions(
                 }
             }
         }
-        
+
         return ProfileSuggestionsResponse(
             success=True,
             suggestions=result["suggestions"],
@@ -167,7 +167,7 @@ async def generate_profile_suggestions(
             alternatives=result["alternatives"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -185,15 +185,15 @@ async def generate_attraction_suggestions(
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
-    
-    Uses actual Croatian tourism data from Archon's knowledge base,
+
+    Uses curated Croatian tourism data and official source analysis,
     enhanced with AI personalization based on host's interests and location.
     """
     try:
         logger.info(f"🎯 Generating REAL Croatian attractions for {request.city} with interests: {request.interests}")
-        
+
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build location info from request
         location_info = {}
         if request.city:
@@ -202,28 +202,28 @@ async def generate_attraction_suggestions(
             location_info["address"] = request.address
         if request.region:
             location_info["region"] = request.region.value if hasattr(request.region, 'value') else request.region
-        
+
         # Generate attractions using REAL Croatian tourism data
         result = await onboarding_service.generate_local_attraction_suggestions(
             host_location=location_info,
             host_interests=request.interests,
             local_knowledge_level=request.knowledge_level.value if hasattr(request.knowledge_level, 'value') else request.knowledge_level
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate attraction suggestions")
             )
-        
+
         # Log the real data results
         data_source = result.get("data_source", "unknown")
         sources_used = result.get("sources_used", 0)
         personalization_level = result.get("personalization_level", "unknown")
-        
+
         logger.info(f"✅ Generated {len(result['attractions'])} attractions using {data_source}")
         logger.info(f"📊 Data sources: {sources_used}, Personalization: {personalization_level}")
-        
+
         # Create enhanced UI components with real data indicators
         ui_components = {
             "hero_section": {
@@ -260,7 +260,7 @@ async def generate_attraction_suggestions(
                 }
             }
         }
-        
+
         return AttractionSuggestionsResponse(
             success=True,
             attractions=result["attractions"],
@@ -274,7 +274,7 @@ async def generate_attraction_suggestions(
                 "total_attractions": len(result["attractions"])
             }
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -292,23 +292,23 @@ async def generate_welcome_messages(
 ):
     """
     Generate AI-powered welcome message suggestions.
-    
+
     Creates multiple welcome message options in different styles
     for hosts to choose from or customize.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.generate_welcome_message_suggestions(
             basic_info=basic_info.model_dump()
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate welcome messages"
             )
-        
+
         # Create UI components
         ui_components = {
             "message_cards": {
@@ -343,14 +343,14 @@ async def generate_welcome_messages(
                 }
             }
         }
-        
+
         return WelcomeMessageResponse(
             success=True,
             welcome_messages=result["welcome_messages"],
             tips=result["tips"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -368,21 +368,21 @@ async def validate_and_enhance_profile(
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
-    
+
     Analyzes profile completeness and authenticity, providing actionable
     suggestions for improvement.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.validate_and_enhance_profile(profile_data)
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Profile validation failed"
             )
-        
+
         # Create progress and enhancement UI
         completeness_score = result["completeness_score"]
         ui_components = {
@@ -419,7 +419,7 @@ async def validate_and_enhance_profile(
                 }
             }
         }
-        
+
         return ProfileValidationResponse(
             success=True,
             validation=result["validation"],
@@ -427,7 +427,7 @@ async def validate_and_enhance_profile(
             completeness_score=completeness_score,
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -446,19 +446,19 @@ async def get_onboarding_step(
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
-    
+
     Provides structured onboarding experience with beautiful UI components
     for each step of the host registration process.
     """
     try:
         total_steps = 5
-        
+
         if step < 1 or step > total_steps:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid step. Must be between 1 and {total_steps}"
             )
-        
+
         # Define onboarding steps with Aceternity UI components
         steps = {
             1: {
@@ -498,7 +498,7 @@ async def get_onboarding_step(
                             "icon": "🏙️"
                         },
                         {
-                            "name": "address", 
+                            "name": "address",
                             "label": "Property Address",
                             "type": "textarea",
                             "placeholder": "Full address of your property",
@@ -537,7 +537,7 @@ async def get_onboarding_step(
                                     "icon": "🏙️"
                                 },
                                 {
-                                    "name": "address", 
+                                    "name": "address",
                                     "label": "Property Address",
                                     "type": "textarea",
                                     "placeholder": "Full address of your property",
@@ -605,7 +605,7 @@ async def get_onboarding_step(
             4: {
                 "step_name": "Local Attractions",
                 "content": {
-                    "title": "Share Your Local Knowledge", 
+                    "title": "Share Your Local Knowledge",
                     "description": "Help guests discover the best of your area with AI-suggested attractions and your personal insights.",
                     "categories": ["Hidden Gems", "Local Favorites", "Cultural Sites", "Natural Beauty", "Food & Drink"]
                 },
@@ -665,9 +665,9 @@ async def get_onboarding_step(
                 }
             }
         }
-        
+
         step_data = steps.get(step, {})
-        
+
         return OnboardingStepResponse(
             step=step,
             total_steps=total_steps,
@@ -676,7 +676,7 @@ async def get_onboarding_step(
             ui_components=step_data.get("ui_components", {}),
             next_step_available=step < total_steps
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -695,13 +695,13 @@ async def edit_profile_suggestion(
 ):
     """
     Edit or co-write a profile suggestion with AI assistance.
-    
+
     Allows hosts to customize AI-generated suggestions with their personal touch,
     with optional AI collaboration for improvement.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         if edit_request.is_collaborative:
             # Use AI to improve the user's edit
             collaboration_context = {
@@ -710,11 +710,11 @@ async def edit_profile_suggestion(
                 "user_edit": edit_request.user_edit,
                 "collaboration_prompt": edit_request.collaboration_prompt
             }
-            
+
             messages = [
                 {
                     "role": "system",
-                    "content": """You are helping a Croatian host improve their profile content. 
+                    "content": """You are helping a Croatian host improve their profile content.
                     Your role is to enhance their personal edits while maintaining their authentic voice.
                     Keep it warm, genuine, and true to Croatian hospitality."""
                 },
@@ -737,13 +737,13 @@ Return only the improved version, no additional text.
 """
                 }
             ]
-            
+
             ai_response = await onboarding_service.ai_service.generate_chat_response(
                 host_id="onboarding",
                 messages=messages,
                 context=collaboration_context
             )
-            
+
             if ai_response.get("success"):
                 improved_text = ai_response.get("response", "").strip()
                 return {
@@ -754,7 +754,7 @@ Return only the improved version, no additional text.
                     "final_suggestion": improved_text,
                     "collaboration_used": True
                 }
-        
+
         # No collaboration requested, just return the user's edit
         return {
             "success": True,
@@ -763,7 +763,7 @@ Return only the improved version, no additional text.
             "final_suggestion": edit_request.user_edit,
             "collaboration_used": False
         }
-        
+
     except Exception as e:
         logger.error(f"Error editing suggestion: {e}")
         raise HTTPException(
@@ -780,12 +780,12 @@ async def co_write_content(
 ):
     """
     Co-write content with AI assistance.
-    
+
     Helps hosts create content from scratch or expand their initial ideas with AI collaboration.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build context for co-writing
         context = {
             "category": cowrite_request.category,
@@ -793,7 +793,7 @@ async def co_write_content(
             "user_input": cowrite_request.user_input,
             "additional_context": cowrite_request.context
         }
-        
+
         messages = [
             {
                 "role": "system",
@@ -820,13 +820,13 @@ Please help me expand this into a complete, compelling piece that maintains my v
 Return only the improved content, no additional text."""
             }
         ]
-        
+
         ai_response = await onboarding_service.ai_service.generate_chat_response(
             host_id="onboarding",
             messages=messages,
             context=context
         )
-        
+
         if ai_response.get("success"):
             co_written_content = ai_response.get("response", "").strip()
             return {
@@ -840,7 +840,7 @@ Return only the improved content, no additional text."""
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to co-write content"
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -857,14 +857,14 @@ async def analyze_location_potential(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Analyze location potential using Archon-guided best practices.
-    
+    Analyze location potential using Croatian tourism hosting best practices.
+
     Provides comprehensive analysis of a location's tourism potential,
     including market analysis, competitive landscape, and recommendations.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Enhanced analysis with multiple data sources
         analysis_results = {
             "location_analysis": {
@@ -887,18 +887,18 @@ async def analyze_location_potential(
             },
             "metadata": {
                 "analysis_timestamp": datetime.utcnow().isoformat(),
-                "data_sources": ["user_input", "ai_analysis", "archon_guidelines"],
+                "data_sources": ["user_input", "ai_analysis", "tourism_guidelines"],
                 "confidence_score": calculate_confidence_score(request)
             }
         }
-        
+
         return {
             "success": True,
             "analysis": analysis_results,
             "insights": generate_actionable_insights(analysis_results),
             "next_steps": suggest_next_steps(analysis_results)
         }
-        
+
     except Exception as e:
         logger.error(f"Location analysis error: {e}")
         raise HTTPException(
@@ -920,14 +920,14 @@ async def get_current_host_optional(
     """Get current host if authenticated, otherwise return None."""
     if not credentials:
         return None
-    
+
     try:
         token = credentials.credentials
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         host_id: str = payload.get("sub")
         if not host_id:
             return None
-        
+
         host_service = HostService(db)
         return await host_service.get_by_id(uuid.UUID(host_id))
     except:
@@ -944,28 +944,28 @@ async def generate_profile_suggestions(
 ):
     """
     Generate AI-powered profile suggestions for hosts.
-    
+
     This endpoint helps hosts create authentic profiles using AI assistance
     based on their location, property type, and personal interests.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Convert to dict for service
         basic_info_dict = basic_info.model_dump()
-        
+
         # Generate AI suggestions
         result = await onboarding_service.generate_host_profile_suggestions(
             basic_info=basic_info_dict,
             ai_preferences={"style": basic_info.profile_style, "target_guests": basic_info.target_guests}
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate profile suggestions")
             )
-        
+
         # Create UI components for Aceternity UI
         ui_components = {
             "hero_section": {
@@ -992,7 +992,7 @@ async def generate_profile_suggestions(
                 }
             }
         }
-        
+
         return ProfileSuggestionsResponse(
             success=True,
             suggestions=result["suggestions"],
@@ -1000,7 +1000,7 @@ async def generate_profile_suggestions(
             alternatives=result["alternatives"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1018,15 +1018,15 @@ async def generate_attraction_suggestions(
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
-    
-    Uses actual Croatian tourism data from Archon's knowledge base,
+
+    Uses curated Croatian tourism data and official source analysis,
     enhanced with AI personalization based on host's interests and location.
     """
     try:
         logger.info(f"🎯 Generating REAL Croatian attractions for {request.city} with interests: {request.interests}")
-        
+
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build location info from request
         location_info = {}
         if request.city:
@@ -1035,28 +1035,28 @@ async def generate_attraction_suggestions(
             location_info["address"] = request.address
         if request.region:
             location_info["region"] = request.region.value if hasattr(request.region, 'value') else request.region
-        
+
         # Generate attractions using REAL Croatian tourism data
         result = await onboarding_service.generate_local_attraction_suggestions(
             host_location=location_info,
             host_interests=request.interests,
             local_knowledge_level=request.knowledge_level.value if hasattr(request.knowledge_level, 'value') else request.knowledge_level
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate attraction suggestions")
             )
-        
+
         # Log the real data results
         data_source = result.get("data_source", "unknown")
         sources_used = result.get("sources_used", 0)
         personalization_level = result.get("personalization_level", "unknown")
-        
+
         logger.info(f"✅ Generated {len(result['attractions'])} attractions using {data_source}")
         logger.info(f"📊 Data sources: {sources_used}, Personalization: {personalization_level}")
-        
+
         # Create enhanced UI components with real data indicators
         ui_components = {
             "hero_section": {
@@ -1093,7 +1093,7 @@ async def generate_attraction_suggestions(
                 }
             }
         }
-        
+
         return AttractionSuggestionsResponse(
             success=True,
             attractions=result["attractions"],
@@ -1107,7 +1107,7 @@ async def generate_attraction_suggestions(
                 "total_attractions": len(result["attractions"])
             }
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1125,23 +1125,23 @@ async def generate_welcome_messages(
 ):
     """
     Generate AI-powered welcome message suggestions.
-    
+
     Creates multiple welcome message options in different styles
     for hosts to choose from or customize.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.generate_welcome_message_suggestions(
             basic_info=basic_info.model_dump()
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate welcome messages"
             )
-        
+
         # Create UI components
         ui_components = {
             "message_cards": {
@@ -1176,14 +1176,14 @@ async def generate_welcome_messages(
                 }
             }
         }
-        
+
         return WelcomeMessageResponse(
             success=True,
             welcome_messages=result["welcome_messages"],
             tips=result["tips"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1201,21 +1201,21 @@ async def validate_and_enhance_profile(
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
-    
+
     Analyzes profile completeness and authenticity, providing actionable
     suggestions for improvement.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.validate_and_enhance_profile(profile_data)
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Profile validation failed"
             )
-        
+
         # Create progress and enhancement UI
         completeness_score = result["completeness_score"]
         ui_components = {
@@ -1252,7 +1252,7 @@ async def validate_and_enhance_profile(
                 }
             }
         }
-        
+
         return ProfileValidationResponse(
             success=True,
             validation=result["validation"],
@@ -1260,7 +1260,7 @@ async def validate_and_enhance_profile(
             completeness_score=completeness_score,
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1279,19 +1279,19 @@ async def get_onboarding_step(
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
-    
+
     Provides structured onboarding experience with beautiful UI components
     for each step of the host registration process.
     """
     try:
         total_steps = 5
-        
+
         if step < 1 or step > total_steps:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid step. Must be between 1 and {total_steps}"
             )
-        
+
         # Define onboarding steps with Aceternity UI components
         steps = {
             1: {
@@ -1331,7 +1331,7 @@ async def get_onboarding_step(
                             "icon": "🏙️"
                         },
                         {
-                            "name": "address", 
+                            "name": "address",
                             "label": "Property Address",
                             "type": "textarea",
                             "placeholder": "Full address of your property",
@@ -1370,7 +1370,7 @@ async def get_onboarding_step(
                                     "icon": "🏙️"
                                 },
                                 {
-                                    "name": "address", 
+                                    "name": "address",
                                     "label": "Property Address",
                                     "type": "textarea",
                                     "placeholder": "Full address of your property",
@@ -1438,7 +1438,7 @@ async def get_onboarding_step(
             4: {
                 "step_name": "Local Attractions",
                 "content": {
-                    "title": "Share Your Local Knowledge", 
+                    "title": "Share Your Local Knowledge",
                     "description": "Help guests discover the best of your area with AI-suggested attractions and your personal insights.",
                     "categories": ["Hidden Gems", "Local Favorites", "Cultural Sites", "Natural Beauty", "Food & Drink"]
                 },
@@ -1498,9 +1498,9 @@ async def get_onboarding_step(
                 }
             }
         }
-        
+
         step_data = steps.get(step, {})
-        
+
         return OnboardingStepResponse(
             step=step,
             total_steps=total_steps,
@@ -1509,7 +1509,7 @@ async def get_onboarding_step(
             ui_components=step_data.get("ui_components", {}),
             next_step_available=step < total_steps
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1528,13 +1528,13 @@ async def edit_profile_suggestion(
 ):
     """
     Edit or co-write a profile suggestion with AI assistance.
-    
+
     Allows hosts to customize AI-generated suggestions with their personal touch,
     with optional AI collaboration for improvement.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         if edit_request.is_collaborative:
             # Use AI to improve the user's edit
             collaboration_context = {
@@ -1543,11 +1543,11 @@ async def edit_profile_suggestion(
                 "user_edit": edit_request.user_edit,
                 "collaboration_prompt": edit_request.collaboration_prompt
             }
-            
+
             messages = [
                 {
                     "role": "system",
-                    "content": """You are helping a Croatian host improve their profile content. 
+                    "content": """You are helping a Croatian host improve their profile content.
                     Your role is to enhance their personal edits while maintaining their authentic voice.
                     Keep it warm, genuine, and true to Croatian hospitality."""
                 },
@@ -1570,13 +1570,13 @@ Return only the improved version, no additional text.
 """
                 }
             ]
-            
+
             ai_response = await onboarding_service.ai_service.generate_chat_response(
                 host_id="onboarding",
                 messages=messages,
                 context=collaboration_context
             )
-            
+
             if ai_response.get("success"):
                 improved_text = ai_response.get("response", "").strip()
                 return {
@@ -1587,7 +1587,7 @@ Return only the improved version, no additional text.
                     "final_suggestion": improved_text,
                     "collaboration_used": True
                 }
-        
+
         # No collaboration requested, just return the user's edit
         return {
             "success": True,
@@ -1596,7 +1596,7 @@ Return only the improved version, no additional text.
             "final_suggestion": edit_request.user_edit,
             "collaboration_used": False
         }
-        
+
     except Exception as e:
         logger.error(f"Error editing suggestion: {e}")
         raise HTTPException(
@@ -1613,12 +1613,12 @@ async def co_write_content(
 ):
     """
     Co-write content with AI assistance.
-    
+
     Helps hosts create content from scratch or expand their initial ideas with AI collaboration.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build context for co-writing
         context = {
             "category": cowrite_request.category,
@@ -1626,7 +1626,7 @@ async def co_write_content(
             "user_input": cowrite_request.user_input,
             "additional_context": cowrite_request.context
         }
-        
+
         messages = [
             {
                 "role": "system",
@@ -1653,13 +1653,13 @@ Please help me expand this into a complete, compelling piece that maintains my v
 Return only the improved content, no additional text."""
             }
         ]
-        
+
         ai_response = await onboarding_service.ai_service.generate_chat_response(
             host_id="onboarding",
             messages=messages,
             context=context
         )
-        
+
         if ai_response.get("success"):
             co_written_content = ai_response.get("response", "").strip()
             return {
@@ -1673,7 +1673,7 @@ Return only the improved content, no additional text."""
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to co-write content"
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1690,14 +1690,14 @@ async def analyze_location_potential(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Analyze location potential using Archon-guided best practices.
-    
+    Analyze location potential using Croatian tourism hosting best practices.
+
     Provides comprehensive analysis of a location's tourism potential,
     including market analysis, competitive landscape, and recommendations.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Enhanced analysis with multiple data sources
         analysis_results = {
             "location_analysis": {
@@ -1720,18 +1720,18 @@ async def analyze_location_potential(
             },
             "metadata": {
                 "analysis_timestamp": datetime.utcnow().isoformat(),
-                "data_sources": ["user_input", "ai_analysis", "archon_guidelines"],
+                "data_sources": ["user_input", "ai_analysis", "tourism_guidelines"],
                 "confidence_score": calculate_confidence_score(request)
             }
         }
-        
+
         return {
             "success": True,
             "analysis": analysis_results,
             "insights": generate_actionable_insights(analysis_results),
             "next_steps": suggest_next_steps(analysis_results)
         }
-        
+
     except Exception as e:
         logger.error(f"Location analysis error: {e}")
         raise HTTPException(
@@ -1751,14 +1751,14 @@ async def get_current_host_optional(
     """Get current host if authenticated, otherwise return None."""
     if not credentials:
         return None
-    
+
     try:
         token = credentials.credentials
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
         host_id: str = payload.get("sub")
         if not host_id:
             return None
-        
+
         host_service = HostService(db)
         return await host_service.get_by_id(uuid.UUID(host_id))
     except:
@@ -1775,28 +1775,28 @@ async def generate_profile_suggestions(
 ):
     """
     Generate AI-powered profile suggestions for hosts.
-    
+
     This endpoint helps hosts create authentic profiles using AI assistance
     based on their location, property type, and personal interests.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Convert to dict for service
         basic_info_dict = basic_info.model_dump()
-        
+
         # Generate AI suggestions
         result = await onboarding_service.generate_host_profile_suggestions(
             basic_info=basic_info_dict,
             ai_preferences={"style": basic_info.profile_style, "target_guests": basic_info.target_guests}
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate profile suggestions")
             )
-        
+
         # Create beautiful UI components for Aceternity
         ui_components = {
             "hero_section": {
@@ -1820,7 +1820,7 @@ async def generate_profile_suggestions(
                             "className": "md:col-span-2"
                         },
                         {
-                            "title": "Welcome Messages", 
+                            "title": "Welcome Messages",
                             "description": "Warm Croatian hospitality greetings",
                             "icon": "👋",
                             "suggestions": list(result["suggestions"].get("welcome_message", [])),
@@ -1866,7 +1866,7 @@ async def generate_profile_suggestions(
                 }
             }
         }
-        
+
         return ProfileSuggestionsResponse(
             success=True,
             suggestions=result["suggestions"],
@@ -1874,7 +1874,7 @@ async def generate_profile_suggestions(
             alternatives=result["alternatives"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1892,15 +1892,15 @@ async def generate_attraction_suggestions(
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
-    
-    Uses actual Croatian tourism data from Archon's knowledge base,
+
+    Uses curated Croatian tourism data and official source analysis,
     enhanced with AI personalization based on host's interests and location.
     """
     try:
         logger.info(f"🎯 Generating REAL Croatian attractions for {request.city} with interests: {request.interests}")
-        
+
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build location info from request
         location_info = {}
         if request.city:
@@ -1909,28 +1909,28 @@ async def generate_attraction_suggestions(
             location_info["address"] = request.address
         if request.region:
             location_info["region"] = request.region
-        
+
         # Generate attractions using REAL Croatian tourism data
         result = await onboarding_service.generate_local_attraction_suggestions(
             host_location=location_info,
             host_interests=request.interests,
             local_knowledge_level=request.knowledge_level
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate attraction suggestions")
             )
-        
+
         # Log the real data results
         data_source = result.get("data_source", "unknown")
         sources_used = result.get("sources_used", 0)
         personalization_level = result.get("personalization_level", "unknown")
-        
+
         logger.info(f"✅ Generated {len(result['attractions'])} attractions using {data_source}")
         logger.info(f"📊 Data sources: {sources_used}, Personalization: {personalization_level}")
-        
+
         # Create enhanced UI components with real data indicators
         ui_components = {
             "hero_section": {
@@ -1990,7 +1990,7 @@ async def generate_attraction_suggestions(
                 }
             }
         }
-        
+
         return AttractionSuggestionsResponse(
             success=True,
             attractions=result["attractions"],
@@ -2004,7 +2004,7 @@ async def generate_attraction_suggestions(
                 "generation_method": "real_croatian_tourism_data"
             }
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2023,23 +2023,23 @@ async def generate_welcome_messages(
 ):
     """
     Generate AI-powered welcome message suggestions for different guest types.
-    
+
     Creates warm, authentic welcome messages that reflect Croatian hospitality.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.generate_welcome_message_suggestions(
             host_personality=personality_info,
             guest_types=guest_types
         )
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=result.get("error", "Failed to generate welcome messages")
             )
-        
+
         # Create beautiful UI components
         ui_components = {
             "message_cards": {
@@ -2081,14 +2081,14 @@ async def generate_welcome_messages(
                 }
             }
         }
-        
+
         return WelcomeMessageResponse(
             success=True,
             welcome_messages=result["welcome_messages"],
             tips=result["tips"],
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2106,21 +2106,21 @@ async def validate_and_enhance_profile(
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
-    
+
     Analyzes profile completeness and authenticity, providing actionable
     suggestions for improvement.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         result = await onboarding_service.validate_and_enhance_profile(profile_data)
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Profile validation failed"
             )
-        
+
         # Create progress and enhancement UI
         completeness_score = result["completeness_score"]
         ui_components = {
@@ -2157,7 +2157,7 @@ async def validate_and_enhance_profile(
                 }
             }
         }
-        
+
         return ProfileValidationResponse(
             success=True,
             validation=result["validation"],
@@ -2165,7 +2165,7 @@ async def validate_and_enhance_profile(
             completeness_score=completeness_score,
             ui_components=ui_components
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2184,19 +2184,19 @@ async def get_onboarding_step(
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
-    
+
     Provides structured onboarding experience with beautiful UI components
     for each step of the host registration process.
     """
     try:
         total_steps = 5
-        
+
         if step < 1 or step > total_steps:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid step. Must be between 1 and {total_steps}"
             )
-        
+
         # Define onboarding steps with Aceternity UI components
         steps = {
             1: {
@@ -2206,7 +2206,7 @@ async def get_onboarding_step(
                     "description": "Join the community of authentic Croatian hosts and create unforgettable experiences for your guests.",
                     "benefits": [
                         "AI-powered profile creation",
-                        "Local attraction recommendations", 
+                        "Local attraction recommendations",
                         "Guest management tools",
                         "Croatian hospitality expertise"
                     ]
@@ -2276,7 +2276,7 @@ async def get_onboarding_step(
                                     "icon": "🏙️"
                                 },
                                 {
-                                    "name": "address", 
+                                    "name": "address",
                                     "label": "Property Address",
                                     "type": "textarea",
                                     "placeholder": "Full address of your property",
@@ -2344,7 +2344,7 @@ async def get_onboarding_step(
             4: {
                 "step_name": "Local Attractions",
                 "content": {
-                    "title": "Share Your Local Knowledge", 
+                    "title": "Share Your Local Knowledge",
                     "description": "Help guests discover the best of your area with AI-suggested attractions and your personal insights.",
                     "categories": ["Hidden Gems", "Local Favorites", "Cultural Sites", "Natural Beauty", "Food & Drink"]
                 },
@@ -2405,14 +2405,14 @@ async def get_onboarding_step(
                 }
             }
         }
-        
+
         step_data = steps.get(step)
         if not step_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Step not found"
             )
-        
+
         return OnboardingStepResponse(
             step=step,
             total_steps=total_steps,
@@ -2421,7 +2421,7 @@ async def get_onboarding_step(
             ui_components=step_data["ui_components"],
             next_step_available=step < total_steps
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2440,12 +2440,12 @@ async def edit_profile_suggestion(
 ):
     """
     Edit or improve a profile suggestion with optional AI collaboration.
-    
+
     Allows hosts to edit AI suggestions and optionally get AI help to improve their edits.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         if edit_request.is_collaborative and edit_request.collaboration_prompt:
             # Use AI to help improve the user's edit
             collaboration_context = {
@@ -2454,7 +2454,7 @@ async def edit_profile_suggestion(
                 "category": edit_request.category,
                 "collaboration_request": edit_request.collaboration_prompt
             }
-            
+
             messages = [
                 {
                     "role": "system",
@@ -2479,13 +2479,13 @@ Return only the improved version, no additional text.
 """
                 }
             ]
-            
+
             ai_response = await onboarding_service.ai_service.generate_chat_response(
                 host_id="onboarding",
                 messages=messages,
                 context=collaboration_context
             )
-            
+
             if ai_response.get("success"):
                 improved_text = ai_response.get("response", "").strip()
                 return {
@@ -2496,7 +2496,7 @@ Return only the improved version, no additional text.
                     "final_suggestion": improved_text,
                     "collaboration_used": True
                 }
-        
+
         # No collaboration requested, just return the user's edit
         return {
             "success": True,
@@ -2505,7 +2505,7 @@ Return only the improved version, no additional text.
             "final_suggestion": edit_request.user_edit,
             "collaboration_used": False
         }
-        
+
     except Exception as e:
         logger.error(f"Error editing suggestion: {e}")
         raise HTTPException(
@@ -2522,12 +2522,12 @@ async def co_write_content(
 ):
     """
     Co-write content with AI assistance.
-    
+
     Helps hosts create content from scratch or expand their initial ideas with AI collaboration.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Build context for co-writing
         context = {
             "category": cowrite_request.category,
@@ -2535,7 +2535,7 @@ async def co_write_content(
             "user_input": cowrite_request.user_input,
             "additional_context": cowrite_request.context
         }
-        
+
         messages = [
             {
                 "role": "system",
@@ -2562,13 +2562,13 @@ Please help me expand this into a complete, compelling piece that maintains my v
 Return only the improved content, no additional text."""
             }
         ]
-        
+
         ai_response = await onboarding_service.ai_service.generate_chat_response(
             host_id="onboarding",
             messages=messages,
             context=context
         )
-        
+
         if ai_response.get("success"):
             co_written_content = ai_response.get("response", "").strip()
             return {
@@ -2583,7 +2583,7 @@ Return only the improved content, no additional text."""
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="AI co-writing failed"
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2601,7 +2601,7 @@ async def get_google_places_info_endpoint(
 ):
     """
     Get location details from Google Places API.
-    
+
     Provides rich location information to enhance host profiles and local recommendations.
     """
     return await get_google_places_info(place_name)
@@ -2617,7 +2617,7 @@ async def get_nearby_google_places_endpoint(
 ):
     """
     Get nearby attractions from Google Places API.
-    
+
     Enhances host onboarding with real Google Places data for authentic local recommendations.
     """
     return await get_nearby_google_places(lat, lng, radius, place_type)
@@ -2629,14 +2629,14 @@ async def analyze_location_potential(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Analyze location potential using Archon-guided best practices.
-    
+    Analyze location potential using Croatian tourism hosting best practices.
+
     Provides comprehensive analysis of a location's tourism potential,
     including market analysis, competitive landscape, and recommendations.
     """
     try:
         onboarding_service = HostOnboardingService(db)
-        
+
         # Enhanced analysis with multiple data sources
         analysis_results = {
             "location_analysis": {
@@ -2659,18 +2659,18 @@ async def analyze_location_potential(
             },
             "metadata": {
                 "analysis_timestamp": datetime.utcnow().isoformat(),
-                "data_sources": ["user_input", "ai_analysis", "archon_guidelines"],
+                "data_sources": ["user_input", "ai_analysis", "tourism_guidelines"],
                 "confidence_score": calculate_confidence_score(request)
             }
         }
-        
+
         return {
             "success": True,
             "analysis": analysis_results,
             "insights": generate_actionable_insights(analysis_results),
             "next_steps": suggest_next_steps(analysis_results)
         }
-        
+
     except Exception as e:
         logger.error(f"Location analysis error: {e}")
         raise HTTPException(
@@ -2690,22 +2690,22 @@ async def complete_host_onboarding(
 ):
     """
     Complete host onboarding and save all data to database.
-    
-    SIMPLIFIED VERSION: Following Archon best practices for database operations.
+
+    SIMPLIFIED VERSION: Uses conservative database operations.
     Only updates the hosts table which we know works.
     """
     try:
         logger.info(f"Completing onboarding for host: {current_host.email}")
-        
+
         # Generate unique access code for guests
         import secrets
         import string
         access_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
-        
+
         # Update main host record
         from sqlalchemy import update, select
         from app.models.host import HostProfile
-        
+
         host_update = update(Host).where(Host.id == current_host.id).values(
             city=onboarding_data.city,
             address=onboarding_data.address or current_host.address,
@@ -2716,14 +2716,14 @@ async def complete_host_onboarding(
             onboarding_completed=True,
             updated_at=datetime.utcnow()
         )
-        
+
         await db.execute(host_update)
-        
+
         # Create or update HostProfile with detailed onboarding data
         profile_query = select(HostProfile).where(HostProfile.host_id == current_host.id)
         result = await db.execute(profile_query)
         existing_profile = result.scalar_one_or_none()
-        
+
         if existing_profile:
             # Update existing profile
             profile_update = update(HostProfile).where(HostProfile.host_id == current_host.id).values(
@@ -2769,11 +2769,11 @@ async def complete_host_onboarding(
                 updated_at=datetime.utcnow()
             )
             db.add(new_profile)
-        
+
         await db.commit()
-        
+
         logger.info(f"Onboarding completed successfully for host: {current_host.email}")
-        
+
         return {
             "success": True,
             "message": "Onboarding completed successfully",
@@ -2788,7 +2788,7 @@ async def complete_host_onboarding(
                 "Your data is now stored in the database"
             ]
         }
-        
+
     except Exception as e:
         logger.error(f"Onboarding completion error: {e}")
         await db.rollback()
@@ -2805,40 +2805,40 @@ async def get_host_offerings_for_guest(
 ):
     """
     Get host offerings and recommendations for guests using access code.
-    
+
     This is the main endpoint guests use to see what their host recommends.
     """
     try:
         # Find host by access code
         from sqlalchemy import select
-        
+
         host_query = select(Host).where(Host.guest_access_code == access_code.upper())
         result = await db.execute(host_query)
         host = result.scalar_one_or_none()
-        
+
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Invalid access code"
             )
-        
+
         # Get host profile
         from app.models.host import HostProfile
         profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
         profile_result = await db.execute(profile_query)
         profile = profile_result.scalar_one_or_none()
-        
+
         from app.services.host_offerings_for_guest import build_host_offerings_payload
 
         host_offerings = build_host_offerings_payload(host, profile, access_code)
-        
+
         return {
             "success": True,
             "host_offerings": host_offerings,
             "access_code": access_code,
             "valid_access": True
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2860,38 +2860,38 @@ async def enhance_accommodation_description(
 ):
     """
     Enhance accommodation description using AI with existing property data.
-    
+
     Args:
         request: Dict containing current accommodation details for enhancement
         current_host: Current authenticated host
         db: Database session
-        
+
     Returns:
         Dict[str, Any]: Enhanced description and suggestions based on existing data
     """
     try:
         logger.info(f"🎯 Enhancing accommodation description with AI for host {current_host.id}")
-        
+
         # Extract current accommodation data from request
         current_data = request.get("current_data", {})
         enhancement_type = request.get("enhancement_type", "description")  # description, amenities, services, etc.
-        
+
         if not current_data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current accommodation data is required for AI enhancement"
             )
-        
+
         # Get host profile for additional context
         onboarding_service = HostOnboardingService(db)
         host_profile = await onboarding_service.get_host_profile(current_host.id)
-        
+
         if not host_profile:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Host profile not found"
             )
-        
+
         # Extract key data for AI enhancement
         property_name = current_data.get("property_name", "")
         property_type = current_data.get("property_type", "")
@@ -2903,12 +2903,12 @@ async def enhance_accommodation_description(
         current_specialties = current_data.get("expertise_areas", [])
         city = current_data.get("city", "")
         county = current_data.get("county", "")
-        
+
         # Create context-aware enhancement prompt
         enhancement_prompt = f"""
         You are an AI travel expert specializing in Croatian tourism and accommodation enhancement.
         Your task is to ENHANCE the existing accommodation data, not replace it with generic content.
-        
+
         CURRENT ACCOMMODATION DATA:
         - Property Name: {property_name}
         - Property Type: {property_type}
@@ -2919,12 +2919,12 @@ async def enhance_accommodation_description(
         - Current Services: {', '.join(current_services) if current_services else 'None specified'}
         - Current Specialties: {', '.join(current_specialties) if current_specialties else 'None specified'}
         - Location: {city}, {county}, Croatia
-        
+
         HOST CONTEXT:
         - Host Location: {host_profile.city or city}, Croatia
         - Local Knowledge: {host_profile.local_knowledge_level or 'intermediate'}
         - Host Interests: {', '.join(host_profile.host_interests or [])}
-        
+
         ENHANCEMENT REQUIREMENTS:
         1. BUILD UPON existing data - don't replace with generic content
         2. If description exists, enhance it with more detail and local context
@@ -2934,16 +2934,16 @@ async def enhance_accommodation_description(
         6. Use authentic Croatian/local language and cultural references
         7. Include practical information for guests (transport, local attractions, etc.)
         8. Keep the host's authentic voice and local knowledge
-        
+
         ENHANCEMENT TYPE: {enhancement_type}
-        
+
         Please provide enhanced content that builds upon what already exists.
         """
-        
+
         # Create structured response schema for AI
         from pydantic import BaseModel, Field
         from typing import List
-        
+
         class AccommodationEnhancementSchema(BaseModel):
             """Schema for structured accommodation enhancement response."""
             enhanced_description: str = Field(..., description="Enhanced property description with local context")
@@ -2951,7 +2951,7 @@ async def enhance_accommodation_description(
             suggested_services: List[str] = Field(..., description="List of suggested services to offer")
             enhanced_specialties: List[str] = Field(..., description="List of enhanced local specialties")
             welcome_message: str = Field(..., description="Enhanced welcome message in Croatian hospitality style")
-        
+
         # Use AI service to generate structured enhancement
         ai_response = await onboarding_service.ai_service.generate_structured_response(
             host_id=str(current_host.id),
@@ -2972,11 +2972,11 @@ async def enhance_accommodation_description(
             },
             response_schema=AccommodationEnhancementSchema
         )
-        
+
         if not ai_response or not ai_response.get("success", False):
             # Fallback to simple enhancement
             enhanced_description = current_description or f"Experience authentic Croatian hospitality in this charming {property_type} in {city}, {county}. Perfect for up to {max_guests} guests seeking an authentic local experience with modern comforts."
-            
+
             # Suggest additional amenities based on property type
             suggested_amenities = []
             if property_type == "apartment":
@@ -2985,10 +2985,10 @@ async def enhance_accommodation_description(
                 suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "bbq", "outdoor_seating"]
             elif property_type == "house":
                 suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "fireplace"]
-            
+
             # Filter out amenities that already exist
             new_amenities = [amenity for amenity in suggested_amenities if amenity not in current_amenities]
-            
+
             # Create fallback structured response
             enhanced_data = {
                 "enhanced_description": enhanced_description,
@@ -2997,7 +2997,7 @@ async def enhance_accommodation_description(
                 "enhanced_specialties": ["Local Culture", "Gastronomy", "Nature Exploration", "Family Activities"],
                 "welcome_message": f"Dobro došli! Welcome to your Croatian home away from home in {city}. We're excited to share the beauty and culture of {county} with you."
             }
-        
+
         # Parse structured AI response
         try:
             if ai_response.get("success", False) and ai_response.get("structured_data"):
@@ -3011,7 +3011,7 @@ async def enhance_accommodation_description(
         except Exception as e:
             logger.warning(f"Failed to parse AI response: {e}")
             enhanced_data = {}
-        
+
         # Prepare structured response with enhanced content
         response = AIEnhancementResponse(
             success=True,
@@ -3038,10 +3038,10 @@ async def enhance_accommodation_description(
                 "enhancement_timestamp": datetime.utcnow().isoformat()
             }
         )
-        
+
         logger.info(f"✅ Successfully enhanced accommodation for host {current_host.id} with structured response")
         return response
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3060,40 +3060,40 @@ async def send_message_to_host(
 ):
     """
     Allow guests to send messages to their host or AI assistant.
-    
+
     Enables guest-host communication and AI-powered assistance.
     """
     try:
         # Find host by access code
         from sqlalchemy import select
-        
+
         host_query = select(Host).where(Host.guest_access_code == access_code.upper())
         result = await db.execute(host_query)
         host = result.scalar_one_or_none()
-        
+
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Invalid access code"
             )
-        
+
         message_text = message_data.get("message", "")
         message_type = message_data.get("type", "general")  # general, question, request
         guest_name = message_data.get("guest_name", "Guest")
-        
+
         # For now, we'll use AI to provide immediate responses
         # Later, this can be enhanced with real host messaging
-        
+
         if message_type == "question" or "recommend" in message_text.lower():
             # Use AI to provide recommendations
             onboarding_service = HostOnboardingService(db)
-            
+
             # Get host profile for context
             from app.models.host import HostProfile
             profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
             profile_result = await db.execute(profile_query)
             profile = profile_result.scalar_one_or_none()
-            
+
             # Generate AI response based on host's knowledge
             ai_context = {
                 "host_name": f"{host.first_name} {host.last_name}",
@@ -3103,10 +3103,10 @@ async def send_message_to_host(
                 "guest_message": message_text,
                 "guest_name": guest_name
             }
-            
+
             # Simple AI response (can be enhanced with actual AI service)
             ai_response = f"Hi {guest_name}! As {host.first_name}'s AI assistant, I'd be happy to help. Based on your question about {host.city}, I recommend checking out our local specialties: {', '.join(host.local_specialties[:3])}. Would you like specific recommendations for activities, restaurants, or hidden gems?"
-            
+
             response = {
                 "success": True,
                 "response_type": "ai_assistant",
@@ -3129,12 +3129,12 @@ async def send_message_to_host(
                 "estimated_response_time": "Within 2 hours",
                 "ai_available": True
             }
-        
+
         # Log the interaction (in a real system, save to messages table)
         logger.info(f"Guest message via {access_code}: {message_text[:50]}...")
-        
+
         return response
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3152,11 +3152,11 @@ async def get_onboarding_progress(
 ):
     """
     Get onboarding progress for a host.
-    
+
     Args:
         host_id: Host ID
         db: Database session
-        
+
     Returns:
         Onboarding progress data
     """
@@ -3164,7 +3164,7 @@ async def get_onboarding_progress(
         analytics_service = OnboardingAnalyticsService(db)
         progress = await analytics_service.get_onboarding_progress(uuid.UUID(host_id))
         return progress
-        
+
     except Exception as e:
         logger.error(f"Error getting onboarding progress: {e}")
         raise HTTPException(
@@ -3181,24 +3181,24 @@ async def track_onboarding_step(
 ):
     """
     Track an onboarding step completion.
-    
+
     Args:
         step_data: Step tracking data
         current_host: Current authenticated host
         db: Database session
-        
+
     Returns:
         Success status
     """
     try:
         analytics_service = OnboardingAnalyticsService(db)
-        
+
         success = await analytics_service.track_onboarding_step(
             host_id=current_host.id,
             step_name=step_data.get("step_name"),
             step_data=step_data.get("data")
         )
-        
+
         if success:
             return {"success": True, "message": "Step tracked successfully"}
         else:
@@ -3206,7 +3206,7 @@ async def track_onboarding_step(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to track step"
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3224,11 +3224,11 @@ async def get_onboarding_analytics(
 ):
     """
     Get overall onboarding analytics.
-    
+
     Args:
         period_days: Number of days to analyze
         db: Database session
-        
+
     Returns:
         Analytics data
     """
@@ -3236,7 +3236,7 @@ async def get_onboarding_analytics(
         analytics_service = OnboardingAnalyticsService(db)
         analytics = await analytics_service.get_onboarding_analytics(period_days)
         return analytics
-        
+
     except Exception as e:
         logger.error(f"Error getting onboarding analytics: {e}")
         raise HTTPException(
@@ -3252,11 +3252,11 @@ async def get_success_metrics(
 ):
     """
     Get success metrics for a host's onboarding.
-    
+
     Args:
         host_id: Host ID
         db: Database session
-        
+
     Returns:
         Success metrics
     """
@@ -3264,10 +3264,10 @@ async def get_success_metrics(
         analytics_service = OnboardingAnalyticsService(db)
         metrics = await analytics_service.get_success_metrics(uuid.UUID(host_id))
         return metrics
-        
+
     except Exception as e:
         logger.error(f"Error getting success metrics: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get metrics: {str(e)}"
-        ) 
+        )

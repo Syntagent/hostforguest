@@ -251,6 +251,6 @@ if __name__ == "__main__":
     asyncio.run(test_dashboard_analytics_real_data())
     asyncio.run(test_guest_groups_real_data())
     asyncio.run(test_attractions_real_data())
-    asyncio.run(test_archon_updates_real_data())
+    asyncio.run(test_realtime_updates_endpoint())
     asyncio.run(test_dashboard_data_consistency())
     print("✅ All dashboard real data tests passed!")

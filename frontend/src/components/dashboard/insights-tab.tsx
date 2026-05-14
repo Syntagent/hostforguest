@@ -31,7 +31,7 @@ export const InsightsTab: React.FC<{
           <CardHeader>
             <CardTitle>Real-time Updates</CardTitle>
             <CardDescription>
-              Latest from Croatian tourism sources (Archon knowledge base &amp; integrations)
+              Latest from Croatian tourism sources and integrations
             </CardDescription>
           </CardHeader>
           <CardContent>

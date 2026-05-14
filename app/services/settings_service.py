@@ -222,14 +222,14 @@ class SettingsService:
             host_settings = result.scalars().first()
             
             if not host_settings:
-                # Return default configuration based on Archon documentation
+                # Return default configuration for local vector search
                 return {
                     "openai_model": "gpt-4o",
                     "openai_alternative_model": "gpt-4o-mini", 
                     "gemini_model": "gemini-2.5-flash",
                     "gemini_pro_model": "gemini-2.5-pro",
                     "preferred_ai_provider": "google",
-                    "embedding_model": "text-embedding-3-small",  # Archon recommended
+                    "embedding_model": "text-embedding-3-small",
                     "embedding_large_model": "text-embedding-3-large",
                     "embedding_provider": "openai",
                     "embedding_dimensions": 1536,

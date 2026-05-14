@@ -25,16 +25,16 @@ logger = logging.getLogger(__name__)
 class AIService:
     """
     Unified AI service supporting OpenAI and Google Gemini models.
-    
+
     This service automatically selects the appropriate AI provider based on
     host preferences and handles API key management through the settings service.
     """
-    
+
     def __init__(self, settings_service: Optional[SettingsService] = None):
         self.settings_service = settings_service
         self._openai_client = None
         self._gemini_models = {}
-        
+
     async def _get_openai_client(self, host_id: str) -> Optional[openai.AsyncOpenAI]:
         """Get configured OpenAI client for a host."""
         try:
@@ -47,13 +47,13 @@ class AIService:
             if not api_key:
                 logger.warning(f"No OpenAI API key found for host {host_id}")
                 return None
-                
+
             return openai.AsyncOpenAI(api_key=api_key)
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
-    
+
     async def _get_gemini_model(self, host_id: str, model_name: str) -> Optional[Any]:
         """Get configured Gemini model for a host."""
         try:
@@ -66,10 +66,10 @@ class AIService:
             if not api_key:
                 logger.warning(f"No Google AI API key found for host {host_id}")
                 return None
-            
+
             # Configure Gemini with the API key
             genai.configure(api_key=api_key)
-            
+
             # Configure safety settings for tourism content
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
@@ -77,18 +77,18 @@ class AIService:
                 HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
             }
-            
+
             model = genai.GenerativeModel(
                 model_name=model_name,
                 safety_settings=safety_settings
             )
-            
+
             return model
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize Gemini model {model_name}: {e}")
             return None
-    
+
     async def generate_chat_response(
         self,
         host_id: str,
@@ -99,13 +99,13 @@ class AIService:
     ) -> Dict[str, Any]:
         """
         Generate a chat response using the preferred AI provider.
-        
+
         Args:
             host_id: Host UUID
             messages: List of chat messages [{"role": "user/assistant", "content": "..."}]
             context: Additional context (location, guest preferences, etc.)
             use_reasoning: Whether to use reasoning models (o1, Gemini Pro)
-            
+
         Returns:
             Dict with response, model used, and metadata
         """
@@ -113,12 +113,12 @@ class AIService:
             # Get AI configuration for host
             ai_config = await self.settings_service.get_ai_config_for_host(host_id)
             preferred_provider = ai_config.get("preferred_ai_provider", "google")
-            
+
             # Add Croatian tourism context if provided
             if context:
                 system_context = self._build_system_context(context, ai_config)
                 messages = [{"role": "system", "content": system_context}] + messages
-            
+
             # Try preferred provider first
             if (preferred_provider == "openai" or preferred_provider == "both") and not use_web_search:
                 response = await self._generate_openai_response(
@@ -126,7 +126,7 @@ class AIService:
                 )
                 if response["success"]:
                     return response
-            
+
             if preferred_provider == "google" or preferred_provider == "both":
                 if use_web_search:
                     response = await self._generate_gemini_response_with_search(
@@ -138,7 +138,7 @@ class AIService:
                     )
                 if response["success"]:
                     return response
-            
+
             # Fallback error response
             return {
                 "success": False,
@@ -147,7 +147,7 @@ class AIService:
                 "provider": "none",
                 "error": "No available AI providers configured"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to generate chat response: {e}")
             return {
@@ -214,7 +214,7 @@ class AIService:
         except Exception as e:
             logger.error(f"Gemini with search failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def _generate_openai_response(
         self,
         host_id: str,
@@ -227,7 +227,7 @@ class AIService:
             client = await self._get_openai_client(host_id)
             if not client:
                 return {"success": False, "error": "OpenAI client not available"}
-            
+
             # Select model based on reasoning requirement
             if use_reasoning:
                 model = "o1-mini"  # Use reasoning model for complex tasks
@@ -236,7 +236,7 @@ class AIService:
                 if any(msg["role"] == "system" for msg in messages):
                     system_msg = next(msg["content"] for msg in messages if msg["role"] == "system")
                     user_content = f"System context: {system_msg}\n\nUser request: {user_content}"
-                
+
                 response = await client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": user_content}],
@@ -250,7 +250,7 @@ class AIService:
                     max_tokens=2000,
                     temperature=0.7
                 )
-            
+
             return {
                 "success": True,
                 "response": response.choices[0].message.content,
@@ -262,11 +262,11 @@ class AIService:
                     "total_tokens": response.usage.total_tokens
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"OpenAI generation failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def _generate_gemini_response(
         self,
         host_id: str,
@@ -281,14 +281,14 @@ class AIService:
                 model_name = ai_config.get("gemini_pro_model", "gemini-2.5-pro")
             else:
                 model_name = ai_config.get("gemini_model", "gemini-2.5-flash")
-            
+
             model = await self._get_gemini_model(host_id, model_name)
             if not model:
                 return {"success": False, "error": "Gemini model not available"}
-            
+
             # Convert messages to Gemini format
             gemini_messages = self._convert_to_gemini_format(messages)
-            
+
             # Generate response
             response = await model.generate_content_async(
                 gemini_messages,
@@ -297,7 +297,7 @@ class AIService:
                     max_output_tokens=2000,
                 )
             )
-            
+
             return {
                 "success": True,
                 "response": response.text,
@@ -309,36 +309,36 @@ class AIService:
                     "total_tokens": response.usage_metadata.total_token_count if hasattr(response, 'usage_metadata') else 0
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Gemini generation failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
     def _convert_to_gemini_format(self, messages: List[Dict[str, str]]) -> str:
         """Convert OpenAI format messages to Gemini format."""
         formatted_messages = []
-        
+
         for message in messages:
             role = message["role"]
             content = message["content"]
-            
+
             if role == "system":
                 formatted_messages.append(f"System: {content}")
             elif role == "user":
                 formatted_messages.append(f"Human: {content}")
             elif role == "assistant":
                 formatted_messages.append(f"Assistant: {content}")
-        
+
         return "\n\n".join(formatted_messages)
-    
+
     def _build_system_context(self, context: Dict[str, Any], ai_config: Dict[str, Any]) -> str:
         """Build system context for Croatian tourism assistance."""
         location = context.get("location", "Lovran, Croatia")
         guest_preferences = context.get("guest_preferences", {})
         local_info = context.get("local_info", {})
         language = ai_config.get("default_language", "en")
-        
-        system_prompt = f"""You are a knowledgeable local guide assistant for {location}, Croatia. 
+
+        system_prompt = f"""You are a knowledgeable local guide assistant for {location}, Croatia.
 You help tourists discover authentic Croatian experiences, local attractions, restaurants, and activities.
 
 Current Context:
@@ -359,7 +359,7 @@ Guidelines:
 Remember: You're representing a local Croatian host who wants their guests to have an amazing, authentic experience."""
 
         return system_prompt
-    
+
     async def generate_embeddings(
         self,
         host_id: str,
@@ -367,59 +367,59 @@ Remember: You're representing a local Croatian host who wants their guests to ha
     ) -> Dict[str, Any]:
         """
         Generate embeddings for texts using the configured embedding provider.
-        
+
         Args:
             host_id: Host UUID
             texts: List of texts to embed
-            
+
         Returns:
             Dict with embeddings and metadata
         """
         try:
             ai_config = await self.settings_service.get_ai_config_for_host(host_id)
             embedding_provider = ai_config.get("embedding_provider", "openai")
-            
+
             if embedding_provider == "openai":
                 return await self._generate_openai_embeddings(host_id, texts, ai_config)
             elif embedding_provider == "sentence_transformers":
                 return await self._generate_sentence_transformer_embeddings(texts, ai_config)
             else:
                 return {"success": False, "error": f"Unsupported embedding provider: {embedding_provider}"}
-                
+
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def _generate_openai_embeddings(
         self,
         host_id: str,
         texts: List[str],
         ai_config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Generate embeddings using OpenAI (recommended by Archon documentation)."""
+        """Generate embeddings using OpenAI."""
         try:
             client = await self._get_openai_client(host_id)
             if not client:
                 return {"success": False, "error": "OpenAI client not available"}
-            
-            # Use text-embedding-3-small as default (most cost-effective per Archon docs)
+
+            # Use text-embedding-3-small as the cost-effective default.
             model = ai_config.get("embedding_model", "text-embedding-3-small")
             dimensions = ai_config.get("embedding_dimensions", 1536)
-            
+
             # Create embeddings with optional dimension reduction for cost optimization
             embedding_params = {
                 "model": model,
                 "input": texts
             }
-            
+
             # Add dimensions parameter for text-embedding-3 models (supports dimension reduction)
             if "text-embedding-3" in model and dimensions != 1536:
                 embedding_params["dimensions"] = dimensions
-            
+
             response = await client.embeddings.create(**embedding_params)
-            
+
             embeddings = [data.embedding for data in response.data]
-            
+
             return {
                 "success": True,
                 "embeddings": embeddings,
@@ -431,11 +431,11 @@ Remember: You're representing a local Croatian host who wants their guests to ha
                     "total_tokens": response.usage.total_tokens
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"OpenAI embedding generation failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
     async def _generate_sentence_transformer_embeddings(
         self,
         texts: List[str],
@@ -444,16 +444,16 @@ Remember: You're representing a local Croatian host who wants their guests to ha
         """Generate embeddings using SentenceTransformers (fallback)."""
         try:
             from sentence_transformers import SentenceTransformer
-            
-            model_name = ai_config.get("embedding_alternative", 
+
+            model_name = ai_config.get("embedding_alternative",
                                      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-            
+
             # Load model (this should be cached after first load)
             model = SentenceTransformer(model_name)
-            
+
             # Generate embeddings
             embeddings = model.encode(texts).tolist()
-            
+
             return {
                 "success": True,
                 "embeddings": embeddings,
@@ -463,7 +463,7 @@ Remember: You're representing a local Croatian host who wants their guests to ha
                     "texts_processed": len(texts)
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"SentenceTransformer embedding generation failed: {e}")
-            return {"success": False, "error": str(e)} 
+            return {"success": False, "error": str(e)}

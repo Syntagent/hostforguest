@@ -41,7 +41,7 @@ export default function HomeClient() {
     {
       title: "Real-Time Croatian Tourism Data",
       description:
-        "Access live updates from Croatian tourism sources through the Archon knowledge base to keep your recommendations current and accurate.",
+        "Access live updates from Croatian tourism sources to keep your recommendations current and accurate.",
       icon: <Sparkles className="h-7 w-7" />,
       benefits: ["Live tourism updates", "Official event information", "Weather-based suggestions"],
     },

@@ -62,7 +62,7 @@ class TestAIAttractionGeneration:
                         "local_insights": "Local favorite spot",
                     }
                 ],
-                "data_source": "archon",
+                "data_source": "local_tourism",
                 "sources_used": 3,
                 "personalization_level": "expert",
             }
@@ -95,7 +95,7 @@ class TestAIAttractionGeneration:
             assert data["content"]["authenticity_level"] == "high"
             assert data["content"]["enhanced"] is True
             assert data["content"]["ai_generated"] is True
-            assert data["data_source"] == "archon"
+            assert data["data_source"] == "local_tourism"
             assert data["sources_used"] == 3
             assert data["personalization_level"] == "expert"
 
@@ -157,7 +157,7 @@ class TestAIAttractionGeneration:
                         "local_insights": "Perfect for culture enthusiasts",
                     }
                 ],
-                "data_source": "archon",
+                "data_source": "local_tourism",
                 "sources_used": 5,
                 "personalization_level": "expert",
             }
