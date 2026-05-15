@@ -19,9 +19,9 @@ services:
       - "8000:8000"
     environment:
       # Local stack: development + seed force so "Dev Login" works (dev@touristguide.local).
-      ENVIRONMENT: "development"
-      DEBUG: "true"
-      DEV_LOGIN_SEED_FORCE: "true"
+      ENVIRONMENT: "${ENVIRONMENT:-development}"
+      DEBUG: "${DEBUG:-true}"
+      DEV_LOGIN_SEED_FORCE: "${DEV_LOGIN_SEED_FORCE:-false}"
       USE_POSTGRESQL: "true"
       POSTGRES_SERVER: postgres
       POSTGRES_USER: tourist_guide_user
@@ -32,6 +32,8 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:-tourist_guide_neo4j}"
       BOOKING_COM_MOCK: "${BOOKING_COM_MOCK:-true}"
+      SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-here-change-in-production}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3001,http://127.0.0.1:3001}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,6 +68,8 @@ services:
     container_name: tourist_guide_channel_sync
     command: ["python", "-m", "app.tasks.channel_sync_runner"]
     environment:
+      ENVIRONMENT: "${ENVIRONMENT:-development}"
+      DEBUG: "${DEBUG:-true}"
       USE_POSTGRESQL: "true"
       POSTGRES_SERVER: postgres
       POSTGRES_USER: tourist_guide_user
@@ -74,6 +78,7 @@ services:
       POSTGRES_PORT: "5432"
       CHANNEL_SYNC_INTERVAL_SEC: "${CHANNEL_SYNC_INTERVAL_SEC:-300}"
       BOOKING_COM_MOCK: "${BOOKING_COM_MOCK:-true}"
+      SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-here-change-in-production}"
     depends_on:
       postgres:
         condition: service_healthy

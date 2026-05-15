@@ -57,8 +57,6 @@ const nextConfig: NextConfig = {
     // Single key in root .env: GOOGLE_MAPS_API_KEY — client code uses NEXT_PUBLIC_* name
     NEXT_PUBLIC_GOOGLE_MAPS_API_KEY:
       process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || "",
-    NEXT_PUBLIC_TEST_USER: process.env.TEST_USER,
-    NEXT_PUBLIC_TEST_USER_PASS: process.env.TEST_USER_PASS,
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_CONTACT_EMAIL: process.env.NEXT_PUBLIC_CONTACT_EMAIL,
     NEXT_PUBLIC_CONTACT_PHONE: process.env.NEXT_PUBLIC_CONTACT_PHONE,

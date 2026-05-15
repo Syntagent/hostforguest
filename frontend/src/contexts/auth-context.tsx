@@ -143,17 +143,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Development helper for automatic login
   const devLogin = async (): Promise<boolean> => {
+    if (process.env.NODE_ENV !== "development") {
+      setError("Development login is disabled in this build.");
+      return false;
+    }
+
     try {
       logDev("🔧 Development: Attempting automatic login...");
 
-      // Must match backend dev_login_seed_* (see app/core/config.py) or set in .env
+      // Must match backend dev_login_seed_* (see app/core/config.py).
       const testEmail =
         process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL ||
-        process.env.NEXT_PUBLIC_TEST_USER ||
         'dev@touristguide.local';
       const testPassword =
         process.env.NEXT_PUBLIC_DEV_LOGIN_PASSWORD ||
-        process.env.NEXT_PUBLIC_TEST_USER_PASS ||
         'devlogin123';
 
       logDev(`🔧 Development: Using test credentials for ${testEmail}`);

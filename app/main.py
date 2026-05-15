@@ -15,7 +15,9 @@ from app.core.database import create_db_and_tables, close_databases, health_chec
 from app.middleware.tenant_isolation import TenantIsolationMiddleware
 from app.middleware.rate_limiting import RateLimitingMiddleware
 
-os.makedirs(os.path.dirname(settings.log_file), exist_ok=True)
+log_dir = os.path.dirname(settings.log_file)
+if log_dir:
+    os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper()),
@@ -57,7 +59,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-is_dev = settings.environment == "development"
+is_dev = settings.is_development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if is_dev else settings.cors_origins_list,
@@ -112,4 +114,4 @@ if __name__ == "__main__":
         port=settings.port,
         reload=settings.debug,
         log_level=settings.log_level.lower()
-    ) 
+    )

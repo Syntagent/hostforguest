@@ -28,7 +28,7 @@ def _should_seed_dev_user() -> bool:
         return False
     if getattr(settings, "dev_login_seed_force", False):
         return True
-    if (settings.environment or "").lower() == "development":
+    if settings.is_development:
         return True
     if getattr(settings, "debug", False):
         return True
