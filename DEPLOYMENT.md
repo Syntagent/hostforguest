@@ -75,11 +75,11 @@ Expose the frontend container port through your reverse proxy. By default the ho
 
 ## GitHub Push
 
-This repo currently has no remote configured. After creating the GitHub repository:
+This repo is published at `https://github.com/Syntagent/hostforguest`. To publish future changes:
 
 ```bash
-git remote add origin https://github.com/<owner>/<repo>.git
-git add .
-git commit -m "Prepare repository for distribution"
-git push -u origin main
+git status --short
+git add <changed-files>
+git commit -m "<clear change summary>"
+git push origin main
 ```

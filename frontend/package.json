@@ -3,9 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:3001": "next dev -p 3001",
-    "dev:3002": "next dev -p 3002",
+    "dev": "next dev -p 3055 -H 127.0.0.1",
     "dev:3055": "next dev -p 3055 -H 127.0.0.1",
     "dev:3060": "next dev -p 3060 -H 127.0.0.1",
     "dev:local": "next dev -p 3055 -H 127.0.0.1",
