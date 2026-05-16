@@ -12,9 +12,6 @@ psycopg2-binary>=2.9.9
 asyncpg>=0.29.0
 pgvector>=0.2.4
 
-# Neo4j Graph Database
-neo4j>=5.15.0
-
 # Data Validation & Serialization
 pydantic>=2.10.0
 pydantic-settings>=2.6.1

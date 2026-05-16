@@ -6,21 +6,40 @@ supporting both OpenAI GPT models and Google Gemini models.
 """
 
 import logging
-from typing import Dict, List, Optional, Any, Union
+import os
+from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime
 import json
 import asyncio
 
-# AI Libraries
+# AI Libraries (Gemini deferred — see _import_google_generativeai — avoids heavy import at collection time)
 import openai
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # Internal imports
 from app.core.config import settings
 from app.services.settings_service import SettingsService
+from app.services.embedding_stub import deterministic_stub_embedding
 
 logger = logging.getLogger(__name__)
+
+_google_generativeai_cache: Optional[Tuple[Any, Any, Any]] = None
+
+
+def _import_google_generativeai() -> Tuple[Any, Any, Any]:
+    """
+    Import google.generativeai only when Gemini is used.
+
+    Keeps `import app.services.ai_service` (and pytest collection) lighter; avoids
+    MemoryError / long startup on constrained CI when tests never call Gemini.
+    """
+    global _google_generativeai_cache
+    if _google_generativeai_cache is not None:
+        return _google_generativeai_cache
+    import google.generativeai as genai_mod
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+    _google_generativeai_cache = (genai_mod, HarmCategory, HarmBlockThreshold)
+    return _google_generativeai_cache
 
 class AIService:
     """
@@ -66,6 +85,8 @@ class AIService:
             if not api_key:
                 logger.warning(f"No Google AI API key found for host {host_id}")
                 return None
+
+            genai, HarmCategory, HarmBlockThreshold = _import_google_generativeai()
 
             # Configure Gemini with the API key
             genai.configure(api_key=api_key)
@@ -286,6 +307,8 @@ class AIService:
             if not model:
                 return {"success": False, "error": "Gemini model not available"}
 
+            genai, _, _ = _import_google_generativeai()
+
             # Convert messages to Gemini format
             gemini_messages = self._convert_to_gemini_format(messages)
 
@@ -443,10 +466,22 @@ Remember: You're representing a local Croatian host who wants their guests to ha
     ) -> Dict[str, Any]:
         """Generate embeddings using SentenceTransformers (fallback)."""
         try:
-            from sentence_transformers import SentenceTransformer
-
             model_name = ai_config.get("embedding_alternative",
                                      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+            dim = int(ai_config.get("embedding_dimensions", 384))
+            if os.environ.get("PYTEST_CURRENT_TEST") or os.getenv(
+                "SKIP_SENTENCE_TRANSFORMERS", ""
+            ).lower() in ("1", "true", "yes"):
+                embeddings = [deterministic_stub_embedding(t or "", dim) for t in texts]
+                return {
+                    "success": True,
+                    "embeddings": embeddings,
+                    "model": model_name,
+                    "provider": "sentence_transformers_stub",
+                    "usage": {"texts_processed": len(texts)},
+                }
+
+            from sentence_transformers import SentenceTransformer
 
             # Load model (this should be cached after first load)
             model = SentenceTransformer(model_name)

@@ -5,47 +5,45 @@ Tests for vector service and embedding operations.
 import pytest
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.services.vector_service import VectorService
 from app.services.ai_service import AIService
-from app.models.attraction import Attraction, AttractionStatus
+from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
 
 logger = logging.getLogger(__name__)
 
 
 @pytest.mark.asyncio
-async def test_vector_service_initialization(db: AsyncSession):
+async def test_vector_service_initialization(db_session: AsyncSession):
     """Test vector service initializes correctly."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     assert service is not None
     assert service.embedding_dimensions == 384
 
 
 @pytest.mark.asyncio
-async def test_generate_embedding(db: AsyncSession):
-    """Test embedding generation."""
+async def test_generate_embedding(db_session: AsyncSession):
+    """Test embedding generation (deterministic stub under pytest)."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     
     text = "Beautiful beach in Lovran with crystal clear water"
     embedding = await service.generate_embedding(text)
     
-    # Should return a list of floats
-    assert embedding is None or isinstance(embedding, list)
-    if embedding:
-        assert len(embedding) > 0
-        assert all(isinstance(x, (int, float)) for x in embedding)
+    assert isinstance(embedding, list)
+    assert len(embedding) == service.embedding_dimensions
+    assert all(isinstance(x, (int, float)) for x in embedding)
 
 
 @pytest.mark.asyncio
-async def test_generate_attraction_embedding(db: AsyncSession):
+async def test_generate_attraction_embedding(db_session: AsyncSession):
     """Test attraction embedding generation."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     
     # Create a test attraction
-    from app.models.attraction import Attraction
     attraction = Attraction(
         name="Lovran Beach",
         description="Beautiful beach in Lovran",
@@ -54,15 +52,15 @@ async def test_generate_attraction_embedding(db: AsyncSession):
     
     embedding = await service.generate_attraction_embedding(attraction)
     
-    # Should return embedding or None
-    assert embedding is None or isinstance(embedding, list)
+    assert isinstance(embedding, list)
+    assert len(embedding) == service.embedding_dimensions
 
 
 @pytest.mark.asyncio
-async def test_generate_guest_preference_embedding(db: AsyncSession):
+async def test_generate_guest_preference_embedding(db_session: AsyncSession):
     """Test guest preference embedding generation."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     
     # Create a test guest group
     from app.models.guest_group import GuestGroup
@@ -75,15 +73,15 @@ async def test_generate_guest_preference_embedding(db: AsyncSession):
     
     embedding = await service.generate_guest_preference_embedding(guest_group)
     
-    # Should return embedding or None
-    assert embedding is None or isinstance(embedding, list)
+    assert isinstance(embedding, list)
+    assert len(embedding) == service.embedding_dimensions
 
 
 @pytest.mark.asyncio
-async def test_find_similar_attractions(db: AsyncSession):
+async def test_find_similar_attractions(db_session: AsyncSession):
     """Test finding similar attractions using vector search."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     
     # Create a test embedding
     test_embedding = [0.1] * 384  # Mock embedding
@@ -122,10 +120,10 @@ async def test_cosine_similarity_calculation():
 
 
 @pytest.mark.asyncio
-async def test_batch_update_embeddings(db: AsyncSession):
+async def test_batch_update_embeddings(db_session: AsyncSession):
     """Test batch embedding update."""
     ai_service = AIService()
-    service = VectorService(db, ai_service)
+    service = VectorService(db_session, ai_service)
     
     # Test with empty lists
     results = await service.batch_update_embeddings()
@@ -133,4 +131,14 @@ async def test_batch_update_embeddings(db: AsyncSession):
     assert isinstance(results, dict)
     assert "attractions_updated" in results
     assert "guest_groups_updated" in results
+
+
+def test_embedding_stub_deterministic_shape():
+    from app.services.embedding_stub import deterministic_stub_embedding
+
+    a = deterministic_stub_embedding("hello", 384)
+    b = deterministic_stub_embedding("hello", 384)
+    assert len(a) == 384
+    assert a == b
+    assert all(isinstance(x, float) for x in a)
 

@@ -6,15 +6,19 @@ where Croatian tourist hosts can manage their guest services.
 """
 
 from typing import Optional, List, Dict, Any
+import re
 from datetime import datetime
 from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlmodel import SQLModel, Field
-from pydantic import computed_field
+from pydantic import computed_field, field_validator
 import uuid
 
 from app.db.postgresql.connection import Base
+
+# Pragmatic email check (avoids extra email-validator dependency; API + forms only).
+_HOST_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class Host(Base):
@@ -221,6 +225,16 @@ class HostBase(SQLModel):
     description: Optional[str] = None
     welcome_message: Optional[str] = None
 
+    @field_validator("email")
+    @classmethod
+    def _email_format(cls, v: str) -> str:
+        s = (v or "").strip()
+        if len(s) > 255:
+            raise ValueError("Email must be at most 255 characters")
+        if not _HOST_EMAIL_RE.match(s):
+            raise ValueError("Invalid email address")
+        return s.lower()
+
 
 class HostCreate(HostBase):
     """Host creation model."""
@@ -273,6 +287,16 @@ class HostLogin(SQLModel):
     """Host login credentials."""
     email: str = Field(max_length=255)
     password: str = Field(min_length=1, max_length=100)
+
+    @field_validator("email")
+    @classmethod
+    def _login_email_format(cls, v: str) -> str:
+        s = (v or "").strip()
+        if len(s) > 255:
+            raise ValueError("Email must be at most 255 characters")
+        if not _HOST_EMAIL_RE.match(s):
+            raise ValueError("Invalid email address")
+        return s.lower()
 
 
 class HostProfileCreate(SQLModel):

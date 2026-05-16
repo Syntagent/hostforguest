@@ -17,7 +17,6 @@ HostForGuest helps Croatian accommodation hosts turn local knowledge into a gues
 - Backend: FastAPI, SQLAlchemy, PostgreSQL/PostGIS, pgvector.
 - Frontend: Next.js App Router.
 - Support app: Vite day planner.
-- Optional graph layer: Neo4j.
 - Real-time tourism updates: local scraping/Crawl4AI-oriented services.
 - Deployment: Docker Compose for databases by default; app containers are behind the `docker-api` profile.
 

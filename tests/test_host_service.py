@@ -7,9 +7,11 @@ for the Croatian tourist host platform using proper fixtures and factories.
 
 import pytest
 import uuid
+import random
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any
 import faker
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.host_service import HostService
@@ -77,7 +79,7 @@ class HostFactory:
                     "name": fake.company(),
                     "type": fake.random_element(["restaurant", "beach", "attraction", "nature"]),
                     "description": fake.sentence(),
-                    "distance_km": fake.pyfloat(left_digits=1, right_digits=1, min_value=0.1, max_value=50.0)
+                    "distance_km": round(random.uniform(0.1, 50.0), 2)
                 }
                 for _ in range(fake.random_int(min=1, max=3))
             ]
@@ -147,18 +149,17 @@ class TestHostService:
         assert duplicate_host is None
     
     @pytest.mark.parametrize("invalid_field,invalid_value", [
-        ("email", "not-an-email"),
         ("max_group_size", -1),
         ("max_group_size", 0),
+        ("max_group_size", 51),
+        ("email", "not-an-email"),
+        ("email", "missing-at-sign.com"),
+        ("email", "spaces @bad.com"),
     ])
-    async def test_create_host_invalid_data(self, host_service: HostService, invalid_field: str, invalid_value: Any):
+    async def test_create_host_invalid_data(self, invalid_field: str, invalid_value: Any):
         """Test host creation with various invalid data scenarios."""
-        # Arrange
-        host_data = HostFactory.create_host_data(**{invalid_field: invalid_value})
-        
-        # Act & Assert - This should be caught at the Pydantic validation level
-        with pytest.raises(ValueError):
-            await host_service.create_host(host_data)
+        with pytest.raises(ValidationError):
+            HostFactory.create_host_data(**{invalid_field: invalid_value})
     
     # Authentication Tests
     async def test_authenticate_host_success(self, host_service: HostService, host_data: HostCreate, created_host):
@@ -171,8 +172,9 @@ class TestHostService:
         
         # Assert
         assert authenticated_host is not None
-        assert authenticated_host.email == host_data.email
-        assert authenticated_host.id == created_host.id
+        host = authenticated_host["host"]
+        assert host.email == host_data.email
+        assert host.id == created_host.id
     
     async def test_authenticate_host_invalid_email(self, host_service: HostService):
         """Test authentication with non-existent email."""

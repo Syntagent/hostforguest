@@ -2,6 +2,11 @@
 Pytest configuration and fixtures for TouristGuideLocal tests.
 """
 
+import os
+
+# Prevent app lifespan from opening real Postgres; tests use SQLite via get_db overrides.
+os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
+
 import pytest
 import pytest_asyncio
 import uuid
@@ -13,7 +18,6 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.services.ai_service import AIService
 from app.services.settings_service import SettingsService
 from app.models.host import Host
 from app.models.attraction import Attraction
@@ -132,8 +136,45 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest_asyncio.fixture
+async def host_token_headers(async_client: AsyncClient) -> dict[str, str]:
+    """Register a unique host via HTTP and return ``X-Session-Token`` headers."""
+    email = f"fixture-host-{uuid.uuid4().hex[:16]}@example.com"
+    reg = {
+        "email": email,
+        "password": "securepassword123",
+        "first_name": "Fixture",
+        "last_name": "Host",
+        "phone": "+38551111222",
+        "business_name": "Fixture Biz",
+        "business_type": "apartment",
+        "address": "1 Test St",
+        "city": "Lovran",
+        "county": "Primorsko-goranska",
+        "postal_code": "51450",
+        "country": "Croatia",
+        "latitude": 45.2919,
+        "longitude": 14.2742,
+        "local_specialties": ["seafood"],
+        "languages": ["hr", "en"],
+        "max_group_size": 6,
+        "description": "Fixture",
+        "welcome_message": "Hi",
+    }
+    r = await async_client.post("/api/v1/hosts/register", json=reg)
+    assert r.status_code == 201, r.text
+    login = await async_client.post(
+        "/api/v1/hosts/login",
+        json={"email": email, "password": "securepassword123"},
+    )
+    assert login.status_code == 200, login.text
+    return {"X-Session-Token": login.json()["session_token"]}
+
+
+@pytest_asyncio.fixture
 async def ai_service(db_session):
     """Create AI service for testing."""
+    from app.services.ai_service import AIService
+
     settings_service = SettingsService(db_session)
     return AIService(settings_service)
 
@@ -189,6 +230,7 @@ async def sample_host(db_session):
         hashed_password="hashed_password",
         first_name="Test",
         last_name="Host",
+        address="1 Fixture St",
         city="Lovran",
         business_type="apartment"
     )

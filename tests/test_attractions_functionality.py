@@ -1,216 +1,125 @@
 """
-Test Attractions CRUD functionality.
-
-This test verifies that the Attractions tab functionality works correctly
-including creating, viewing, editing, and deleting attractions.
+Attractions tab flows against the async test client (shared in-memory DB).
 """
 
+import uuid
+
 import pytest
-import asyncio
 from httpx import AsyncClient
 
-from app.main import app
+
+def _host_registration(email: str) -> dict:
+    return {
+        "email": email,
+        "password": "testpassword123",
+        "first_name": "Test",
+        "last_name": "Host",
+        "phone": "+38551111222",
+        "business_name": "Test Biz",
+        "business_type": "apartment",
+        "address": "Test Address 1",
+        "city": "Lovran",
+        "county": "Primorsko-goranska",
+        "postal_code": "51450",
+        "country": "Croatia",
+        "latitude": 45.2919,
+        "longitude": 14.2742,
+        "local_specialties": ["seafood"],
+        "languages": ["hr", "en"],
+        "max_group_size": 6,
+        "description": "Test host",
+        "welcome_message": "Welcome",
+    }
+
+
+async def _session_headers(async_client: AsyncClient, email: str) -> dict[str, str]:
+    r = await async_client.post("/api/v1/hosts/register", json=_host_registration(email))
+    assert r.status_code == 201, r.text
+    login = await async_client.post(
+        "/api/v1/hosts/login",
+        json={"email": email, "password": "testpassword123"},
+    )
+    assert login.status_code == 200, login.text
+    return {"X-Session-Token": login.json()["session_token"]}
 
 
 @pytest.mark.asyncio
-async def test_create_attraction():
-    """Test creating a new attraction."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        # First create a test host
-        host_data = {
-            "email": "test_host_attractions@example.com",
-            "password": "testpassword123",
-            "first_name": "Test",
-            "last_name": "Host",
-            "address": "Test Address",
-            "city": "Lovran"
-        }
-        
-        # Register host
-        response = await client.post("/api/v1/hosts/register", json=host_data)
-        assert response.status_code == 201
-        
-        # Login to get session token
-        login_data = {
-            "email": "test_host_attractions@example.com",
-            "password": "testpassword123"
-        }
-        login_response = await client.post("/api/v1/hosts/login", json=login_data)
-        assert login_response.status_code == 200
-        
-        session_token = login_response.json()["session_token"]
-        headers = {"X-Session-Token": session_token}
-        
-        # Create a new attraction
-        attraction_data = {
-            "name": "Test Croatian Restaurant",
-            "description": "A wonderful local restaurant serving authentic Istrian cuisine",
-            "category": "Restaurant",
-            "location": "Lovran, Istria, Croatia",
-            "cost_estimate": "€20-35 per person",
-            "authenticity_level": "high"
-        }
-        
-        create_response = await client.post("/api/v1/attractions", json=attraction_data, headers=headers)
-        assert create_response.status_code == 201
-        
-        created_attraction = create_response.json()
-        assert "id" in created_attraction
-        assert created_attraction["name"] == "Test Croatian Restaurant"
-        assert created_attraction["category"] == "Restaurant"
-        assert created_attraction["location"] == "Lovran, Istria, Croatia"
-        
-        print(f"✅ Attraction created successfully - ID: {created_attraction['id']}")
+async def test_create_attraction(async_client: AsyncClient):
+    email = f"attr-fn-{uuid.uuid4().hex[:12]}@example.com"
+    headers = await _session_headers(async_client, email)
+
+    attraction_data = {
+        "name": "Test Croatian Restaurant",
+        "description": "A wonderful local restaurant serving authentic Istrian cuisine",
+        "attraction_type": "culinary",
+        "city": "Lovran",
+        "admission_fee": "€20-35 per person",
+    }
+
+    create_response = await async_client.post(
+        "/api/v1/attractions/", json=attraction_data, headers=headers
+    )
+    assert create_response.status_code == 201, create_response.text
+
+    created = create_response.json()
+    assert "id" in created
+    assert created["name"] == "Test Croatian Restaurant"
+    assert created["attraction_type"] == "culinary"
+    assert created["city"] == "Lovran"
 
 
 @pytest.mark.asyncio
-async def test_get_host_attractions():
-    """Test retrieving attractions for a host."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        # Create a test host
-        host_data = {
-            "email": "test_host_attractions2@example.com",
-            "password": "testpassword123",
-            "first_name": "Test",
-            "last_name": "Host",
-            "address": "Test Address",
-            "city": "Lovran"
-        }
-        
-        # Register host
-        response = await client.post("/api/v1/hosts/register", json=host_data)
-        assert response.status_code == 201
-        
-        # Login to get session token
-        login_data = {
-            "email": "test_host_attractions2@example.com",
-            "password": "testpassword123"
-        }
-        login_response = await client.post("/api/v1/hosts/login", json=login_data)
-        assert login_response.status_code == 200
-        
-        session_token = login_response.json()["session_token"]
-        headers = {"X-Session-Token": session_token}
-        
-        # Get host's attractions
-        attractions_response = await client.get("/api/v1/attractions/host", headers=headers)
-        assert attractions_response.status_code == 200
-        
-        attractions_data = attractions_response.json()
-        assert isinstance(attractions_data, list)
-        
-        print(f"✅ Retrieved {len(attractions_data)} attractions for host")
+async def test_get_host_attractions(async_client: AsyncClient):
+    email = f"attr-fn2-{uuid.uuid4().hex[:12]}@example.com"
+    headers = await _session_headers(async_client, email)
+
+    attractions_response = await async_client.get(
+        "/api/v1/attractions/host", headers=headers
+    )
+    assert attractions_response.status_code == 200
+    assert isinstance(attractions_response.json(), list)
 
 
 @pytest.mark.asyncio
-async def test_update_attraction():
-    """Test updating an attraction."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        # Create a test host
-        host_data = {
-            "email": "test_host_update@example.com",
-            "password": "testpassword123",
-            "first_name": "Test",
-            "last_name": "Host",
-            "address": "Test Address",
-            "city": "Lovran"
-        }
-        
-        # Register host
-        response = await client.post("/api/v1/hosts/register", json=host_data)
-        assert response.status_code == 201
-        
-        # Login to get session token
-        login_data = {
-            "email": "test_host_update@example.com",
-            "password": "testpassword123"
-        }
-        login_response = await client.post("/api/v1/hosts/login", json=login_data)
-        assert login_response.status_code == 200
-        
-        session_token = login_response.json()["session_token"]
-        headers = {"X-Session-Token": session_token}
-        
-        # Create an attraction first
-        attraction_data = {
+async def test_update_attraction(async_client: AsyncClient):
+    email = f"attr-fn-up-{uuid.uuid4().hex[:12]}@example.com"
+    headers = await _session_headers(async_client, email)
+
+    create_response = await async_client.post(
+        "/api/v1/attractions/",
+        json={
             "name": "Original Name",
             "description": "Original description",
-            "category": "Restaurant",
-            "location": "Lovran, Istria, Croatia",
-            "cost_estimate": "€20-35 per person",
-            "authenticity_level": "high"
-        }
-        
-        create_response = await client.post("/api/v1/attractions", json=attraction_data, headers=headers)
-        assert create_response.status_code == 201
-        
-        created_attraction = create_response.json()
-        attraction_id = created_attraction["id"]
-        
-        # Update the attraction
-        update_data = {
+            "attraction_type": "culinary",
+            "city": "Lovran",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 201, create_response.text
+    attraction_id = create_response.json()["id"]
+
+    update_response = await async_client.put(
+        f"/api/v1/attractions/{attraction_id}",
+        json={
             "name": "Updated Croatian Restaurant",
             "description": "Updated description with more details",
-            "cost_estimate": "€25-40 per person"
-        }
-        
-        update_response = await client.put(f"/api/v1/attractions/{attraction_id}", json=update_data, headers=headers)
-        assert update_response.status_code == 200
-        
-        updated_attraction = update_response.json()
-        assert updated_attraction["name"] == "Updated Croatian Restaurant"
-        assert updated_attraction["description"] == "Updated description with more details"
-        assert updated_attraction["cost_estimate"] == "€25-40 per person"
-        
-        print(f"✅ Attraction updated successfully - ID: {attraction_id}")
+        },
+        headers=headers,
+    )
+    assert update_response.status_code == 200, update_response.text
+    updated = update_response.json()
+    assert updated["name"] == "Updated Croatian Restaurant"
+    assert updated["description"] == "Updated description with more details"
 
 
 @pytest.mark.asyncio
-async def test_attraction_validation():
-    """Test attraction validation requirements."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        # Create a test host
-        host_data = {
-            "email": "test_host_validation@example.com",
-            "password": "testpassword123",
-            "first_name": "Test",
-            "last_name": "Host",
-            "address": "Test Address",
-            "city": "Lovran"
-        }
-        
-        # Register host
-        response = await client.post("/api/v1/hosts/register", json=host_data)
-        assert response.status_code == 201
-        
-        # Login to get session token
-        login_data = {
-            "email": "test_host_validation@example.com",
-            "password": "testpassword123"
-        }
-        login_response = await client.post("/api/v1/hosts/login", json=login_data)
-        assert login_response.status_code == 200
-        
-        session_token = login_response.json()["session_token"]
-        headers = {"X-Session-Token": session_token}
-        
-        # Test with missing required fields
-        invalid_data = {
-            "name": "Test Attraction"
-            # Missing description, category, location
-        }
-        
-        create_response = await client.post("/api/v1/attractions", json=invalid_data, headers=headers)
-        # Should return 422 (validation error) or 400 (bad request)
-        assert create_response.status_code in [400, 422]
-        
-        print("✅ Attraction validation working correctly")
+async def test_attraction_validation(async_client: AsyncClient):
+    email = f"attr-fn-val-{uuid.uuid4().hex[:12]}@example.com"
+    headers = await _session_headers(async_client, email)
 
+    invalid_data = {"name": "Test Attraction"}
 
-if __name__ == "__main__":
-    # Run tests
-    asyncio.run(test_create_attraction())
-    asyncio.run(test_get_host_attractions())
-    asyncio.run(test_update_attraction())
-    asyncio.run(test_attraction_validation())
-    print("✅ All attractions functionality tests passed!")
+    create_response = await async_client.post(
+        "/api/v1/attractions/", json=invalid_data, headers=headers
+    )
+    assert create_response.status_code in (400, 422)

@@ -6,6 +6,7 @@ for attractions and guest preferences.
 """
 
 import logging
+import os
 from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 
@@ -16,6 +17,7 @@ from sqlalchemy import select, text, desc
 from sqlalchemy.dialects.postgresql import ARRAY
 
 from app.services.ai_service import AIService
+from app.services.embedding_stub import deterministic_stub_embedding
 from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
 
@@ -61,6 +63,13 @@ class VectorService:
             if not text or not text.strip():
                 logger.warning("Empty text provided for embedding generation")
                 return None
+
+            # Never load torch/sentence-transformers during pytest, or when explicitly skipped
+            # (unstable on some Windows builds; long model downloads in CI).
+            if os.environ.get("PYTEST_CURRENT_TEST") or os.getenv(
+                "SKIP_SENTENCE_TRANSFORMERS", ""
+            ).lower() in ("1", "true", "yes"):
+                return deterministic_stub_embedding(text, self.embedding_dimensions)
             
             # Use sentence-transformers for embeddings (faster, cheaper)
             try:

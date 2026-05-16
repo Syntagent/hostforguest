@@ -7,13 +7,9 @@ and analytics data.
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.services.host_service import HostService
-from app.services.session_service import SessionService
-from app.models.host import Host, HostCreate
+import uuid
 
 
 def test_dashboard_endpoints_require_authentication_sync(client: TestClient):
@@ -50,55 +46,64 @@ def test_dashboard_endpoints_invalid_session_sync(client: TestClient):
     assert "Invalid or expired session" in response.json()["detail"]
 
 
+def _host_body(email: str) -> dict:
+    return {
+        "email": email,
+        "password": "testpassword123",
+        "first_name": "Test",
+        "last_name": "Host",
+        "phone": "+38551111222",
+        "business_name": "Dash Test Biz",
+        "business_type": "apartment",
+        "address": "Dash Test St 1",
+        "city": "Lovran",
+        "county": "Primorsko-goranska",
+        "postal_code": "51450",
+        "country": "Croatia",
+        "latitude": 45.2919,
+        "longitude": 14.2742,
+        "local_specialties": ["seafood"],
+        "languages": ["hr", "en"],
+        "max_group_size": 6,
+        "description": "Host for dashboard tests",
+        "welcome_message": "Welcome",
+    }
+
+
 @pytest.mark.asyncio
-async def test_get_host_profile_endpoint(async_client: AsyncClient, async_db_session: Session):
-    """Test the GET /api/v1/hosts/me/profile endpoint."""
-    
-    # Create a test host
-    host_service = HostService(async_db_session)
-    host_data = HostCreate(
-        email="test@example.com",
-        password="testpassword123",
-        first_name="Test",
-        last_name="Host"
+async def test_get_host_profile_endpoint(async_client: AsyncClient):
+    """GET /api/v1/hosts/me/profile — same DB as HTTP (register via API)."""
+    email = f"dash-prof-{uuid.uuid4().hex[:12]}@example.com"
+    r = await async_client.post("/api/v1/hosts/register", json=_host_body(email))
+    assert r.status_code == 201, r.text
+    login = await async_client.post(
+        "/api/v1/hosts/login",
+        json={"email": email, "password": "testpassword123"},
     )
-    host = await host_service.create_host(host_data)
-    
-    # Create a session for the host
-    session_service = SessionService(async_db_session)
-    session_token = await session_service.create_session(host.id)
-    
-    # Test the profile endpoint
+    assert login.status_code == 200, login.text
+    token = login.json()["session_token"]
+
     response = await async_client.get(
         "/api/v1/hosts/me/profile",
-        headers={"X-Session-Token": session_token}
+        headers={"X-Session-Token": token},
     )
-    
-    # Should return 404 since no profile exists yet
+
     assert response.status_code == 404
     assert "Host profile not found" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
-async def test_get_host_analytics_endpoint(async_client: AsyncClient, async_db_session: Session):
+async def test_get_host_analytics_endpoint(async_client: AsyncClient):
     """Test the GET /api/v1/hosts/analytics endpoint."""
-    
-    # Create a test host
-    host_service = HostService(async_db_session)
-    host_data = HostCreate(
-        email="analytics@example.com",
-        password="testpassword123",
-        first_name="Analytics",
-        last_name="Test",
-        address="Test Address",
-        city="Lovran"
+    email = f"dash-analytics-{uuid.uuid4().hex[:12]}@example.com"
+    r = await async_client.post("/api/v1/hosts/register", json=_host_body(email))
+    assert r.status_code == 201, r.text
+    login = await async_client.post(
+        "/api/v1/hosts/login",
+        json={"email": email, "password": "testpassword123"},
     )
-    host = await host_service.create_host(host_data)
-    
-    # Create a session for the host
-    session_service = SessionService(async_db_session)
-    session_data = await session_service.create_session(host.id)
-    session_token = session_data["session_token"]
+    assert login.status_code == 200, login.text
+    session_token = login.json()["session_token"]
     
     # Test the analytics endpoint
     response = await async_client.get(

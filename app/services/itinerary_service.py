@@ -752,7 +752,7 @@ class ItineraryService:
             
             # Add host insights if this is linked to an attraction
             if activity_data.attraction_id:
-                attraction = await self.attraction_service.get_by_id(activity_data.attraction_id)
+                attraction = await self.attraction_service.get_attraction_by_id(activity_data.attraction_id)
                 if attraction:
                     if not activity.host_tip:
                         activity.host_tip = attraction.host_personal_tip
@@ -792,7 +792,7 @@ class ItineraryService:
         """
         try:
             # Get Google Maps API key
-            api_key = await self.settings_service.get_api_key(host_id, "google_maps")
+            api_key = await self.settings_service.get_host_api_key(str(host_id), "google_maps")
             if not api_key:
                 logger.warning(f"No Google Maps API key found for host {host_id}")
                 return None
@@ -1159,9 +1159,10 @@ Rules:
             if not host:
                 return None
 
+            region_filter = getattr(host, "county", None) or getattr(host, "region", None)
             attractions = await self.attraction_service.search_attractions(
                 city=host.city,
-                region=host.region,
+                region=region_filter,
                 only_approved=True,
                 limit=50
             )
@@ -1301,7 +1302,7 @@ Rules:
             Tuple[float, float]: Latitude, longitude or None
         """
         try:
-            api_key = await self.settings_service.get_api_key(host_id, "google_maps")
+            api_key = await self.settings_service.get_host_api_key(str(host_id), "google_maps")
             if not api_key:
                 return None
             

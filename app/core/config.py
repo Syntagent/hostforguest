@@ -50,11 +50,6 @@ class Settings(BaseSettings):
     # Database Selection
     use_postgresql: bool = True  # True for production/Docker, False for dev
 
-    # Neo4j Configuration (Graph Database)
-    neo4j_uri: str = "bolt://localhost:7688"  # Updated to match Docker port
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "tourist_guide_neo4j"
-
     # Security Configuration
     secret_key: str = "your-super-secret-key-here-change-in-production"
     algorithm: str = "HS256"
@@ -85,6 +80,8 @@ class Settings(BaseSettings):
     booking_com_max_retries: int = 3
     channel_webhook_secret: str = ""
     maintenance_webhook_secret: str = ""
+    # Optional: POST /api/v1/maintenance/jobs/run-preventive-global with X-Maintenance-Job-Secret (cron / multi-instance)
+    maintenance_job_secret: str = ""
     # Optional explicit Fernet key (44 chars base64). If empty, crypto_util derives from secret_key.
     channel_encryption_key: str = ""
 

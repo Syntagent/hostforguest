@@ -14,7 +14,6 @@ from app.models.guest_group import GuestGroup
 from app.models.host import Host
 from app.models.recommendation import RecommendationRequest, RecommendationType
 from app.services.ai_service import AIService
-from app.services.graph_service import GraphService
 from app.services.recommendation_candidates import RecommendationCandidates
 from app.services.vector_service import VectorService
 
@@ -85,7 +84,7 @@ async def test_traditional_candidates_season_filter_in_memory_sqlite(
         current_location=None,
     )
     ai = AIService()
-    svc = RecommendationCandidates(db_session, VectorService(db_session, ai), GraphService())
+    svc = RecommendationCandidates(db_session, VectorService(db_session, ai))
     guest_group: dict = {"group": None}
     out = await svc.get_candidate_attractions_traditional(req, guest_group, host)
     names = {x.name for x in out}

@@ -277,6 +277,8 @@ class RecommendationResponse(SQLModel):
     transportation_note: Optional[str] = None
     weather_suitability: List[str] = Field(default_factory=list)
     created_at: datetime
+    attraction_id: Optional[uuid.UUID] = None
+    feedback_rating: Optional[int] = Field(default=None, ge=1, le=5)
 
     class Config:
         from_attributes = True
@@ -372,6 +374,67 @@ class RecommendationBatch(SQLModel):
     guest_group_id: Optional[uuid.UUID] = None
     request_context: Dict[str, Any] = Field(default_factory=dict)
     # Mirrors RecommendationSet / builder output (strings, lists, nested algorithm_weights).
+    personalization_factors: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GuestAttractionSummary(SQLModel):
+    """Attraction card payload for guest Discover / Map (matches frontend `Attraction`)."""
+    id: uuid.UUID
+    name: str
+    description: str
+    category: str
+    location: str
+    coordinates: Optional[List[float]] = None
+    opening_hours: Dict[str, Any] = Field(default_factory=dict)
+    cost_estimate: str = ""
+    authenticity_level: str = "local"
+    seasonal_info: Dict[str, Any] = Field(default_factory=dict)
+    attraction_type: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    region: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    featured_image_url: Optional[str] = None
+    image_gallery: List[str] = Field(default_factory=list)
+    best_months: List[int] = Field(default_factory=list)
+    average_rating: Optional[float] = None
+    review_count: Optional[int] = None
+    host_personal_tip: Optional[str] = None
+    host_favorite_time: Optional[str] = None
+    host_insider_info: Optional[str] = None
+    host_recommended_duration: Optional[str] = None
+    admission_fee: Optional[str] = None
+    seasonal_availability: Optional[str] = None
+    seasonal_notes: Optional[str] = None
+
+
+class GuestRecommendationItem(SQLModel):
+    """Guest UI recommendation row: score/reason aliases + embedded attraction."""
+    id: uuid.UUID
+    guest_group_id: uuid.UUID
+    attraction_id: Optional[uuid.UUID] = None
+    score: float
+    reason: str
+    personalization_factors: List[str] = Field(default_factory=list)
+    created_at: datetime
+    feedback_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    attraction: Optional[GuestAttractionSummary] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    why_recommended: Optional[str] = None
+    relevance_score: Optional[float] = None
+    host_insight: Optional[str] = None
+    host_tip: Optional[str] = None
+
+
+class GuestRecommendationBatch(SQLModel):
+    """Guest-facing recommendation batch with embedded attractions."""
+    recommendations: List[GuestRecommendationItem]
+    total_count: int
+    generated_at: datetime
+    guest_group_id: Optional[uuid.UUID] = None
+    request_context: Dict[str, Any] = Field(default_factory=dict)
     personalization_factors: Dict[str, Any] = Field(default_factory=dict)
 
 

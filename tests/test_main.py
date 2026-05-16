@@ -6,6 +6,8 @@ Tests the root endpoint, health check, and basic application functionality.
 
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
+
 
 def test_read_root(client: TestClient):
     """
@@ -17,7 +19,7 @@ def test_read_root(client: TestClient):
     response = client.get("/")
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Welcome to TouristGuideLocal"
+    assert data["message"] == f"Welcome to {settings.app_name}"
     assert data["version"] == "1.0.0"
     assert data["status"] == "healthy"
     assert data["environment"] == "development"
@@ -34,7 +36,7 @@ def test_health_check(client: TestClient):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["app"] == "TouristGuideLocal"
+    assert data["app"] == settings.app_name
     assert data["version"] == "1.0.0"
 
 

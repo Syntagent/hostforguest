@@ -230,3 +230,48 @@ def test_build_payload_aligns_welcome_when_address_has_settlement():
     payload = build_host_offerings_payload(host, profile, "XGQK6GZC")
     assert payload["stay_info"]["city"] == "Oprić"
     assert payload["host_info"]["welcome_message"].startswith("Welcome to Oprić!")
+
+
+def test_build_host_offerings_payload_surfaces_testimonials_and_favorite_spots():
+    """Contract for guest Welcome: recommendations.attractions + profile_extras.guest_testimonials."""
+    host = SimpleNamespace(
+        id=uuid4(),
+        first_name="M",
+        last_name="H",
+        city="Lovran",
+        address="1 St, Lovran",
+        county=None,
+        latitude=None,
+        longitude=None,
+        languages=["en"],
+        local_specialties=[],
+        business_type="apartment",
+        max_group_size=6,
+        typical_stay_duration=7,
+        welcome_message="Hi",
+        description=None,
+        local_tips=[],
+    )
+    profile = SimpleNamespace(
+        address="1 St",
+        city="Lovran",
+        county=None,
+        latitude=45.29,
+        longitude=14.27,
+        property_name="Villa",
+        amenities=[],
+        max_guests=4,
+        favorite_local_spots=[
+            {"name": "Secret cove", "type": "beach", "description": "Calm water", "distance_km": 2},
+        ],
+        expertise_areas=["hiking"],
+        updated_at=None,
+        location_story="Our story",
+        guest_testimonials=["Great stay!", {"quote": "Perfect host", "author": "Alex", "rating": 5}],
+        onboarding_completed=True,
+    )
+    payload = build_host_offerings_payload(host, profile, "ACCESS1")
+    assert payload["recommendations"]["attractions"][0]["name"] == "Secret cove"
+    pex = payload.get("profile_extras") or {}
+    assert pex.get("location_story") == "Our story"
+    assert len(pex.get("guest_testimonials", [])) == 2

@@ -27,7 +27,7 @@ async def initialize_tourism_sources():
     """
     logger.info("Initializing Croatian tourism content sources...")
 
-    async with get_async_session() as db:
+    async for db in get_async_session():
         async with ContentScraperService(db) as scraper:
 
             created_sources = []
@@ -79,7 +79,7 @@ async def run_weekly_content_scraping() -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             # Initialize AI service for content analysis
             ai_service = AIService()
 
@@ -146,7 +146,7 @@ async def run_daily_content_health_check() -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             async with ContentScraperService(db) as scraper:
 
                 # Get all content sources
@@ -224,7 +224,7 @@ async def cleanup_old_content_updates(days_to_keep: int = 90) -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             from sqlalchemy import delete
             from app.models.content_source import ContentUpdate, HostNotification
 

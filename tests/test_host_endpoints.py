@@ -60,10 +60,10 @@ class TestHostEndpoints:
             ]
         }
     
-    async def test_register_host_success(self, client: AsyncClient, sample_host_data: dict):
+    async def test_register_host_success(self, async_client: AsyncClient, sample_host_data: dict):
         """Test successful host registration."""
         # Act
-        response = await client.post("/api/v1/hosts/register", json=sample_host_data)
+        response = await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         
         # Assert
         assert response.status_code == status.HTTP_201_CREATED
@@ -76,19 +76,19 @@ class TestHostEndpoints:
         assert "id" in data
         assert "hashed_password" not in data  # Password should not be returned
     
-    async def test_register_host_duplicate_email(self, client: AsyncClient, sample_host_data: dict):
+    async def test_register_host_duplicate_email(self, async_client: AsyncClient, sample_host_data: dict):
         """Test registration with duplicate email fails."""
         # Arrange - register first host
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         
         # Act - try to register with same email
-        response = await client.post("/api/v1/hosts/register", json=sample_host_data)
+        response = await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         
         # Assert
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "Email already registered" in response.json()["detail"]
     
-    async def test_register_host_invalid_data(self, client: AsyncClient):
+    async def test_register_host_invalid_data(self, async_client: AsyncClient):
         """Test registration with invalid data."""
         invalid_data = {
             "email": "invalid-email",  # Invalid email format
@@ -99,15 +99,42 @@ class TestHostEndpoints:
         }
         
         # Act
-        response = await client.post("/api/v1/hosts/register", json=invalid_data)
+        response = await async_client.post("/api/v1/hosts/register", json=invalid_data)
         
         # Assert
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    async def test_register_host_email_normalized_lowercase(self, async_client: AsyncClient, sample_host_data: dict):
+        """Registered host email is stored lowercase (HostCreate validator + service)."""
+        unique = uuid.uuid4().hex[:10]
+        payload = {**sample_host_data, "email": f"MiXeD-{unique}@Sub.Example.COM"}
+        r = await async_client.post("/api/v1/hosts/register", json=payload)
+        assert r.status_code == status.HTTP_201_CREATED, r.text
+        assert r.json()["email"] == f"mixed-{unique}@sub.example.com"
+
+    async def test_register_duplicate_email_case_insensitive(self, async_client: AsyncClient, sample_host_data: dict):
+        """Second registration with same email different casing is rejected."""
+        token = uuid.uuid4().hex[:12]
+        first = {**sample_host_data, "email": f"CaseDup-{token}@Example.COM"}
+        r1 = await async_client.post("/api/v1/hosts/register", json=first)
+        assert r1.status_code == status.HTTP_201_CREATED, r1.text
+        second = {**sample_host_data, "email": f"casedup-{token}@example.com", "business_name": "Other Biz"}
+        r2 = await async_client.post("/api/v1/hosts/register", json=second)
+        assert r2.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Email already registered" in r2.json()["detail"]
+
+    async def test_login_invalid_email_format_422(self, async_client: AsyncClient):
+        """Login body must satisfy HostLogin email validation."""
+        r = await async_client.post(
+            "/api/v1/hosts/login",
+            json={"email": "not-an-email", "password": "whatever12345"},
+        )
+        assert r.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     
-    async def test_login_host_success(self, client: AsyncClient, sample_host_data: dict):
+    async def test_login_host_success(self, async_client: AsyncClient, sample_host_data: dict):
         """Test successful host login."""
         # Arrange - register host first
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         
         login_data = {
             "email": sample_host_data["email"],
@@ -115,20 +142,21 @@ class TestHostEndpoints:
         }
         
         # Act
-        response = await client.post("/api/v1/hosts/login", json=login_data)
+        response = await async_client.post("/api/v1/hosts/login", json=login_data)
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert "access_token" in data
-        assert data["token_type"] == "bearer"
-        assert "expires_in" in data
-        assert "host_id" in data
+        assert data.get("success") is True
+        assert "session_token" in data
+        assert "refresh_token" in data
+        assert "host" in data
+        assert data["host"]["email"] == sample_host_data["email"]
     
-    async def test_login_host_invalid_credentials(self, client: AsyncClient, sample_host_data: dict):
+    async def test_login_host_invalid_credentials(self, async_client: AsyncClient, sample_host_data: dict):
         """Test login with invalid credentials."""
         # Arrange - register host first
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         
         login_data = {
             "email": sample_host_data["email"],
@@ -136,13 +164,13 @@ class TestHostEndpoints:
         }
         
         # Act
-        response = await client.post("/api/v1/hosts/login", json=login_data)
+        response = await async_client.post("/api/v1/hosts/login", json=login_data)
         
         # Assert
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
-        assert "Incorrect email or password" in response.json()["detail"]
+        assert "Invalid email or password" in response.json()["detail"]
     
-    async def test_login_nonexistent_host(self, client: AsyncClient):
+    async def test_login_nonexistent_host(self, async_client: AsyncClient):
         """Test login with non-existent email."""
         login_data = {
             "email": "nonexistent@example.com",
@@ -150,24 +178,24 @@ class TestHostEndpoints:
         }
         
         # Act
-        response = await client.post("/api/v1/hosts/login", json=login_data)
+        response = await async_client.post("/api/v1/hosts/login", json=login_data)
         
         # Assert
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
     
-    async def test_get_current_host_profile(self, client: AsyncClient, sample_host_data: dict):
+    async def test_get_current_host_profile(self, async_client: AsyncClient, sample_host_data: dict):
         """Test getting current host profile."""
         # Arrange - register and login
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         # Act
-        response = await client.get("/api/v1/hosts/me", headers=headers)
+        response = await async_client.get("/api/v1/hosts/me", headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -176,24 +204,24 @@ class TestHostEndpoints:
         assert data["first_name"] == sample_host_data["first_name"]
         assert data["city"] == "Lovran"
     
-    async def test_get_current_host_unauthorized(self, client: AsyncClient):
+    async def test_get_current_host_unauthorized(self, async_client: AsyncClient):
         """Test getting current host without authentication."""
         # Act
-        response = await client.get("/api/v1/hosts/me")
+        response = await async_client.get("/api/v1/hosts/me")
         
         # Assert
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
     
-    async def test_update_current_host(self, client: AsyncClient, sample_host_data: dict):
+    async def test_update_current_host(self, async_client: AsyncClient, sample_host_data: dict):
         """Test updating current host profile."""
         # Arrange - register and login
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         update_data = {
             "first_name": "Updated Marko",
@@ -202,7 +230,7 @@ class TestHostEndpoints:
         }
         
         # Act
-        response = await client.put("/api/v1/hosts/me", json=update_data, headers=headers)
+        response = await async_client.put("/api/v1/hosts/me", json=update_data, headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -212,38 +240,38 @@ class TestHostEndpoints:
         assert data["max_group_size"] == 8
         assert data["last_name"] == sample_host_data["last_name"]  # Unchanged
     
-    async def test_delete_current_host(self, client: AsyncClient, sample_host_data: dict):
+    async def test_delete_current_host(self, async_client: AsyncClient, sample_host_data: dict):
         """Test deleting current host account."""
         # Arrange - register and login
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         # Act
-        response = await client.delete("/api/v1/hosts/me", headers=headers)
+        response = await async_client.delete("/api/v1/hosts/me", headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_204_NO_CONTENT
         
         # Verify host can no longer login
-        login_response = await client.post("/api/v1/hosts/login", json={
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
         assert login_response.status_code == status.HTTP_401_UNAUTHORIZED
     
-    async def test_get_host_by_id(self, client: AsyncClient, sample_host_data: dict):
+    async def test_get_host_by_id(self, async_client: AsyncClient, sample_host_data: dict):
         """Test getting host by ID (public endpoint)."""
         # Arrange - register host
-        register_response = await client.post("/api/v1/hosts/register", json=sample_host_data)
+        register_response = await async_client.post("/api/v1/hosts/register", json=sample_host_data)
         host_id = register_response.json()["id"]
         
         # Act
-        response = await client.get(f"/api/v1/hosts/{host_id}")
+        response = await async_client.get(f"/api/v1/hosts/{host_id}")
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -252,25 +280,25 @@ class TestHostEndpoints:
         assert data["email"] == sample_host_data["email"]
         assert data["city"] == "Lovran"
     
-    async def test_get_host_by_invalid_id(self, client: AsyncClient):
+    async def test_get_host_by_invalid_id(self, async_client: AsyncClient):
         """Test getting host with invalid ID."""
         # Act
-        response = await client.get(f"/api/v1/hosts/{uuid.uuid4()}")
+        response = await async_client.get(f"/api/v1/hosts/{uuid.uuid4()}")
         
         # Assert
         assert response.status_code == status.HTTP_404_NOT_FOUND
     
-    async def test_list_hosts(self, client: AsyncClient, sample_host_data: dict):
+    async def test_list_hosts(self, async_client: AsyncClient, sample_host_data: dict):
         """Test listing hosts."""
         # Arrange - create multiple hosts
         for i in range(3):
             host_data = sample_host_data.copy()
             host_data["email"] = f"host{i}@example.com"
             host_data["first_name"] = f"Host{i}"
-            await client.post("/api/v1/hosts/register", json=host_data)
+            await async_client.post("/api/v1/hosts/register", json=host_data)
         
         # Act
-        response = await client.get("/api/v1/hosts/")
+        response = await async_client.get("/api/v1/hosts/")
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -278,37 +306,37 @@ class TestHostEndpoints:
         assert len(data) == 3
         assert all(host["is_active"] for host in data)
     
-    async def test_list_hosts_with_pagination(self, client: AsyncClient, sample_host_data: dict):
+    async def test_list_hosts_with_pagination(self, async_client: AsyncClient, sample_host_data: dict):
         """Test listing hosts with pagination."""
         # Arrange - create multiple hosts
         for i in range(5):
             host_data = sample_host_data.copy()
             host_data["email"] = f"host{i}@example.com"
-            await client.post("/api/v1/hosts/register", json=host_data)
+            await async_client.post("/api/v1/hosts/register", json=host_data)
         
         # Act
-        response = await client.get("/api/v1/hosts/?skip=1&limit=2")
+        response = await async_client.get("/api/v1/hosts/?skip=1&limit=2")
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert len(data) == 2
     
-    async def test_search_hosts_by_city(self, client: AsyncClient, sample_host_data: dict):
+    async def test_search_hosts_by_city(self, async_client: AsyncClient, sample_host_data: dict):
         """Test searching hosts by city."""
         # Arrange - create hosts in different cities
         lovran_host = sample_host_data.copy()
         lovran_host["email"] = "lovran@example.com"
         lovran_host["city"] = "Lovran"
-        await client.post("/api/v1/hosts/register", json=lovran_host)
+        await async_client.post("/api/v1/hosts/register", json=lovran_host)
         
         opatija_host = sample_host_data.copy()
         opatija_host["email"] = "opatija@example.com"
         opatija_host["city"] = "Opatija"
-        await client.post("/api/v1/hosts/register", json=opatija_host)
+        await async_client.post("/api/v1/hosts/register", json=opatija_host)
         
         # Act
-        response = await client.get("/api/v1/hosts/?city=Lovran")
+        response = await async_client.get("/api/v1/hosts/?city=Lovran")
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -316,19 +344,19 @@ class TestHostEndpoints:
         assert len(data) == 1
         assert data[0]["city"] == "Lovran"
     
-    async def test_create_host_profile(self, client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
+    async def test_create_host_profile(self, async_client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
         """Test creating host profile."""
         # Arrange - register and login
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         # Act
-        response = await client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
+        response = await async_client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_201_CREATED
@@ -338,41 +366,41 @@ class TestHostEndpoints:
         assert "wifi" in data["services_offered"]
         assert "kitchen" in data["amenities"]
     
-    async def test_create_duplicate_host_profile(self, client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
+    async def test_create_duplicate_host_profile(self, async_client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
         """Test creating duplicate host profile fails."""
         # Arrange - register, login, and create profile
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         # Create first profile
-        await client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
+        await async_client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
         
         # Act - try to create another profile
-        response = await client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
+        response = await async_client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_400_BAD_REQUEST
     
-    async def test_get_host_profile(self, client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
+    async def test_get_host_profile(self, async_client: AsyncClient, sample_host_data: dict, sample_profile_data: dict):
         """Test getting host profile."""
         # Arrange - register, login, and create profile
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
-        await client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
+        await async_client.post("/api/v1/hosts/me/profile", json=sample_profile_data, headers=headers)
         
         # Act
-        response = await client.get("/api/v1/hosts/me/profile", headers=headers)
+        response = await async_client.get("/api/v1/hosts/me/profile", headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_200_OK
@@ -380,29 +408,29 @@ class TestHostEndpoints:
         assert data["property_type"] == "apartment"
         assert data["number_of_rooms"] == 2
     
-    async def test_get_nonexistent_host_profile(self, client: AsyncClient, sample_host_data: dict):
+    async def test_get_nonexistent_host_profile(self, async_client: AsyncClient, sample_host_data: dict):
         """Test getting non-existent host profile."""
         # Arrange - register and login (but don't create profile)
-        await client.post("/api/v1/hosts/register", json=sample_host_data)
-        login_response = await client.post("/api/v1/hosts/login", json={
+        await async_client.post("/api/v1/hosts/register", json=sample_host_data)
+        login_response = await async_client.post("/api/v1/hosts/login", json={
             "email": sample_host_data["email"],
             "password": sample_host_data["password"]
         })
-        token = login_response.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        token = login_response.json()["session_token"]
+        headers = {"X-Session-Token": token}
         
         # Act
-        response = await client.get("/api/v1/hosts/me/profile", headers=headers)
+        response = await async_client.get("/api/v1/hosts/me/profile", headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_404_NOT_FOUND
     
-    async def test_invalid_token(self, client: AsyncClient):
+    async def test_invalid_token(self, async_client: AsyncClient):
         """Test API calls with invalid token."""
-        headers = {"Authorization": "Bearer invalid_token"}
+        headers = {"X-Session-Token": "invalid-session-token-not-issued"}
         
         # Act
-        response = await client.get("/api/v1/hosts/me", headers=headers)
+        response = await async_client.get("/api/v1/hosts/me", headers=headers)
         
         # Assert
         assert response.status_code == status.HTTP_401_UNAUTHORIZED 

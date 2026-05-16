@@ -51,6 +51,42 @@ def test_maintenance_webhook_hmac_verify():
     assert hmac.compare_digest(sig, expected)
 
 
+def test_adaptation_analyze_result_after_direction_optional():
+    m = adaptation_svc.AdaptationAnalyzeResultModel(
+        vision_summary="Kitchen refresh",
+        after_direction_text="Warmer oak tones and under-cabinet LED.",
+        bom_lines=[],
+    )
+    d = m.model_dump()
+    assert d["after_direction_text"].startswith("Warmer")
+
+
+def test_adaptation_analyze_result_defaults_after_direction_empty():
+    m = adaptation_svc.AdaptationAnalyzeResultModel(vision_summary="x", bom_lines=[])
+    assert m.after_direction_text == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_image_bytes_for_adaptation_vision_filters_urls():
+    assert await adaptation_svc.fetch_image_bytes_for_adaptation_vision([]) == []
+    assert await adaptation_svc.fetch_image_bytes_for_adaptation_vision(
+        ["file:///etc/passwd", "ftp://example.com/x", ""]
+    ) == []
+
+
+def test_gemini_structured_payload_with_images():
+    from app.services.ai_service_fallback import AIServiceWithFallback
+
+    pl = AIServiceWithFallback._gemini_structured_content_payload(
+        "prompt",
+        [("image/png", b"\x89PNG\r\n\x1a\n"), ("image/jpeg", b"\xff\xd8\xff")],
+    )
+    assert isinstance(pl, list)
+    assert pl[0] == "prompt"
+    assert pl[1]["mime_type"] == "image/png"
+    assert pl[2]["mime_type"] == "image/jpeg"
+
+
 def test_partner_rank_schema():
     from app.services.maintenance_ai_service import PartnerRankResult, PartnerRankLine
 

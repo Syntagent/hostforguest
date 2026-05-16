@@ -18,7 +18,6 @@ For server setup and GitHub distribution steps, see [DEPLOYMENT.md](DEPLOYMENT.m
 - API: FastAPI on `127.0.0.1:8000`
 - UI: Next.js on `127.0.0.1:3055`
 - Database: PostgreSQL/PostGIS with pgvector
-- Optional graph store: Neo4j
 - AI providers: OpenAI and Google Gemini through environment or per-host settings
 - Real-time source updates: local scraping and Crawl4AI-oriented services, not an external project-management knowledge base
 
@@ -29,7 +28,7 @@ Use host-based development. Do not run the Docker `api` or `frontend` services f
 ```bash
 npm install
 npm install --prefix frontend
-docker compose up -d postgres neo4j
+docker compose up -d postgres
 npm run dev
 ```
 
@@ -60,9 +59,6 @@ POSTGRES_PORT=5434
 POSTGRES_USER=tourist_guide_user
 POSTGRES_PASSWORD=
 POSTGRES_DB=tourist_guide_db
-NEO4J_URI=bolt://localhost:7688
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=tourist_guide_neo4j
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
@@ -79,6 +75,16 @@ python -m pytest
 python -m compileall -q app
 docker compose config --quiet
 ```
+
+## SQL migrations (incremental)
+
+Incremental DDL is in `migrations/`; order is listed in `migrations/MIGRATION_ORDER.txt`. With Postgres reachable (e.g. Docker on `localhost:5434`) and `psql` on your PATH:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/apply_migrations.ps1
+```
+
+Use `-DryRun` to list files only. Set `POSTGRES_PASSWORD` in the environment if required.
 
 Support app:
 

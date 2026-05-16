@@ -1,6 +1,6 @@
 # Deployment
 
-This repo contains a FastAPI API, a Next.js frontend, PostgreSQL/PostGIS with pgvector, and Neo4j.
+This repo contains a FastAPI API, a Next.js frontend, and PostgreSQL/PostGIS with pgvector.
 
 ## Repository Safety
 
@@ -24,7 +24,6 @@ DEBUG=false
 SECRET_KEY=<random-strong-secret>
 POSTGRES_PASSWORD=<random-strong-password>
 POSTGRES_HOST_AUTH_METHOD=md5
-NEO4J_PASSWORD=<random-strong-password>
 NEXT_PUBLIC_API_URL=https://<api-domain>
 CORS_ORIGINS=https://<frontend-domain>
 GOOGLE_MAPS_API_KEY=
@@ -46,7 +45,7 @@ Follow `AGENTS.md`: run API and UI on the host, not in Docker.
 ```bash
 npm install
 npm install --prefix frontend
-docker compose up -d postgres neo4j
+docker compose up -d postgres
 npm run dev
 ```
 

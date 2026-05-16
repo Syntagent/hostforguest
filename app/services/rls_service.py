@@ -1,6 +1,10 @@
 """
 Row-Level Security (RLS) service for PostgreSQL.
 
+**Status:** Not wired into ``get_db`` or request lifecycle; no RLS policies in
+``migrations/*.sql`` yet. Reserved for a future Postgres defense-in-depth layer.
+See ``docs/TENANT_ISOLATION_AUDIT.md`` and ``docs/TENANT_ISOLATION_CONTRACT.md``.
+
 Manages RLS policies and sets tenant context
 for database queries.
 """

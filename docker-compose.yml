@@ -1,7 +1,7 @@
 # Databases start by default. Containerized API + Next do NOT — use local `npm run dev` instead.
 #
 # Typical coding workflow:
-#   docker compose up -d              → Postgres + Neo4j only (ports 5434, 7688)
+#   docker compose up -d              → Postgres only (port 5434)
 #   npm run dev                       → FastAPI + Next on host (8000 + 3055)
 #
 # Full stack in Docker (CI / parity only):
@@ -28,9 +28,6 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
       POSTGRES_DB: tourist_guide_db
       POSTGRES_PORT: "5432"
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-tourist_guide_neo4j}"
       BOOKING_COM_MOCK: "${BOOKING_COM_MOCK:-true}"
       SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-here-change-in-production}"
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3001,http://127.0.0.1:3001}"
@@ -119,42 +116,8 @@ services:
       retries: 5
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5.15-community
-    container_name: tourist_guide_neo4j
-    environment:
-      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:-tourist_guide_neo4j}"
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_apoc_export_file_enabled: true
-      NEO4J_apoc_import_file_enabled: true
-      NEO4J_apoc_import_file_use__neo4j__config: true
-      NEO4J_ACCEPT_LICENSE_AGREEMENT: yes
-    ports:
-      - "7475:7474"
-      - "7688:7687"
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-      - neo4j_import:/var/lib/neo4j/import
-      - neo4j_plugins:/plugins
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-tourist_guide_neo4j}", "RETURN 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 40s
-    restart: unless-stopped
-
 volumes:
   postgres_data:
-    driver: local
-  neo4j_data:
-    driver: local
-  neo4j_logs:
-    driver: local
-  neo4j_import:
-    driver: local
-  neo4j_plugins:
     driver: local
 
 networks:

@@ -421,6 +421,38 @@ export interface GuestPreferenceRecord extends GuestPreference {
   updated_at: string;
 }
 
+/** Host profile JSON: surfaced as `recommendations.attractions` in guest host-offerings. */
+export interface HostFavoriteLocalSpot {
+  name?: string;
+  type?: string;
+  description?: string;
+  distance_km?: number;
+  local_tip?: string;
+  best_time?: string;
+  difficulty?: string;
+  specialty?: string;
+  price_range?: string;
+  facilities?: string;
+}
+
+/** Stored as JSON on host profile; shape may vary — UI tolerates strings or objects. */
+export type GuestTestimonialEntry =
+  | string
+  | {
+      quote?: string;
+      text?: string;
+      message?: string;
+      body?: string;
+      review?: string;
+      content?: string;
+      author?: string;
+      name?: string;
+      guest_name?: string;
+      from?: string;
+      by?: string;
+      rating?: number;
+    };
+
 /** Host offerings for guests (guest-group access code). */
 export interface GuestHostOfferingsPayload {
   /** Where guests actually stay (property), vs host business profile city. */
@@ -449,7 +481,7 @@ export interface GuestHostOfferingsPayload {
     verified_location?: boolean;
   };
   recommendations: {
-    attractions: unknown[];
+    attractions: HostFavoriteLocalSpot[];
     expertise_areas: string[];
     local_tips: string[];
   };
@@ -473,7 +505,7 @@ export interface GuestHostOfferingsPayload {
   profile_extras?: {
     property_name?: string | null;
     location_story?: string | null;
-    guest_testimonials?: string[];
+    guest_testimonials?: GuestTestimonialEntry[];
   };
 }
 
@@ -602,6 +634,20 @@ export interface Attraction {
   phone_number?: string;
 }
 
+/** Approved guest reviews from GET /attractions/{id}/reviews (public). */
+export interface AttractionGuestReview {
+  id: string;
+  rating: number;
+  title?: string | null;
+  review_text?: string | null;
+  visit_date?: string | null;
+  pros?: string[];
+  cons?: string[];
+  tips_for_others?: string | null;
+  response_from_host?: string | null;
+  created_at: string;
+}
+
 export interface Recommendation {
   id: string;
   guest_group_id: string;
@@ -611,6 +657,8 @@ export interface Recommendation {
   personalization_factors: string[];
   created_at: string;
   attraction?: Attraction;
+  /** Present when the backend row has guest thumbs (1 or 5). */
+  feedback_rating?: number | null;
 }
 
 /** Host / guest itinerary row from API */
@@ -991,6 +1039,17 @@ export const attractionsApi = {
       sources_used: number;
       personalization_level: string;
     }>('/api/v1/attractions/generate-content', attractionData),
+
+  /** Public list of approved reviews for guest detail UI (no auth). */
+  getGuestReviews: (attractionId: string, opts?: { skip?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.skip != null) q.set("skip", String(opts.skip));
+    if (opts?.limit != null) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return apiClient.get<AttractionGuestReview[]>(
+      `/api/v1/attractions/${encodeURIComponent(attractionId)}/reviews${qs ? `?${qs}` : ""}`
+    );
+  },
 };
 
 
@@ -1003,6 +1062,58 @@ type RecommendationBatchDTO = {
   guest_group_id?: string;
 };
 
+/** Raw guest recommendation row from API (enriched or legacy). */
+type GuestRecommendationRaw = Recommendation & {
+  relevance_score?: number;
+  why_recommended?: string | null;
+  title?: string;
+};
+
+function normalizeGuestRecommendation(
+  raw: GuestRecommendationRaw,
+  guestGroupId?: string
+): Recommendation {
+  const score =
+    typeof raw.score === "number"
+      ? raw.score
+      : typeof raw.relevance_score === "number"
+        ? raw.relevance_score
+        : 0;
+  const reason =
+    (raw.reason && String(raw.reason).trim()) ||
+    (raw.why_recommended && String(raw.why_recommended).trim()) ||
+    (raw as { description?: string }).description?.trim() ||
+    "";
+  let attraction = raw.attraction;
+  if (!attraction && raw.attraction_id) {
+    const title = raw.title?.trim();
+    attraction = {
+      id: String(raw.attraction_id),
+      name: title || "Place",
+      description: (raw as { description?: string }).description?.trim() || "",
+      category: "experience",
+      location: "",
+      opening_hours: {},
+      cost_estimate: "",
+      authenticity_level: "local",
+      seasonal_info: {},
+    };
+  }
+  return {
+    id: String(raw.id),
+    guest_group_id: String(raw.guest_group_id || guestGroupId || ""),
+    attraction_id: String(raw.attraction_id || attraction?.id || ""),
+    score,
+    reason: reason || "Recommended for your stay.",
+    personalization_factors: Array.isArray(raw.personalization_factors)
+      ? raw.personalization_factors.map(String)
+      : [],
+    created_at: raw.created_at,
+    attraction,
+    feedback_rating: raw.feedback_rating ?? null,
+  };
+}
+
 export const recommendationsApi = {
   getForGroup: async (accessCode: string) => {
     const res = await apiClient.post<Recommendation[] | RecommendationBatchDTO>(
@@ -1013,15 +1124,29 @@ export const recommendationsApi = {
       return res as ApiResponse<Recommendation[]>;
     }
     const d = res.data;
-    if (Array.isArray(d)) {
-      return { ...res, data: d };
-    }
-    const batch = d as RecommendationBatchDTO;
-    return { ...res, data: batch.recommendations ?? [] };
+    const guestGroupId =
+      !Array.isArray(d) && typeof d === "object" && d.guest_group_id
+        ? String(d.guest_group_id)
+        : undefined;
+    const list = Array.isArray(d) ? d : (d as RecommendationBatchDTO).recommendations ?? [];
+    const normalized = list.map((r) =>
+      normalizeGuestRecommendation(r as GuestRecommendationRaw, guestGroupId)
+    );
+    return { ...res, data: normalized };
   },
 
-  getHistory: (accessCode: string) =>
-    apiClient.get<Recommendation[]>(`/api/v1/recommendations/guest/${accessCode}/history`),
+  getHistory: async (accessCode: string) => {
+    const res = await apiClient.get<GuestRecommendationRaw[]>(
+      `/api/v1/recommendations/guest/${accessCode}/history`
+    );
+    if (!res.success || res.data == null) {
+      return res as ApiResponse<Recommendation[]>;
+    }
+    return {
+      ...res,
+      data: res.data.map((r) => normalizeGuestRecommendation(r)),
+    };
+  },
 
   provideFeedback: (accessCode: string, feedback: {
     recommendation_id: string;

@@ -30,6 +30,9 @@ from app.models.recommendation import (
     RecommendationFeedback,
     RecommendationSetFeedback,
     RecommendationBatch,
+    GuestRecommendationBatch,
+    GuestRecommendationItem,
+    GuestAttractionSummary,
     RecommendationFeedbackCreate,
     RecommendationFeedbackResponse,
     RecommendationAnalytics,
@@ -43,7 +46,6 @@ from app.models.host import Host
 from app.models.content_source import ContentUpdate
 from app.services.vector_service import VectorService
 from app.services.ai_service import AIService
-from app.services.graph_service import GraphService
 from app.services.recommendation_scoring import RecommendationScoring
 from app.services.recommendation_candidates import RecommendationCandidates
 from app.services.recommendation_builders import RecommendationBuilders
@@ -70,8 +72,7 @@ class RecommendationService:
         self.db = db
         self.ai_service = ai_service or AIService()
         self.vector_service = VectorService(db, self.ai_service)
-        self.graph_service = GraphService()
-        self.candidates_service = RecommendationCandidates(db, self.vector_service, self.graph_service)
+        self.candidates_service = RecommendationCandidates(db, self.vector_service)
         self.builders_service = RecommendationBuilders(db)
     
     # Core Recommendation Generation
@@ -749,6 +750,152 @@ class RecommendationService:
         except Exception as e:
             logger.error("get_recommendation_history failed: %s", e)
             return []
+
+    @staticmethod
+    def _personalization_factor_strings(raw: Any) -> List[str]:
+        """Flatten batch personalization_factors into short guest-facing chips."""
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if str(x).strip()]
+        if isinstance(raw, dict):
+            out: List[str] = []
+            for key, val in raw.items():
+                if isinstance(val, list):
+                    out.extend(str(x).strip() for x in val if str(x).strip())
+                elif val is not None and str(val).strip():
+                    label = str(key).replace("_", " ").strip()
+                    out.append(f"{label}: {val}" if label else str(val))
+            return out
+        return [str(raw).strip()] if str(raw).strip() else []
+
+    @staticmethod
+    def _attraction_to_guest_summary(attraction: Attraction) -> GuestAttractionSummary:
+        tags = list(attraction.category_tags or [])
+        category = (tags[0] if tags else None) or attraction.attraction_type or "experience"
+        parts = [p for p in (attraction.address, attraction.city, attraction.region) if p]
+        location = ", ".join(parts) if parts else (attraction.city or "")
+        coords: Optional[List[float]] = None
+        if attraction.latitude is not None and attraction.longitude is not None:
+            coords = [float(attraction.latitude), float(attraction.longitude)]
+        opening = attraction.opening_hours if isinstance(attraction.opening_hours, dict) else {}
+        gallery = list(attraction.image_gallery or []) if isinstance(attraction.image_gallery, list) else []
+        return GuestAttractionSummary(
+            id=attraction.id,
+            name=attraction.name,
+            description=(attraction.description or attraction.short_description or "").strip(),
+            category=str(category),
+            location=location,
+            coordinates=coords,
+            opening_hours=opening,
+            cost_estimate=(attraction.admission_fee or "").strip(),
+            authenticity_level="local",
+            seasonal_info={},
+            attraction_type=attraction.attraction_type,
+            city=attraction.city,
+            address=attraction.address,
+            region=attraction.region,
+            latitude=attraction.latitude,
+            longitude=attraction.longitude,
+            featured_image_url=attraction.featured_image_url,
+            image_gallery=gallery,
+            best_months=list(attraction.best_months or []),
+            average_rating=attraction.guest_rating,
+            review_count=int(attraction.total_ratings or 0),
+            host_personal_tip=attraction.host_personal_tip,
+            host_favorite_time=attraction.host_favorite_time,
+            host_insider_info=attraction.host_insider_info,
+            host_recommended_duration=attraction.host_recommended_duration,
+            admission_fee=attraction.admission_fee,
+            seasonal_availability=attraction.seasonal_availability,
+            seasonal_notes=attraction.seasonal_notes,
+        )
+
+    async def _load_attractions_by_ids(
+        self, attraction_ids: List[uuid.UUID]
+    ) -> Dict[uuid.UUID, Attraction]:
+        if not attraction_ids:
+            return {}
+        stmt = select(Attraction).where(Attraction.id.in_(attraction_ids))
+        result = await self.db.execute(stmt)
+        return {a.id: a for a in result.scalars().all()}
+
+    def _build_guest_item(
+        self,
+        rec: RecommendationResponse,
+        guest_group_id: uuid.UUID,
+        attraction: Optional[Attraction],
+        factor_strings: List[str],
+    ) -> GuestRecommendationItem:
+        reason = (rec.why_recommended or rec.description or rec.title or "").strip()
+        if not reason:
+            reason = "Recommended for your stay."
+        summary = self._attraction_to_guest_summary(attraction) if attraction else None
+        return GuestRecommendationItem(
+            id=rec.id,
+            guest_group_id=guest_group_id,
+            attraction_id=rec.attraction_id,
+            score=float(rec.relevance_score),
+            reason=reason,
+            personalization_factors=factor_strings,
+            created_at=rec.created_at,
+            feedback_rating=rec.feedback_rating,
+            attraction=summary,
+            title=rec.title,
+            description=rec.description,
+            why_recommended=rec.why_recommended,
+            relevance_score=rec.relevance_score,
+            host_insight=rec.host_insight,
+            host_tip=rec.host_tip,
+        )
+
+    async def enrich_batch_for_guest(
+        self,
+        batch: RecommendationBatch,
+        guest_group_id: uuid.UUID,
+    ) -> GuestRecommendationBatch:
+        """Attach attraction cards and guest UI aliases to a recommendation batch."""
+        recs = list(batch.recommendations or [])
+        ids = [r.attraction_id for r in recs if r.attraction_id]
+        by_id = await self._load_attractions_by_ids(ids)
+        factors = self._personalization_factor_strings(batch.personalization_factors)
+        items = [
+            self._build_guest_item(
+                r,
+                guest_group_id,
+                by_id.get(r.attraction_id) if r.attraction_id else None,
+                factors,
+            )
+            for r in recs
+        ]
+        return GuestRecommendationBatch(
+            recommendations=items,
+            total_count=batch.total_count,
+            generated_at=batch.generated_at,
+            guest_group_id=batch.guest_group_id or guest_group_id,
+            request_context=batch.request_context or {},
+            personalization_factors=batch.personalization_factors or {},
+        )
+
+    async def enrich_list_for_guest(
+        self,
+        recs: List[RecommendationResponse],
+        guest_group_id: uuid.UUID,
+        personalization_factors: Optional[Dict[str, Any]] = None,
+    ) -> List[GuestRecommendationItem]:
+        """Enrich history rows with embedded attractions for guest UI."""
+        ids = [r.attraction_id for r in recs if r.attraction_id]
+        by_id = await self._load_attractions_by_ids(ids)
+        factors = self._personalization_factor_strings(personalization_factors or {})
+        return [
+            self._build_guest_item(
+                r,
+                guest_group_id,
+                by_id.get(r.attraction_id) if r.attraction_id else None,
+                factors,
+            )
+            for r in recs
+        ]
 
     async def submit_feedback(
         self,

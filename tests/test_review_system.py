@@ -14,6 +14,8 @@ from app.models import (
     ReviewModerationRequest, GuestReviewSubmission
 )
 
+pytestmark = pytest.mark.asyncio
+
 
 class TestReviewSystem:
     """Test suite for the enhanced review system."""
@@ -40,14 +42,20 @@ class TestReviewSystem:
     @pytest.fixture
     async def sample_guest_group(self, async_client: AsyncClient, host_token_headers):
         """Create a sample guest group for testing."""
+        start = datetime.utcnow() + timedelta(days=1)
+        end = start + timedelta(days=4)
         guest_group_data = {
             "group_name": "Test Review Group",
             "group_size": 4,
+            "check_in_date": start.isoformat(),
+            "check_out_date": end.isoformat(),
+            "lead_guest_name": "John Smith",
+            "lead_guest_email": "john@example.com",
             "preferred_language": "en",
             "interests": ["culture", "history"],
-            "budget_level": "moderate"
+            "budget_level": "moderate",
         }
-        
+
         response = await async_client.post(
             "/api/v1/guest-groups/",
             json=guest_group_data,
@@ -57,20 +65,11 @@ class TestReviewSystem:
         return response.json()
 
     @pytest.fixture
-    async def sample_access_code(self, async_client: AsyncClient, host_token_headers, sample_guest_group):
-        """Create an access code for guest group."""
-        access_code_data = {
-            "guest_group_id": sample_guest_group["id"],
-            "expires_in_hours": 168
-        }
-        
-        response = await async_client.post(
-            "/api/v1/guest-groups/access-codes/",
-            json=access_code_data,
-            headers=host_token_headers
-        )
-        assert response.status_code == 201
-        return response.json()["code"]
+    async def sample_access_code(self, sample_guest_group):
+        """Access code returned when the guest group is created."""
+        code = sample_guest_group.get("access_code")
+        assert code, "guest group response should include access_code"
+        return code
 
     async def test_guest_review_submission_with_access_code(
         self, async_client: AsyncClient, sample_attraction, sample_access_code
@@ -98,7 +97,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         
         assert response.status_code == 201
@@ -127,7 +126,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         
         assert response.status_code == 401
@@ -153,7 +152,7 @@ class TestReviewSystem:
         
         await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         
         # Get reviews for moderation
@@ -187,7 +186,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -201,7 +200,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump(),
+            json=moderation_request.model_dump(mode="json"),
             headers=host_token_headers
         )
         
@@ -231,7 +230,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -244,7 +243,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump(),
+            json=moderation_request.model_dump(mode="json"),
             headers=host_token_headers
         )
         
@@ -275,7 +274,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -288,7 +287,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump(),
+            json=moderation_request.model_dump(mode="json"),
             headers=host_token_headers
         )
         
@@ -317,7 +316,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -329,7 +328,7 @@ class TestReviewSystem:
         
         await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump(),
+            json=moderation_request.model_dump(mode="json"),
             headers=host_token_headers
         )
         
@@ -366,7 +365,7 @@ class TestReviewSystem:
             
             review_response = await async_client.post(
                 "/api/v1/attractions/reviews/submit",
-                json=submission.model_dump()
+                json=submission.model_dump(mode="json")
             )
             review_id = review_response.json()["id"]
             
@@ -379,7 +378,7 @@ class TestReviewSystem:
                 
                 await async_client.post(
                     f"/api/v1/attractions/reviews/{review_id}/moderate",
-                    json=moderation_request.model_dump(),
+                    json=moderation_request.model_dump(mode="json"),
                     headers=host_token_headers
                 )
         
@@ -417,7 +416,7 @@ class TestReviewSystem:
         
         await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         
         # Get host stats
@@ -461,7 +460,7 @@ class TestReviewSystem:
             
             review_response = await async_client.post(
                 "/api/v1/attractions/reviews/submit",
-                json=submission.model_dump()
+                json=submission.model_dump(mode="json")
             )
             review_id = review_response.json()["id"]
             
@@ -473,7 +472,7 @@ class TestReviewSystem:
             
             await async_client.post(
                 f"/api/v1/attractions/reviews/{review_id}/moderate",
-                json=moderation_request.model_dump(),
+                json=moderation_request.model_dump(mode="json"),
                 headers=host_token_headers
             )
             
@@ -485,7 +484,7 @@ class TestReviewSystem:
                 
                 await async_client.post(
                     f"/api/v1/attractions/reviews/{review_id}/moderate",
-                    json=verify_request.model_dump(),
+                    json=verify_request.model_dump(mode="json"),
                     headers=host_token_headers
                 )
         
@@ -537,7 +536,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -549,7 +548,7 @@ class TestReviewSystem:
         
         await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump(),
+            json=moderation_request.model_dump(mode="json"),
             headers=host_token_headers
         )
         
@@ -589,7 +588,7 @@ class TestReviewSystem:
         
         review_response = await async_client.post(
             "/api/v1/attractions/reviews/submit",
-            json=submission.model_dump()
+            json=submission.model_dump(mode="json")
         )
         review_id = review_response.json()["id"]
         
@@ -601,7 +600,7 @@ class TestReviewSystem:
         
         response = await async_client.post(
             f"/api/v1/attractions/reviews/{review_id}/moderate",
-            json=moderation_request.model_dump()
+            json=moderation_request.model_dump(mode="json")
             # No headers = no authentication
         )
         

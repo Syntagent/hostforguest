@@ -261,6 +261,9 @@ class TestGuestInterface:
         assert "stay_info" in ho
         assert ho["stay_info"]["city"] == ho["location_info"]["city"] == "Lovran"
         assert "Test" in ho["host_info"]["name"] or "Host" in ho["host_info"]["name"]
+        assert isinstance(ho.get("recommendations", {}).get("attractions", []), list)
+        pex = ho.get("profile_extras") or {}
+        assert isinstance(pex.get("guest_testimonials", []), list)
 
     async def test_guest_host_message_by_access_code(
         self,
@@ -320,6 +323,97 @@ class TestGuestInterface:
         assert "recommendations" in body
         assert "total_count" in body
         assert isinstance(body["recommendations"], list)
+        for item in body["recommendations"]:
+            assert "score" in item
+            assert "reason" in item
+            if item.get("attraction_id") and item.get("attraction"):
+                assert item["attraction"].get("name")
+
+    async def test_guest_recommendations_history_embeds_attraction(
+        self,
+        async_client: AsyncClient,
+        async_db_session: AsyncSession,
+        test_guest_group: GuestGroup,
+        test_host: Host,
+    ):
+        """GET history returns guest UI shape with embedded attraction cards."""
+        import uuid
+        from datetime import datetime
+        from sqlalchemy import select
+
+        from app.models.attraction import Attraction, AttractionStatus
+        from app.models.recommendation import (
+            Recommendation,
+            RecommendationRequest,
+            RecommendationType,
+            RecommendationPriority,
+        )
+        from app.services.recommendation_service import RecommendationService
+        from app.services.ai_service import AIService
+
+        attraction = Attraction(
+            id=uuid.uuid4(),
+            name="Lovran Lungomare",
+            description="Seaside walk with views.",
+            created_by_host_id=test_host.id,
+            city="Lovran",
+            attraction_type="natural",
+            category_tags=["nature", "outdoor"],
+            latitude=45.162,
+            longitude=14.274,
+            featured_image_url="https://example.com/lungomare.jpg",
+            status=AttractionStatus.APPROVED,
+        )
+        async_db_session.add(attraction)
+
+        req = RecommendationRequest(
+            guest_group_id=test_guest_group.id,
+            host_id=test_host.id,
+            request_type=RecommendationType.ATTRACTION,
+        )
+        async_db_session.add(req)
+        await async_db_session.flush()
+
+        rec = Recommendation(
+            request_id=req.id,
+            attraction_id=attraction.id,
+            title=attraction.name,
+            description=attraction.description,
+            recommendation_type=RecommendationType.ATTRACTION,
+            relevance_score=0.91,
+            priority=RecommendationPriority.HIGH,
+            rank_order=1,
+            why_recommended="Matches your interest in nature.",
+            feedback_rating=5,
+            created_at=datetime.utcnow(),
+        )
+        async_db_session.add(rec)
+        await async_db_session.commit()
+
+        stmt = select(AccessCode).where(AccessCode.guest_group_id == test_guest_group.id)
+        access_code = (await async_db_session.execute(stmt)).scalar_one()
+
+        svc = RecommendationService(async_db_session, AIService())
+        history = await svc.get_recommendation_history(test_guest_group.id, limit=10)
+        enriched = await svc.enrich_list_for_guest(history, test_guest_group.id)
+        assert len(enriched) >= 1
+        row = next(x for x in enriched if x.id == rec.id)
+        assert row.score == pytest.approx(0.91)
+        assert "nature" in row.reason.lower()
+        assert row.attraction is not None
+        assert row.attraction.name == "Lovran Lungomare"
+        assert row.attraction.latitude == pytest.approx(45.162)
+        assert row.feedback_rating == 5
+
+        response = await async_client.get(
+            f"/api/v1/recommendations/guest/{access_code.code}/history",
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert isinstance(payload, list) and len(payload) >= 1
+        api_row = next(x for x in payload if x["id"] == str(rec.id))
+        assert api_row["score"] == pytest.approx(0.91)
+        assert api_row["attraction"]["name"] == "Lovran Lungomare"
 
     async def test_guest_itinerary_get_returns_200_null_when_none(
         self,

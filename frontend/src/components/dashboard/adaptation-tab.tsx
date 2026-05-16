@@ -34,6 +34,16 @@ type ChatMessage =
       disclaimer?: string;
     };
 
+function adaptationSafeImageUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const u = raw.trim();
+  if (!u) return null;
+  if (u.startsWith("https://")) return u;
+  if (u.startsWith("http://127.0.0.1") || u.startsWith("http://localhost")) return u;
+  if (u.startsWith("/")) return u;
+  return null;
+}
+
 function StructuredAssistantDetails({
   turn,
   onPickFollowUp,
@@ -240,9 +250,15 @@ export const AdaptationTab: React.FC = () => {
       return;
     }
     setAnalysisByProject((prev) => ({ ...prev, [pid]: r.data as Record<string, unknown> }));
-    setComposerNotice(
-      String((r.data as { disclaimer?: string })?.disclaimer || "Indicative analysis stored.")
-    );
+    const data = r.data as Record<string, unknown>;
+    let msg = String(data?.disclaimer || "Indicative analysis stored.");
+    if (data?.vision_multimodal === true) {
+      const prov = typeof data.vision_ai_provider === "string" ? data.vision_ai_provider : "";
+      msg += prov
+        ? ` Before photos were sent to the model (${prov} vision).`
+        : " Before photos were sent to the model (vision).";
+    }
+    setComposerNotice(msg);
   };
 
   const loadRoiActive = async () => {
@@ -673,19 +689,69 @@ export const AdaptationTab: React.FC = () => {
                     Structured AI BOM included — still verify with trades (indicative only).
                   </p>
                 )}
+                {analysis.vision_multimodal === true && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Before photos were attached to this analysis run
+                    {typeof analysis.vision_ai_provider === "string" && analysis.vision_ai_provider
+                      ? ` (provider: ${analysis.vision_ai_provider})`
+                      : ""}
+                    .
+                  </p>
+                )}
                 {(() => {
                   const va = analysis.vision_analysis as Record<string, unknown> | undefined;
                   const risks = (va?.risks_and_checks as string[]) || [];
                   const summary = (va?.vision_summary as string) || "";
                   const mood = (va?.mood_board_text as string) || "";
+                  const afterDir = (va?.after_direction_text as string) || "";
+                  const refPhotos = Array.isArray(va?.reference_photo_urls)
+                    ? (va!.reference_photo_urls as unknown[]).map(adaptationSafeImageUrl).filter((x): x is string => Boolean(x))
+                    : [];
                   return (
                     <>
+                      {refPhotos.length > 0 && (
+                        <div>
+                          <div className="font-medium text-[11px] text-muted-foreground mb-1">
+                            Reference photos (before)
+                          </div>
+                          <p className="text-[10px] text-muted-foreground mb-2">
+                            Thumbnails from URLs you saved — not AI-generated “after” images. Indicative only.
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {refPhotos.slice(0, 8).map((src, i) => (
+                              <a
+                                key={`${src}-${i}`}
+                                href={src}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block shrink-0 overflow-hidden rounded-md border border-border bg-muted"
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={src}
+                                  alt=""
+                                  className="h-20 w-28 object-cover"
+                                  loading="lazy"
+                                />
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {summary && (
                         <div>
                           <div className="font-medium text-[11px] text-muted-foreground mb-1">Summary</div>
                           <MarkdownRenderer content={summary} className="text-xs" />
                         </div>
                       )}
+                      {afterDir.trim() ? (
+                        <div>
+                          <div className="font-medium text-[11px] text-muted-foreground mb-1">
+                            After direction (text)
+                          </div>
+                          <MarkdownRenderer content={afterDir.trim()} className="text-xs" />
+                        </div>
+                      ) : null}
                       {mood && (
                         <p className="text-muted-foreground">
                           <span className="font-medium text-foreground">Mood / style:</span> {mood}

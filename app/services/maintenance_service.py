@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.host import Host
@@ -256,6 +256,32 @@ class MaintenanceService:
             for i in created:
                 await self.db.refresh(i)
         return created
+
+    async def run_all_due_schedules_for_all_hosts(self) -> List[MaintenanceIssue]:
+        """
+        Process every host that has at least one active maintenance schedule past due.
+
+        Intended for cron / background workers; delegates to ``run_due_schedules`` per host
+        so schedule bookkeeping stays identical to the host-triggered path.
+        """
+        now = datetime.utcnow()
+        hr = await self.db.execute(
+            select(MaintenanceSchedule.host_id)
+            .where(
+                and_(
+                    MaintenanceSchedule.active == True,  # noqa: E712
+                    MaintenanceSchedule.next_due_at.is_not(None),
+                    MaintenanceSchedule.next_due_at <= now,
+                )
+            )
+            .distinct()
+        )
+        host_ids = [row[0] for row in hr.all()]
+        all_created: List[MaintenanceIssue] = []
+        for hid in host_ids:
+            chunk = await self.run_due_schedules(hid)
+            all_created.extend(chunk)
+        return all_created
 
     async def fetch_partner_candidates(
         self,

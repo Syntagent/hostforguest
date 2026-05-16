@@ -9,9 +9,11 @@
     "dev:api:8010": "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8010",
     "dev:frontend": "npm run dev:3055 --prefix frontend",
     "dev:frontend:3060": "npm run dev:3060 --prefix frontend",
-    "docker:db": "docker compose up -d postgres neo4j",
+    "docker:db": "docker compose up -d postgres",
     "docker:stop-api": "docker compose stop api frontend",
-    "check:ports": "powershell -ExecutionPolicy Bypass -File scripts/check-dev-ports.ps1"
+    "check:ports": "powershell -ExecutionPolicy Bypass -File scripts/check-dev-ports.ps1",
+    "test:ci-smoke": "powershell -ExecutionPolicy Bypass -File scripts/ci-smoke-backend.ps1",
+    "test:ci-smoke:sh": "bash scripts/ci-smoke-backend.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -2,11 +2,11 @@
 Candidate attraction retrieval for recommendation engine.
 
 Handles fetching candidate attractions using vector search,
-graph relationships, and traditional filtering.
+preference overlap on relational attraction fields, and traditional filtering.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime
 import uuid
 
@@ -18,7 +18,6 @@ from app.models.recommendation import RecommendationRequest
 from app.models.guest_group import GuestGroup
 from app.models.host import Host
 from app.services.vector_service import VectorService
-from app.services.graph_service import GraphService
 
 logger = logging.getLogger(__name__)
 
@@ -26,22 +25,21 @@ logger = logging.getLogger(__name__)
 class RecommendationCandidates:
     """
     Candidate attraction retrieval logic.
-    
-    Combines vector search, graph relationships, and traditional filtering.
+
+    Combines vector search, guest-preference overlap against host attractions,
+    and traditional filtering.
     """
-    
-    def __init__(self, db: AsyncSession, vector_service: VectorService, graph_service: GraphService):
+
+    def __init__(self, db: AsyncSession, vector_service: VectorService):
         """
         Initialize candidate retrieval service.
-        
+
         Args:
             db: Database session
             vector_service: Vector service for semantic search
-            graph_service: Graph service for relationship queries
         """
         self.db = db
         self.vector_service = vector_service
-        self.graph_service = graph_service
     
     async def get_candidate_attractions_advanced(
         self,
@@ -50,7 +48,7 @@ class RecommendationCandidates:
         host: Host
     ) -> List[Attraction]:
         """
-        Get candidate attractions using vector search + graph relationships + traditional filtering.
+        Get candidate attractions using vector search, preference overlap, and traditional filtering.
         """
         try:
             candidates = []
@@ -90,27 +88,28 @@ class RecommendationCandidates:
                 except Exception as e:
                     logger.warning(f"Embedding generation failed: {e}")
             
-            # Step 3: Graph-based recommendations
+            # Step 3: Preference overlap (same DB as attractions; replaces legacy graph DB)
             try:
-                if group and hasattr(group, 'id'):
-                    graph_recommendations = await self.graph_service.get_recommendation_path(
-                        guest_group_id=str(group.id),
-                        limit=20
+                if group and hasattr(group, "id"):
+                    overlap_recs = await self._preference_overlap_recommendations(
+                        group.id, host, limit=20
                     )
-                    graph_attraction_ids = [rec.get('id') for rec in graph_recommendations if rec.get('id')]
-                    if graph_attraction_ids:
+                    overlap_ids = [rec.get("id") for rec in overlap_recs if rec.get("id")]
+                    if overlap_ids:
                         stmt = select(Attraction).where(
-                            Attraction.id.in_([uuid.UUID(id) for id in graph_attraction_ids if id])
+                            Attraction.id.in_(
+                                [uuid.UUID(i) for i in overlap_ids if i]
+                            )
                         )
                         result = await self.db.execute(stmt)
-                        graph_candidates = result.scalars().all()
+                        overlap_candidates = result.scalars().all()
                         candidate_ids = {c.id for c in candidates}
-                        for candidate in graph_candidates:
+                        for candidate in overlap_candidates:
                             if candidate.id not in candidate_ids:
                                 candidates.append(candidate)
                                 candidate_ids.add(candidate.id)
             except Exception as e:
-                logger.warning(f"Graph recommendations failed: {e}")
+                logger.warning(f"Preference-overlap recommendations failed: {e}")
             
             # Step 4: Fallback to traditional if needed
             if len(candidates) < 10:
@@ -146,7 +145,108 @@ class RecommendationCandidates:
             logger.error(f"Error getting candidate attractions: {e}")
             await self.db.rollback()
             return await self.get_candidate_attractions_traditional(request, guest_group, host)
-    
+
+    @staticmethod
+    def _collect_preference_keywords(group: GuestGroup) -> Set[str]:
+        """Lowercased tokens from guest JSON preference fields."""
+        out: Set[str] = set()
+        for field in (group.interests, group.preferred_activities, group.interested_regions):
+            if field is None:
+                continue
+            if isinstance(field, dict):
+                items = list(field.values())
+            elif isinstance(field, list):
+                items = field
+            else:
+                continue
+            for x in items:
+                s = str(x).strip().lower()
+                if len(s) >= 2:
+                    out.add(s)
+        return out
+
+    @staticmethod
+    def _keyword_match_score(attraction: Attraction, keywords: Set[str]) -> int:
+        """How many distinct preference tokens match this attraction (type, tags, text)."""
+        tags = {
+            str(t).strip().lower()
+            for t in (attraction.category_tags or [])
+            if str(t).strip()
+        }
+        atype = (attraction.attraction_type or "").lower()
+        blob = " ".join(
+            [
+                atype,
+                (attraction.name or "").lower(),
+                (attraction.description or "").lower(),
+                (attraction.short_description or "").lower(),
+                (attraction.city or "").lower(),
+                (attraction.region or "").lower(),
+                *tags,
+            ]
+        )
+        matched = 0
+        for kw in keywords:
+            if kw in tags or kw == atype:
+                matched += 1
+            elif kw in blob:
+                matched += 1
+        return matched
+
+    async def _preference_overlap_recommendations(
+        self,
+        guest_group_id: uuid.UUID,
+        host: Host,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Attractions for this host ranked by overlap with guest interests / activities / regions.
+
+        Returns dicts shaped like the old graph helper: ``id`` (str) and ``matching_interests`` (int).
+        """
+        stmt = select(GuestGroup).where(
+            GuestGroup.id == guest_group_id,
+            GuestGroup.host_id == host.id,
+        )
+        result = await self.db.execute(stmt)
+        gg = result.scalar_one_or_none()
+        if not gg:
+            return []
+        keywords = self._collect_preference_keywords(gg)
+        if not keywords:
+            return []
+
+        stmt = select(Attraction).where(
+            Attraction.created_by_host_id == host.id,
+            or_(
+                Attraction.status == AttractionStatus.APPROVED,
+                and_(
+                    Attraction.created_by_host_id == host.id,
+                    Attraction.status.in_(
+                        [AttractionStatus.DRAFT, AttractionStatus.PENDING]
+                    ),
+                ),
+            ),
+        )
+        result = await self.db.execute(stmt)
+        rows = list(result.scalars().all())
+        scored: List[Tuple[int, Attraction]] = []
+        for a in rows:
+            score = self._keyword_match_score(a, keywords)
+            if score > 0:
+                scored.append((score, a))
+        scored.sort(
+            key=lambda t: (
+                -t[0],
+                -(t[1].guest_rating or 0.0),
+                t[1].name or "",
+            )
+        )
+        return [
+            {"id": str(a.id), "matching_interests": s}
+            for s, a in scored[:limit]
+        ]
+
     async def get_candidate_attractions_traditional(
         self,
         request: RecommendationRequest,

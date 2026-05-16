@@ -1,12 +1,16 @@
 "use client";
 
-import React, { useEffect } from "react";
+/** Guest detail sheet: aggregates on attraction + approved guest reviews from public API. */
+
+import React, { useEffect, useState } from "react";
 import { X, MapPin, Clock, Ticket, Mountain, Star, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   mapsUrlForAttraction,
   openAttractionInMaps,
+  attractionsApi,
   type Attraction,
+  type AttractionGuestReview,
   type Recommendation,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -34,6 +38,8 @@ export const AttractionDetailSheet: React.FC<AttractionDetailSheetProps> = ({
   recommendation,
 }) => {
   const a: Attraction | undefined = recommendation?.attraction;
+  const [guestReviews, setGuestReviews] = useState<AttractionGuestReview[]>([]);
+  const [guestReviewsLoading, setGuestReviewsLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -43,6 +49,25 @@ export const AttractionDetailSheet: React.FC<AttractionDetailSheetProps> = ({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
+
+  useEffect(() => {
+    if (!open || !a?.id) {
+      setGuestReviews([]);
+      setGuestReviewsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setGuestReviewsLoading(true);
+    void attractionsApi.getGuestReviews(a.id, { limit: 12 }).then((res) => {
+      if (cancelled) return;
+      setGuestReviewsLoading(false);
+      if (res.success && Array.isArray(res.data)) setGuestReviews(res.data);
+      else setGuestReviews([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, a?.id]);
 
   if (!open || !recommendation) return null;
 
@@ -265,6 +290,59 @@ export const AttractionDetailSheet: React.FC<AttractionDetailSheetProps> = ({
                 ) : null}
               </p>
             )}
+
+            {guestReviewsLoading ? (
+              <div className="rounded-xl border border-border bg-muted/30 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Guest reviews
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">Loading…</p>
+              </div>
+            ) : guestReviews.length > 0 ? (
+              <div className="rounded-xl border border-border bg-muted/20 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Guest reviews
+                </p>
+                <ul className="mt-3 space-y-3">
+                  {guestReviews.map((r) => (
+                    <li key={r.id} className="border-b border-border/60 pb-3 last:border-0 last:pb-0">
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400" aria-label={`${r.rating} of 5`}>
+                          <Star className="h-3.5 w-3.5 fill-current" aria-hidden />
+                          {r.rating}/5
+                        </span>
+                        {r.title?.trim() ? (
+                          <span className="font-medium text-foreground">{r.title.trim()}</span>
+                        ) : null}
+                        <span className="text-xs text-muted-foreground">
+                          {r.visit_date
+                            ? new Date(r.visit_date).toLocaleDateString()
+                            : new Date(r.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      {r.review_text?.trim() ? (
+                        <p className="mt-1.5 text-sm text-muted-foreground line-clamp-4">{r.review_text.trim()}</p>
+                      ) : null}
+                      {r.tips_for_others?.trim() ? (
+                        <p className="mt-1 text-xs italic text-muted-foreground">
+                          Tip: {r.tips_for_others.trim()}
+                        </p>
+                      ) : null}
+                      {r.response_from_host?.trim() ? (
+                        <div className="mt-2 rounded-md bg-primary/5 px-2 py-1.5 text-xs text-foreground/90">
+                          <span className="font-medium text-primary">Host reply: </span>
+                          {r.response_from_host.trim()}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : a?.id ? (
+              <p className="text-xs text-muted-foreground">
+                No published guest reviews yet for this place.
+              </p>
+            ) : null}
 
             {gallery.length > 1 ? (
               <div className="flex gap-2 overflow-x-auto pb-1">

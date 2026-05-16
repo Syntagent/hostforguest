@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -242,6 +243,28 @@ async def run_preventive(
 ):
     svc = MaintenanceService(db)
     created = await svc.run_due_schedules(current_host.id)
+    return {"created_count": len(created), "issues": [_issue_dict(i) for i in created]}
+
+
+@router.post("/jobs/run-preventive-global")
+async def run_preventive_global_job(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Cron / worker entry: process all hosts with due preventive schedules.
+
+    Set ``MAINTENANCE_JOB_SECRET`` in the environment and send the same value in
+    header ``X-Maintenance-Job-Secret``.
+    """
+    secret = (settings.maintenance_job_secret or "").strip()
+    if not secret:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "MAINTENANCE_JOB_SECRET is not configured",
+        )
+    provided = (request.headers.get("X-Maintenance-Job-Secret") or "").strip()
+    if not provided or not secrets.compare_digest(provided, secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid job secret")
+    svc = MaintenanceService(db)
+    created = await svc.run_all_due_schedules_for_all_hosts()
     return {"created_count": len(created), "issues": [_issue_dict(i) for i in created]}
 
 

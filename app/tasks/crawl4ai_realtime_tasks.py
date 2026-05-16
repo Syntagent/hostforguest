@@ -28,7 +28,7 @@ async def initialize_crawl4ai_sources():
     """
     logger.info("Initializing Crawl4AI Croatian tourism sources...")
 
-    async with get_async_session() as db:
+    async for db in get_async_session():
         ai_service = AIService()
 
         async with Crawl4AIScraperService(db, ai_service) as scraper:
@@ -112,7 +112,7 @@ async def run_real_time_monitoring() -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             # Initialize AI service
             ai_service = AIService()
 
@@ -256,7 +256,7 @@ async def run_hourly_stream_update() -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             ai_service = AIService()
 
             # Get high-priority sources for streaming
@@ -324,7 +324,7 @@ async def cleanup_old_real_time_data(days_to_keep: int = 7) -> Dict[str, Any]:
     }
 
     try:
-        async with get_async_session() as db:
+        async for db in get_async_session():
             from sqlalchemy import delete
             from app.models.content_source import ContentUpdate, HostNotification
 

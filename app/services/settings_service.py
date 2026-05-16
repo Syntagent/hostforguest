@@ -47,8 +47,12 @@ class SettingsService:
             HostSettings object or None
         """
         try:
+            if isinstance(host_id, dict):
+                logger.error("get_host_settings called with invalid host_id type: dict")
+                return None
+            hid = host_id if isinstance(host_id, uuid.UUID) else uuid.UUID(str(host_id))
             result = await self.db.execute(
-                select(HostSettings).where(HostSettings.host_id == host_id)
+                select(HostSettings).where(HostSettings.host_id == hid)
             )
             return result.scalar_one_or_none()
         except Exception as e:

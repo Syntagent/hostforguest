@@ -31,6 +31,7 @@ import {
   MessageCircle,
   CheckCircle2,
   Leaf,
+  Quote,
 } from "lucide-react";
 import {
   guestGroupsApi,
@@ -46,6 +47,8 @@ import {
   type Attraction,
   type GuestHostOfferingsPayload,
   type GuestPreferenceRecord,
+  type GuestTestimonialEntry,
+  type HostFavoriteLocalSpot,
   type ItineraryActivity,
 } from "@/lib/api";
 
@@ -127,17 +130,40 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         setGuestPreferences([]);
       }
 
-      const [recommendationsResponse, itinerariesResponse, hostOffResponse] = await Promise.all([
-        recommendationsApi.getForGroup(accessCode),
-        itinerariesApi.getForGroup(accessCode),
-        guestGroupsApi.getHostOfferings(accessCode),
-      ]);
+      const [recommendationsResponse, historyResponse, itinerariesResponse, hostOffResponse] =
+        await Promise.all([
+          recommendationsApi.getForGroup(accessCode),
+          recommendationsApi.getHistory(accessCode),
+          itinerariesApi.getForGroup(accessCode),
+          guestGroupsApi.getHostOfferings(accessCode),
+        ]);
 
-      setRecommendations(
+      const recs =
         recommendationsResponse.success && recommendationsResponse.data
           ? recommendationsResponse.data
-          : []
-      );
+          : [];
+      setRecommendations(recs);
+
+      setRecFeedback((prev) => {
+        const fromServer: Record<string, 1 | 5> = {};
+        const applyFeedback = (rows: Recommendation[]) => {
+          for (const r of rows) {
+            const fr = r.feedback_rating;
+            if (fr === 1 || fr === 5) fromServer[r.id] = fr;
+          }
+        };
+        applyFeedback(recs);
+        if (historyResponse.success && historyResponse.data) {
+          applyFeedback(historyResponse.data);
+        }
+        const merged = { ...prev, ...fromServer };
+        try {
+          localStorage.setItem(feedbackStorageKey, JSON.stringify(merged));
+        } catch {
+          /* ignore */
+        }
+        return merged;
+      });
 
       if (itinerariesResponse.success && itinerariesResponse.data) {
         setItineraries([itinerariesResponse.data]);
@@ -163,7 +189,7 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         setRefreshing(false);
       }
     }
-  }, [accessCode, router]);
+  }, [accessCode, router, feedbackStorageKey]);
 
   useEffect(() => {
     void loadGuestData("initial");
@@ -435,6 +461,66 @@ function seasonalPickBadge(attraction?: Attraction | null): string | null {
   return months.includes(now) ? "Great this month" : null;
 }
 
+function parseGuestTestimonials(
+  raw: GuestTestimonialEntry[] | undefined
+): Array<{ text: string; author?: string; rating?: number }> {
+  if (!raw?.length) return [];
+  const out: Array<{ text: string; author?: string; rating?: number }> = [];
+  for (const t of raw) {
+    if (typeof t === "string") {
+      const text = t.trim();
+      if (text) out.push({ text });
+      continue;
+    }
+    if (!t || typeof t !== "object") continue;
+    const o = t as Record<string, unknown>;
+    const textKeys = ["quote", "text", "message", "body", "review", "content"] as const;
+    let text = "";
+    for (const k of textKeys) {
+      const v = o[k];
+      if (typeof v === "string" && v.trim()) {
+        text = v.trim();
+        break;
+      }
+    }
+    if (!text) continue;
+    const authorKeys = ["author", "name", "guest_name", "from", "by"] as const;
+    let author: string | undefined;
+    for (const k of authorKeys) {
+      const v = o[k];
+      if (typeof v === "string" && v.trim()) {
+        author = v.trim();
+        break;
+      }
+    }
+    const r = o.rating;
+    const rating =
+      typeof r === "number" && Number.isFinite(r) && r >= 0 && r <= 5 ? r : undefined;
+    out.push({ text, author, rating });
+  }
+  return out;
+}
+
+function normalizeFavoriteLocalSpots(raw: unknown): HostFavoriteLocalSpot[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is HostFavoriteLocalSpot => {
+    if (!item || typeof item !== "object") return false;
+    const o = item as HostFavoriteLocalSpot;
+    const n = typeof o.name === "string" ? o.name.trim() : "";
+    const d = typeof o.description === "string" ? o.description.trim() : "";
+    return Boolean(n || d);
+  });
+}
+
+function mapsSearchUrlForFavoriteSpot(
+  spot: HostFavoriteLocalSpot,
+  city?: string | null
+): string {
+  const name = spot.name?.trim();
+  const q = [name, city?.trim()].filter((x): x is string => Boolean(x?.length)).join(" ");
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q || name || "near me")}`;
+}
+
 /** Place name from one line like "Welcome to Oprić!" or "Welcome to Villa Maria in Oprić!". */
 function placeFromWelcomeHeadlineLine(line: string): string | null {
   const m = line.match(/^welcome\s+to\s+(.+?)!\s*$/i);
@@ -569,6 +655,12 @@ const WelcomeTab: React.FC<{
   const amenityChips = (si?.amenities || []).filter(
     (a): a is string => typeof a === "string" && a.trim().length > 0
   );
+  const favoriteSpots = normalizeFavoriteLocalSpots(
+    hostOfferings?.recommendations?.attractions
+  );
+  const guestTestimonialBlocks = parseGuestTestimonials(
+    hostOfferings?.profile_extras?.guest_testimonials
+  ).slice(0, 3);
 
   return (
     <div className="space-y-4">
@@ -685,6 +777,66 @@ const WelcomeTab: React.FC<{
             </div>
           ) : null}
 
+          {favoriteSpots.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-border/80 bg-card/40 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Host&apos;s nearby favorites
+              </p>
+              <ul className="mt-3 space-y-3">
+                {favoriteSpots.slice(0, 6).map((spot, i) => {
+                  const label =
+                    spot.name?.trim() ||
+                    (spot.description?.trim()
+                      ? spot.description.trim().slice(0, 80)
+                      : "") ||
+                    "Local spot";
+                  const mapsUrl = mapsSearchUrlForFavoriteSpot(spot, city);
+                  return (
+                    <li
+                      key={`${label}-${i}`}
+                      className="rounded-xl border border-border/60 bg-background/60 p-3"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-foreground">{label}</p>
+                          <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            {spot.type ? (
+                              <span className="rounded-md bg-muted px-1.5 py-0.5 capitalize">
+                                {String(spot.type).replace(/_/g, " ")}
+                              </span>
+                            ) : null}
+                            {typeof spot.distance_km === "number" ? (
+                              <span>{spot.distance_km} km away</span>
+                            ) : null}
+                          </div>
+                          {spot.description?.trim() ? (
+                            <p className="mt-2 line-clamp-2 text-sm text-foreground/85">
+                              {spot.description.trim()}
+                            </p>
+                          ) : null}
+                          {spot.local_tip?.trim() ? (
+                            <p className="mt-2 text-xs italic text-muted-foreground">
+                              Tip: {spot.local_tip.trim()}
+                            </p>
+                          ) : null}
+                        </div>
+                        <a
+                          href={mapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                        >
+                          <MapPin className="h-3.5 w-3.5" aria-hidden />
+                          Maps
+                        </a>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+
           {(hi?.local_specialties?.length || hostOfferings?.recommendations?.expertise_areas?.length) ? (
             <div className="mt-4 flex flex-wrap gap-2">
               {(hi?.local_specialties || []).slice(0, 8).map((s, i) => (
@@ -712,6 +864,34 @@ const WelcomeTab: React.FC<{
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
               {hostOfferings.profile_extras.location_story}
             </p>
+          ) : null}
+
+          {guestTestimonialBlocks.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-primary/20 bg-primary/5 p-4">
+              <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Quote className="h-4 w-4 text-primary" aria-hidden />
+                What guests say
+              </p>
+              <ul className="mt-3 space-y-4">
+                {guestTestimonialBlocks.map((t, i) => (
+                  <li key={i} className="border-l-2 border-primary/40 pl-3">
+                    {typeof t.rating === "number" ? (
+                      <p className="mb-1 text-xs text-amber-700 dark:text-amber-300">
+                        <span aria-label={`Rating ${t.rating} out of 5`}>
+                          {"★".repeat(Math.min(5, Math.max(0, Math.round(t.rating))))}
+                        </span>
+                      </p>
+                    ) : null}
+                    <blockquote className="text-sm italic leading-relaxed text-foreground/90">
+                      &ldquo;{t.text}&rdquo;
+                    </blockquote>
+                    {t.author ? (
+                      <p className="mt-1 text-xs font-medium text-muted-foreground">— {t.author}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">

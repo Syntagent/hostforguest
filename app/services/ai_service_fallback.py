@@ -7,10 +7,9 @@ keys are not available, making development easier.
 
 import os
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 import openai
-import google.generativeai as genai
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, _import_google_generativeai
 from app.services.settings_service import SettingsService
 
 # Ensure environment variables are loaded
@@ -80,11 +79,12 @@ class AIServiceWithFallback(AIService):
                         logger.warning(f"No Google AI API key found for host {host_id}")
                         return None
             
+            genai, HarmCategory, HarmBlockThreshold = _import_google_generativeai()
+
             # Configure Gemini with the API key
             genai.configure(api_key=api_key)
             
             # Configure safety settings for tourism content - DISABLE ALL FILTERS
-            from google.generativeai.types import HarmCategory, HarmBlockThreshold
             safety_settings = {
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -216,13 +216,32 @@ class AIServiceWithFallback(AIService):
                 "error": str(e)
             }
     
+    @staticmethod
+    def _gemini_structured_content_payload(
+        text_blob: str,
+        image_parts: Optional[List[Tuple[str, bytes]]],
+    ) -> Union[str, List[Any]]:
+        """
+        Gemini accepts either a string or a list of interleaved text + image dicts
+        (``mime_type`` + ``data`` bytes per Google AI SDK).
+        """
+        if not image_parts:
+            return text_blob
+        parts: List[Any] = [text_blob]
+        for mime, raw in image_parts[:6]:
+            if not raw or not mime:
+                continue
+            parts.append({"mime_type": mime, "data": raw})
+        return parts if len(parts) > 1 else text_blob
+
     async def generate_structured_response(
         self,
         host_id: str,
         messages: List[Dict[str, str]],
         context: Optional[Dict[str, Any]] = None,
         response_schema: Optional[Any] = None,
-        use_reasoning: bool = False
+        use_reasoning: bool = False,
+        image_parts: Optional[List[Tuple[str, bytes]]] = None,
     ) -> Dict[str, Any]:
         """
         Generate a structured response using Pydantic schema enforcement.
@@ -250,11 +269,30 @@ class AIServiceWithFallback(AIService):
             # Use Google Gemini with structured output (preferred for Pydantic)
             if preferred_provider == "google" or preferred_provider == "both":
                 response = await self._generate_gemini_structured_response(
-                    host_id, messages, ai_config, response_schema, use_reasoning
+                    host_id,
+                    messages,
+                    ai_config,
+                    response_schema,
+                    use_reasoning,
+                    image_parts=image_parts,
                 )
                 if response["success"]:
                     return response
-            
+
+            if (
+                preferred_provider in ("openai", "both")
+                and response_schema is not None
+            ):
+                oresp = await self._generate_openai_structured_response(
+                    host_id,
+                    messages,
+                    ai_config,
+                    response_schema,
+                    image_parts=image_parts,
+                )
+                if oresp.get("success"):
+                    return oresp
+
             # Fallback to regular chat response if structured output fails
             return await self.generate_chat_response(host_id, messages, context, use_reasoning)
             
@@ -272,7 +310,8 @@ class AIServiceWithFallback(AIService):
         messages: List[Dict[str, str]],
         ai_config: Dict[str, Any],
         response_schema: Any,
-        use_reasoning: bool = False
+        use_reasoning: bool = False,
+        image_parts: Optional[List[Tuple[str, bytes]]] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured response using Google Gemini with enhanced fallback handling.
@@ -295,30 +334,50 @@ class AIServiceWithFallback(AIService):
             
             # Convert messages to Gemini format
             gemini_messages = self._convert_to_gemini_format(messages)
-            
+            multimodal = bool(image_parts)
+            content_payload = self._gemini_structured_content_payload(gemini_messages, image_parts)
+
             # Generate response with structured output
-            import google.generativeai as genai
+            genai, _, _ = _import_google_generativeai()
             import json
-            
+
             # ATTEMPT 1: Try native Pydantic structured output
-            logger.info(f"Attempting native Gemini structured output with schema: {response_schema.__name__ if response_schema else 'None'}")
-            
+            logger.info(
+                "Attempting native Gemini structured output with schema: %s (multimodal=%s)",
+                response_schema.__name__ if response_schema else "None",
+                multimodal,
+            )
+
             try:
+                max_tokens = 4096 if multimodal else 2000
                 generation_config = genai.types.GenerationConfig(
                     temperature=float(ai_config.get("gemini_temperature", "0.7")),
-                    max_output_tokens=2000,
-                    response_mime_type="application/json"
+                    max_output_tokens=max_tokens,
+                    response_mime_type="application/json",
                 )
-                
+
                 # Add response schema if provided
                 if response_schema:
                     generation_config.response_schema = response_schema
-                
-                response = await model.generate_content_async(
-                    gemini_messages,
-                    generation_config=generation_config
-                )
-                
+
+                try:
+                    response = await model.generate_content_async(
+                        content_payload,
+                        generation_config=generation_config,
+                    )
+                except Exception as vision_err:
+                    if multimodal:
+                        logger.warning(
+                            "Gemini native structured multimodal failed (%s); retrying text-only",
+                            vision_err,
+                        )
+                        response = await model.generate_content_async(
+                            gemini_messages,
+                            generation_config=generation_config,
+                        )
+                    else:
+                        raise
+
                 if response and response.text:
                     structured_data = json.loads(response.text)
                     
@@ -354,39 +413,52 @@ class AIServiceWithFallback(AIService):
                 logger.warning(f"Native structured output failed: {native_error}")
                 # Continue to ATTEMPT 2
             
-            # ATTEMPT 2: Enhanced JSON-guided generation with explicit field requirements
+            # ATTEMPT 2: JSON mode with a real schema summary (nested objects/arrays, not "all strings")
             logger.info("Attempting enhanced JSON-guided generation with explicit schema")
-            
-            # Modify the prompt to explicitly request all required fields
+
             if response_schema and messages:
-                # Get the schema field information
-                schema_fields = {}
-                if hasattr(response_schema, 'model_fields'):
-                    schema_fields = response_schema.model_fields
-                elif hasattr(response_schema, '__annotations__'):
-                    schema_fields = response_schema.__annotations__
-                
-                # Create explicit field requirements
-                field_requirements = []
-                for field_name, field_info in schema_fields.items():
-                    if hasattr(field_info, 'description'):
-                        field_requirements.append(f'"{field_name}": {field_info.description}')
-                    else:
-                        field_requirements.append(f'"{field_name}": Array of strings for {field_name.replace("_", " ")}')
-                
-                # Enhance the last user message with explicit JSON requirements
+                schema_hint = ""
+                if hasattr(response_schema, "model_json_schema"):
+                    try:
+                        full = response_schema.model_json_schema()
+                        props = full.get("properties") or {}
+                        slim_props: Dict[str, Any] = {}
+                        for k, v in props.items():
+                            if not isinstance(v, dict):
+                                continue
+                            entry: Dict[str, Any] = {}
+                            if "type" in v:
+                                entry["type"] = v.get("type")
+                            if v.get("description"):
+                                entry["description"] = str(v.get("description"))[:240]
+                            if "items" in v:
+                                entry["items"] = v.get("items")
+                            if "properties" in v:
+                                entry["properties"] = list((v.get("properties") or {}).keys())[:24]
+                            slim_props[k] = entry
+                        slim = {
+                            "title": full.get("title"),
+                            "required": full.get("required", []),
+                            "properties": slim_props,
+                        }
+                        schema_hint = json.dumps(slim, ensure_ascii=False)[:12000]
+                    except Exception as schema_err:
+                        logger.debug("model_json_schema slim failed: %s", schema_err)
+
+                if not schema_hint and hasattr(response_schema, "model_fields"):
+                    names = list(response_schema.model_fields.keys())
+                    schema_hint = json.dumps({"required_top_level_keys": names}, ensure_ascii=False)
+
                 enhanced_messages = messages.copy()
                 if enhanced_messages:
                     last_message = enhanced_messages[-1]
-                    _req_sep = ",\n  "
                     enhanced_content = f"""{last_message['content']}
 
-CRITICAL: You MUST return valid JSON with ALL of these exact fields:
-{{
-  {_req_sep.join(field_requirements)}
-}}
+CRITICAL: Return ONLY one JSON object (no markdown fences, no commentary) that matches this structure.
+Respect nested types (objects, arrays of objects, arrays of strings) exactly as in the schema summary:
+{schema_hint or "{}"}
 
-Each field must be an array of strings. Do not omit any fields. Return ONLY the JSON object, no additional text."""
+Include every top-level key listed under "required" when present; use sensible defaults only where the schema allows optional fields."""
                     
                     enhanced_messages[-1] = {
                         "role": last_message["role"],
@@ -394,18 +466,34 @@ Each field must be an array of strings. Do not omit any fields. Return ONLY the 
                     }
                     
                     gemini_messages_enhanced = self._convert_to_gemini_format(enhanced_messages)
+                    enhanced_payload = self._gemini_structured_content_payload(
+                        gemini_messages_enhanced, image_parts
+                    )
                     
                     # Generate with basic JSON mode (no schema constraint)
                     generation_config_basic = genai.types.GenerationConfig(
                         temperature=float(ai_config.get("gemini_temperature", "0.7")),
-                        max_output_tokens=2000,
+                        max_output_tokens=4096 if multimodal else 2000,
                         response_mime_type="application/json"
                     )
                     
-                    response = await model.generate_content_async(
-                        gemini_messages_enhanced,
-                        generation_config=generation_config_basic
-                    )
+                    try:
+                        response = await model.generate_content_async(
+                            enhanced_payload,
+                            generation_config=generation_config_basic
+                        )
+                    except Exception as vision_err2:
+                        if multimodal:
+                            logger.warning(
+                                "Gemini enhanced JSON multimodal failed (%s); retrying text-only",
+                                vision_err2,
+                            )
+                            response = await model.generate_content_async(
+                                gemini_messages_enhanced,
+                                generation_config=generation_config_basic,
+                            )
+                        else:
+                            raise
                     
                     if response and response.text:
                         try:
@@ -433,13 +521,26 @@ Each field must be an array of strings. Do not omit any fields. Return ONLY the 
             # Generate regular response and use existing parsing logic
             generation_config_fallback = genai.types.GenerationConfig(
                 temperature=float(ai_config.get("gemini_temperature", "0.7")),
-                max_output_tokens=2000
+                max_output_tokens=4096 if multimodal else 2000
             )
             
-            response = await model.generate_content_async(
-                gemini_messages,
-                generation_config=generation_config_fallback
-            )
+            try:
+                response = await model.generate_content_async(
+                    content_payload,
+                    generation_config=generation_config_fallback
+                )
+            except Exception as vision_err3:
+                if multimodal:
+                    logger.warning(
+                        "Gemini fallback multimodal failed (%s); retrying text-only",
+                        vision_err3,
+                    )
+                    response = await model.generate_content_async(
+                        gemini_messages,
+                        generation_config=generation_config_fallback,
+                    )
+                else:
+                    raise
             
             if response and response.text:
                 # Use the existing parsing logic from host_onboarding_service
@@ -478,7 +579,102 @@ Each field must be an array of strings. Do not omit any fields. Return ONLY the 
         except Exception as e:
             logger.error(f"All Gemini structured response attempts failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    async def _generate_openai_structured_response(
+        self,
+        host_id: str,
+        messages: List[Dict[str, str]],
+        ai_config: Dict[str, Any],
+        response_schema: Any,
+        image_parts: Optional[List[Tuple[str, bytes]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Structured JSON via OpenAI Chat Completions (``response_format: json_object``),
+        with optional vision on the last user turn (base64 data URLs).
+        """
+        import base64
+        import json
+
+        client = await self._get_openai_client(host_id)
+        if not client:
+            return {"success": False, "error": "OpenAI client not available"}
+
+        model_name = ai_config.get("openai_model", "gpt-4o")
+        last_user_i: Optional[int] = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user_i = i
+                break
+
+        oai_messages: List[Dict[str, Any]] = []
+        for i, m in enumerate(messages):
+            role = m.get("role") or "user"
+            content = m.get("content") or ""
+            if role == "user" and i == last_user_i and image_parts:
+                user_parts: List[Dict[str, Any]] = [{"type": "text", "text": content}]
+                for mime, raw in image_parts[:6]:
+                    if not raw:
+                        continue
+                    b64 = base64.standard_b64encode(raw).decode("ascii")
+                    mt = mime if mime in ("image/jpeg", "image/png", "image/gif", "image/webp") else "image/jpeg"
+                    user_parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mt};base64,{b64}", "detail": "auto"},
+                        }
+                    )
+                oai_messages.append({"role": "user", "content": user_parts})
+            else:
+                oai_messages.append({"role": role, "content": content})
+
+        max_tok = 4096 if image_parts else 2000
+        try:
+            completion = await client.chat.completions.create(
+                model=model_name,
+                messages=oai_messages,
+                temperature=float(ai_config.get("openai_temperature", "0.7")),
+                max_tokens=max_tok,
+                response_format={"type": "json_object"},
+            )
+        except Exception as e:
+            logger.warning("OpenAI structured completion failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+        text = (completion.choices[0].message.content or "").strip()
+        if not text:
+            return {"success": False, "error": "Empty OpenAI response"}
+
+        try:
+            structured_data = json.loads(text)
+        except json.JSONDecodeError as je:
+            return {"success": False, "error": f"OpenAI JSON parse error: {je}", "response": text[:2000]}
+
+        if response_schema:
+            try:
+                validated = response_schema(**structured_data)
+                structured_data = validated.model_dump()
+            except Exception as ve:
+                logger.warning("OpenAI structured Pydantic validation failed: %s", ve)
+                return {
+                    "success": False,
+                    "error": f"Schema validation failed: {ve}",
+                    "response": text[:2000],
+                }
+
+        u = completion.usage
+        return {
+            "success": True,
+            "response": text,
+            "structured_data": structured_data,
+            "model": model_name,
+            "provider": "openai_structured",
+            "usage": {
+                "prompt_tokens": getattr(u, "prompt_tokens", 0) if u else 0,
+                "completion_tokens": getattr(u, "completion_tokens", 0) if u else 0,
+                "total_tokens": getattr(u, "total_tokens", 0) if u else 0,
+            },
+        }
+
     async def _generate_gemini_response(
         self,
         host_id: str,
@@ -503,7 +699,7 @@ Each field must be an array of strings. Do not omit any fields. Return ONLY the 
             gemini_messages = self._convert_to_gemini_format(messages)
             
             # Generate response
-            import google.generativeai as genai
+            genai, _, _ = _import_google_generativeai()
             response = await model.generate_content_async(
                 gemini_messages,
                 generation_config=genai.types.GenerationConfig(

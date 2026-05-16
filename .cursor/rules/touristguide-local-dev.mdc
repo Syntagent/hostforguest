@@ -34,9 +34,9 @@ This is how you always know what you are developing: **one UI port, one API port
 docker compose stop api frontend
 ```
 
-Postgres/Neo4j can stay up if your local API still uses the same DB URL (e.g. `localhost:5434`).
+Postgres can stay up if your local API still uses the same DB URL (e.g. `localhost:5434`).
 
-Compose note: **`docker compose up -d`** is wired so **Postgres + Neo4j** start by default; containerized **`api` / `frontend`** need **`docker compose --profile docker-api up`** (CI / parity). If you ever started the old container API: **`npm run docker:stop-api`** or `docker compose stop api frontend`.
+Compose note: **`docker compose up -d`** starts **Postgres** by default; containerized **`api` / `frontend`** need **`docker compose --profile docker-api up`** (CI / parity). If you ever started the old container API: **`npm run docker:stop-api`** or `docker compose stop api frontend`.
 
 ## One command (optional)
 

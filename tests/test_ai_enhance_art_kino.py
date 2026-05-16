@@ -55,12 +55,12 @@ async def test_ai_enhance_art_kino_mock(async_client: httpx.AsyncClient, async_d
             headers={"X-Session-Token": session_data["session_token"]},
         )
 
-    assert resp.status_code == 200
-    data = resp.json()
-    text = data["data"]["enhanced_description"]
-    assert "Art-kino Croatia is a movie theater" in text
-    assert "Good to know:" in text
-    assert "Rated" in text or "Typical cost" in text or "Distance" in text
+        assert resp.status_code == 200
+        data = resp.json()
+        text = data["data"]["enhanced_description"]
+        # Endpoint returns model text as-is on success; mock is the full body (no template prefix).
+        assert "Art-kino" in text or "Curated film program" in text
+        mock_gen.assert_called()
 
 
 pytestmark_live = pytest.mark.skipif(

@@ -25,7 +25,9 @@ from app.models.recommendation import (
     RecommendationFeedbackResponse,
     RecommendationAnalytics,
     WeatherContext,
-    RecommendationBatch
+    RecommendationBatch,
+    GuestRecommendationBatch,
+    GuestRecommendationItem,
 )
 from app.models.host import Host
 from app.models.guest_group import GuestGroup
@@ -84,7 +86,7 @@ async def validate_access_code(
 
 
 # Guest endpoints (using access code)
-@router.post("/guest/{access_code}", response_model=RecommendationBatch)
+@router.post("/guest/{access_code}", response_model=GuestRecommendationBatch)
 async def get_guest_recommendations(
     access_code: str,
     request_data: RecommendationRequestAPI,
@@ -108,17 +110,18 @@ async def get_guest_recommendations(
         
         ai_service = AIService()
         recommendation_service = RecommendationService(db, ai_service)
-        recommendations = await recommendation_service.get_personalized_recommendations(
+        batch = await recommendation_service.get_personalized_recommendations(
             guest_group_id=guest_group_id,
             request_data=request_data
         )
-        
+        enriched = await recommendation_service.enrich_batch_for_guest(batch, guest_group_id)
+
         logger.info(
             "Generated %s recommendations for guest group %s",
-            len(recommendations.recommendations),
+            len(enriched.recommendations),
             guest_group_id,
         )
-        return recommendations
+        return enriched
         
     except HTTPException:
         raise
@@ -176,7 +179,7 @@ async def submit_recommendation_feedback(
         )
 
 
-@router.get("/guest/{access_code}/history", response_model=List[RecommendationResponse])
+@router.get("/guest/{access_code}/history", response_model=List[GuestRecommendationItem])
 async def get_recommendation_history(
     access_code: str,
     db: AsyncSession = Depends(get_db),
@@ -206,9 +209,12 @@ async def get_recommendation_history(
             skip=skip,
             limit=limit
         )
-        
-        logger.info(f"Retrieved {len(history)} recommendations history for guest group {guest_group.id}")
-        return history
+        enriched = await recommendation_service.enrich_list_for_guest(
+            history, guest_group.id
+        )
+
+        logger.info(f"Retrieved {len(enriched)} recommendations history for guest group {guest_group.id}")
+        return enriched
         
     except HTTPException:
         raise

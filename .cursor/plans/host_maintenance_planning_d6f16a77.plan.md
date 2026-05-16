@@ -7,43 +7,43 @@ todos:
     status: pending
   - id: schema-api
     content: Add maintenance_issues (+ schedules, optional events), Pydantic schemas, Alembic migration, maintenance router + service
-    status: pending
+    status: completed
   - id: vendor-model
     content: Extend Partner (trade type + categories) or add MaintenanceVendor; wire suggestion logic from host location + category
-    status: pending
+    status: completed
   - id: host-ui
     content: "Maintenance tab on host dashboard: list/detail, schedules, vendor hints, templates"
-    status: pending
+    status: completed
   - id: guest-report
     content: Guest 'Report issue' API + UI linked to guest_group_id
-    status: pending
+    status: completed
   - id: preventive-job
     content: Scheduled task to open due preventive issues from maintenance_schedules
-    status: pending
+    status: completed
   - id: webhook-phase2
     content: Optional HMAC maintenance webhook endpoint for external signals
-    status: pending
+    status: completed
   - id: tests
     content: Tests in tests/ for CRUD, guest boundary, schedules, webhook auth, vendor matching
-    status: pending
+    status: completed
   - id: ai-partner-discovery
     content: "AI-assisted partner search: rank/filter DB partners by issue category + geo; optional web/Places enrichment; structured LLM output (reuse AIService pattern like itinerary_service)"
-    status: pending
+    status: completed
   - id: ai-partner-communication
     content: AI draft messages to majstori (HR tone, issue summary); host edits/approves; log drafts; outbound via copy/deep-link first, then email/SMS if providers exist
-    status: pending
+    status: completed
   - id: adaptation-schema
     content: "Adaptation projects: store uploads, prompts, concept image URLs, structured BOM/cost assumptions, ROI inputs; FK host_id optional property_id"
-    status: pending
+    status: completed
   - id: adaptation-vision-design
-    content: "Vision analysis of room photos + style brief; optional image-gen for ‘after’ concepts (separate API/key); versioned proposals host can compare"
-    status: pending
+    content: Vision analysis of room photos + style brief; optional image-gen for ‘after’ concepts (separate API/key); versioned proposals host can compare
+    status: completed
   - id: adaptation-suppliers-roi
-    content: "Map BOM line categories to Partner search; structured cost ranges + editable assumptions; ROI from host-entered ADR/occupancy/uplift % with transparent formulas"
-    status: pending
+    content: Map BOM line categories to Partner search; structured cost ranges + editable assumptions; ROI from host-entered ADR/occupancy/uplift % with transparent formulas
+    status: completed
   - id: adaptation-ui
     content: "Host dashboard Adaptation studio: upload, brief, concepts, supplier shortlist, cost sheet, ROI — disclaimers on every export"
-    status: pending
+    status: completed
 isProject: false
 ---
 

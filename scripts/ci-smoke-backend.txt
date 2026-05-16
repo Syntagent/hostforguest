@@ -1,0 +1,39 @@
+# Paths passed to pytest (one per line). Used by GitHub Actions, ci-smoke-backend.ps1, and ci-smoke-backend.sh.
+# For full itinerary coverage run: python -m pytest tests/test_itinerary_system.py -q
+tests/test_main.py
+tests/test_auth.py
+tests/test_auth_status.py
+tests/test_config_safety.py
+tests/test_connection.py
+tests/test_session_system_basic.py
+tests/test_attractions_crud.py
+tests/test_attractions_crud_simple.py
+tests/test_attractions_functionality.py
+tests/test_guest_groups_simple.py
+tests/test_guest_groups_functionality.py
+tests/test_host_endpoints.py
+tests/test_host_service.py
+# Host-scoped partners + cleaning (tenant-style APIs)
+tests/test_partners_host_scoped.py
+tests/test_host_cleaning.py
+# Itinerary + full session flows (regression guard; SQLite fixtures)
+tests/test_itinerary_system.py
+tests/test_session_system.py
+tests/test_adaptation_vision.py
+tests/test_openai_structured_adaptation.py
+tests/test_maintenance_preventive_job.py
+tests/test_maintenance_adaptation_core.py
+tests/test_maintenance_webhook_auth.py
+tests/test_backend_service.py
+tests/test_review_system.py
+tests/test_dashboard_endpoints.py
+tests/test_dashboard_real_data.py
+tests/test_multi_database_integration.py
+tests/test_recommendation_integration.py
+tests/test_recommendation_candidates_preference_overlap.py
+tests/test_recommendation_candidates_seasonal.py
+tests/test_vector_service.py
+tests/test_vector_search.py
+tests/test_vector_recommendations.py
+tests/test_crawl4ai_integration.py
+tests/test_ai_enhance_art_kino.py

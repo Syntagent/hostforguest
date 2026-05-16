@@ -1,48 +1,47 @@
-import asyncio
-from app.core.database import get_db
+"""HostService.update_host_profile smoke test on the async SQLite test DB."""
+
+import uuid
+
+import pytest
+
+from app.models.host import HostCreate, HostProfileCreate, HostProfileUpdate
 from app.services.host_service import HostService
-from app.models.host import HostProfileUpdate
-from sqlalchemy import text
 
-async def test_backend_service():
-    db = await anext(get_db())
-    try:
-        # Get the test user's host ID
-        result = await db.execute(
-            text("SELECT id FROM hosts WHERE email = 'test@example.com'")
+
+@pytest.mark.asyncio
+async def test_backend_service(db_session):
+    email = f"backend-svc-{uuid.uuid4().hex[:12]}@example.com"
+    svc = HostService(db_session)
+    created = await svc.create_host(
+        HostCreate(
+            email=email,
+            password="testpassword123",
+            first_name="Back",
+            last_name="End",
+            address="1 Service St",
+            city="Lovran",
+            country="Croatia",
         )
-        host_id = result.fetchone()[0]
-        print(f"Test user host ID: {host_id}")
-        
-        # Create the service
-        host_service = HostService(db)
-        
-        # Test the update method directly
-        print("Testing HostService.update_host_profile directly...")
-        
-        update_data = HostProfileUpdate(
-            property_name="Villa Adriatica žđ",
+    )
+    assert created is not None
+    host = await svc.get_host_by_id(created.id)
+    assert host is not None
+
+    prof = await svc.create_host_profile(
+        host.id,
+        HostProfileCreate(
             property_type="apartment",
-            max_guests=6,
-            number_of_rooms=3
-        )
-        
-        print(f"Update data: {update_data}")
-        
-        try:
-            result = await host_service.update_host_profile(host_id, update_data)
-            if result:
-                print(f"✅ Service update successful!")
-                print(f"Result: {result}")
-            else:
-                print(f"❌ Service update returned None")
-        except Exception as e:
-            print(f"❌ Service update failed with exception: {e}")
-            import traceback
-            traceback.print_exc()
-            
-    finally:
-        await db.close()
+            number_of_rooms=2,
+            max_guests=4,
+        ),
+    )
+    assert prof is not None
 
-if __name__ == "__main__":
-    asyncio.run(test_backend_service())
+    update_data = HostProfileUpdate(
+        property_name="Villa Adriatica",
+        property_type="apartment",
+        max_guests=6,
+        number_of_rooms=3,
+    )
+    result = await svc.update_host_profile(host.id, update_data)
+    assert result is not None

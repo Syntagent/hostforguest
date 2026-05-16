@@ -16,7 +16,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.partner import Partner, HostPartner, PartnerType, PartnerStatus, PartnerBooking, BookingStatus
 from app.models.host import Host
-from app.db.neo4j.connection import neo4j_manager
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +24,7 @@ class PartnerService:
     """
     Service for managing business partners and host-partner relationships.
     
-    Provides CRUD operations for partners and manages relationships
-    in both PostgreSQL and Neo4j.
+    Provides CRUD operations for partners and host–partner relationships in PostgreSQL.
     """
     
     def __init__(self, db: AsyncSession):
@@ -60,22 +58,7 @@ class PartnerService:
             self.db.add(partner)
             await self.db.commit()
             await self.db.refresh(partner)
-            
-            # Create partner node in Neo4j
-            try:
-                await neo4j_manager.create_partner_node(
-                    partner_id=str(partner.id),
-                    partner_data={
-                        "name": partner.name,
-                        "type": partner.partner_type,
-                        "category": partner.category,
-                        "city": partner.city,
-                        "region": partner.region
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create Neo4j partner node: {e}")
-            
+
             logger.info(f"Created partner: {partner.id}")
             return partner
             
@@ -184,21 +167,7 @@ class PartnerService:
             self.db.add(host_partner)
             await self.db.commit()
             await self.db.refresh(host_partner)
-            
-            # Create relationship in Neo4j
-            try:
-                await neo4j_manager.create_host_partner_relationship(
-                    host_id=str(host_id),
-                    partner_id=str(partner_id),
-                    relationship_data={
-                        "priority": relationship_data.get("priority", 0),
-                        "commission_rate": relationship_data.get("commission_rate"),
-                        "status": relationship_data.get("status", "active")
-                    }
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create Neo4j relationship: {e}")
-            
+
             logger.info(f"Created host-partner relationship: {host_id} -> {partner_id}")
             return host_partner
             
@@ -328,17 +297,7 @@ class PartnerService:
             
             await self.db.execute(stmt)
             await self.db.commit()
-            
-            # Update Neo4j relationship
-            try:
-                await neo4j_manager.create_host_partner_relationship(
-                    host_id=str(host_id),
-                    partner_id=str(partner_id),
-                    relationship_data=update_data
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update Neo4j relationship: {e}")
-            
+
             # Get and return updated relationship
             stmt = select(HostPartner).where(
                 and_(

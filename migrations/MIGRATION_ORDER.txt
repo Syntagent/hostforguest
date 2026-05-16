@@ -1,0 +1,10 @@
+# Apply in this order on an existing DB (after init-db / ORM create_all baseline).
+# Lines starting with # are ignored.
+
+create_user_sessions_table.sql
+add_onboarding_fields.sql
+add_location_fields_to_host_profiles.sql
+add_property_name_to_host_profiles.sql
+add_guest_groups_host_profile_id.sql
+add_vector_embeddings.sql
+create_evisitor_data_table.sql

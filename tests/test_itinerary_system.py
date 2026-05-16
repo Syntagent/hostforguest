@@ -519,5 +519,3 @@ class TestItinerarySystem:
         assert detailed_itinerary["guest_group_id"] == guest_group["id"]
         assert detailed_itinerary["title"] == suggested_itinerary["title"]
         assert detailed_itinerary["total_days"] == 2
-        
-        logger.info("✅ Complete itinerary system integration test passed!") 

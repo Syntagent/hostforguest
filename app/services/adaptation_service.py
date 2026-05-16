@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select, and_
@@ -21,6 +23,54 @@ from app.services.settings_service import SettingsService
 from app.services.ai_service_fallback import AIServiceWithFallback
 
 logger = logging.getLogger(__name__)
+
+# Before-photo fetch limits for multimodal Gemini (public URLs only)
+_ADAPT_VISION_MAX_IMAGES = 6
+_ADAPT_VISION_MAX_BYTES_PER_IMAGE = 4 * 1024 * 1024
+_ADAPT_VISION_FETCH_TIMEOUT = 25.0
+
+
+async def fetch_image_bytes_for_adaptation_vision(urls: List[str]) -> List[Tuple[str, bytes]]:
+    """
+    Download before-photo images for multimodal analysis.
+
+    Only ``http``/``https`` URLs are accepted; responses must look like images and
+    stay under the byte cap.
+    """
+    out: List[Tuple[str, bytes]] = []
+    if not urls:
+        return out
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=_ADAPT_VISION_FETCH_TIMEOUT,
+        headers={"User-Agent": "TouristGuideLocal-AdaptationVision/1.0"},
+    ) as client:
+        for url in urls[:_ADAPT_VISION_MAX_IMAGES]:
+            if not url or not (url.startswith("http://") or url.startswith("https://")):
+                continue
+            try:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    continue
+                body = r.content
+                if not body or len(body) > _ADAPT_VISION_MAX_BYTES_PER_IMAGE:
+                    continue
+                ct = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
+                mime = "image/jpeg"
+                if "png" in ct:
+                    mime = "image/png"
+                elif "webp" in ct:
+                    mime = "image/webp"
+                elif "gif" in ct:
+                    mime = "image/gif"
+                elif "jpeg" in ct or "jpg" in ct:
+                    mime = "image/jpeg"
+                elif not ct.startswith("image/"):
+                    continue
+                out.append((mime, body))
+            except Exception as e:
+                logger.debug("adaptation vision fetch skip %s: %s", url[:120], e)
+    return out
 
 
 class AdaptationProjectService:
@@ -169,6 +219,8 @@ class AdaptationAnalyzeResultModel(BaseModel):
     risks_and_checks: List[str] = Field(default_factory=list)
     mood_board_text: str = ""
     bom_lines: List[AdaptationBOMLineModel] = Field(default_factory=list)
+    # Indicative "after" design direction (text only — not generated imagery).
+    after_direction_text: str = ""
 
 
 _POOL_KEYWORDS = ("pool", "bazen", "basen", "infinity", "swimming")
@@ -300,6 +352,27 @@ class AdaptationAIService:
         styles = project.style_tags or []
         budget = project.budget_band or "mid"
 
+        ai_cfg = await self._ai.get_ai_config_for_host_with_fallback(str(host.id))
+        pref = (ai_cfg.get("preferred_ai_provider") or "google").strip().lower()
+
+        # Fetch bytes when the configured provider can use vision (Gemini or OpenAI)
+        image_parts: List[Tuple[str, bytes]] = []
+        if urls and pref in ("google", "both", "openai"):
+            image_parts = await fetch_image_bytes_for_adaptation_vision(urls)
+
+        use_attachments = bool(image_parts)
+
+        vision_block = (
+            f"You are given {len(image_parts)} BEFORE photo(s) as image attachments. "
+            "Ground vision_summary, mood_board_text, risks, and after_direction_text in what is visible; "
+            "state uncertainty where photos are ambiguous.\n"
+            if use_attachments
+            else (
+                f"Before photo URLs (no image bytes attached — text context only): {len(urls)}\n"
+                f"Photo URLs: {json.dumps(urls[:12])}\n"
+            )
+        )
+
         user_msg = (
             "You are assisting a Croatian short-term rental host with an indicative renovation scope. "
             "This is NOT structural engineering or legal advice. "
@@ -307,10 +380,11 @@ class AdaptationAIService:
             f"Brief: {brief}\n"
             f"Style tags: {', '.join(styles)}\n"
             f"Budget band: {budget}\n"
-            f"Number of before photos (URLs for context only, you may not see pixels): {len(urls)}\n"
-            f"Photo URLs: {json.dumps(urls[:12])}\n"
+            f"{vision_block}"
             "Return structured BOM line items with indicative EUR ranges for Croatia (rough market bands). "
-            "Include risks_and_checks reminding to verify permits and hire licensed trades where needed."
+            "Include risks_and_checks reminding to verify permits and hire licensed trades where needed. "
+            "Also set after_direction_text to 2–5 sentences: an achievable finished look aligned with the brief "
+            "and style tags (materials, light, layout feel). Indicative design direction only — no guarantees."
         )
 
         res = await self._ai.generate_structured_response(
@@ -318,6 +392,7 @@ class AdaptationAIService:
             [{"role": "user", "content": user_msg}],
             context={"task": "adaptation_analyze", "location": host.city or "Croatia"},
             response_schema=AdaptationAnalyzeResultModel,
+            image_parts=image_parts if use_attachments else None,
         )
 
         parsed: Optional[AdaptationAnalyzeResultModel] = None
@@ -345,6 +420,10 @@ class AdaptationAIService:
                     ),
                     risks_and_checks=_pool_finish_risks(),
                     mood_board_text=" ".join(styles) if styles else "Pool shell completion",
+                    after_direction_text=(
+                        "Indicative direction: clean hydraulics zone, slip-resistant interior finish in a neutral tone, "
+                        "subtle LED niche lighting, and safety-compliant coping — always confirm with your pool builder."
+                    ),
                     bom_lines=_offline_pool_shell_finish_bom(),
                 )
                 bom_source = "template_pool"
@@ -359,6 +438,9 @@ class AdaptationAIService:
                         "Angažirajte licencirane struke za plin, struju i vodu.",
                     ],
                     mood_board_text=" ".join(styles) or "Moderan, ugodan prostor za goste.",
+                    after_direction_text=(
+                        "Once AI is configured, you will get a tailored “after” direction here from your brief and photos."
+                    ),
                     bom_lines=[],
                 )
                 bom_source = "none"
@@ -385,6 +467,17 @@ class AdaptationAIService:
         elif not parsed.bom_lines:
             bom_source = "empty_ai"
 
+        ref_urls = [u for u in urls[:12] if isinstance(u, str) and u.strip()]
+        if not (parsed.after_direction_text or "").strip() and ref_urls:
+            parsed = parsed.model_copy(
+                update={
+                    "after_direction_text": (
+                        "Upload more brief detail and re-run **Analyze** for a written “after” direction; "
+                        f"we stored {len(ref_urls)} reference photo(s) below for you and your trades."
+                    )
+                }
+            )
+
         bom_dicts = [b.model_dump() for b in parsed.bom_lines]
         tmin, tmax = bom_totals(bom_dicts)
         tmid = (tmin + tmax) / 2 if (tmin or tmax) else 0.0
@@ -405,12 +498,20 @@ class AdaptationAIService:
                 "vision_summary": parsed.vision_summary,
                 "risks_and_checks": parsed.risks_and_checks,
                 "mood_board_text": parsed.mood_board_text,
+                "after_direction_text": parsed.after_direction_text,
+                "reference_photo_urls": ref_urls,
             },
             bom_json={"lines": bom_dicts},
             concept_image_urls=[],
             total_range_min=tmin or None,
             total_range_max=tmax or None,
-            model_ids={"provider": res.get("provider"), "model": res.get("model")},
+            model_ids={
+                "provider": res.get("provider"),
+                "model": res.get("model"),
+                "vision_multimodal": use_attachments,
+                "vision_images_attached": len(image_parts) if use_attachments else 0,
+                "vision_ai_provider": pref if use_attachments else None,
+            },
         )
         self.db.add(proposal)
         project.assumptions_json = {
@@ -439,6 +540,10 @@ class AdaptationAIService:
                 "first run may show zeros until those fields are set.",
                 "For supplier search on pools try categories: **plumbing**, **electrical**, **hvac** — not only tiles.",
             ],
+            "vision_multimodal": use_attachments,
+            "vision_images_fetched": len(image_parts),
+            "vision_images_requested": len(urls),
+            "vision_ai_provider": pref if use_attachments else None,
         }
 
     async def suggest_suppliers(

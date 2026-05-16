@@ -38,4 +38,4 @@ JSON body: `hotel_id` plus `reservations` array or single reservation object.
 docker compose --profile docker-api --profile full up -d --build
 ```
 
-Services: `api`, `frontend` (if in compose), `channel_sync`, `postgres`, `neo4j`.
+Services: `api`, `frontend` (if in compose), `channel_sync`, `postgres`.

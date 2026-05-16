@@ -16,7 +16,7 @@ from app.main import app
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_INTEGRATION_DB", "").lower() not in ("1", "true", "yes"),
-    reason="Integration suite uses live Postgres/Neo4j from .env; start DBs and set RUN_INTEGRATION_DB=1.",
+    reason="Integration suite uses live Postgres from .env; start DB and set RUN_INTEGRATION_DB=1.",
 )
 
 

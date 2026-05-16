@@ -114,6 +114,8 @@ class ContentSource(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(String(100), default="system")
 
+    updates = relationship("ContentUpdate", back_populates="source")
+
 
 class ContentUpdate(Base):
     """
@@ -173,6 +175,8 @@ class ContentUpdate(Base):
     scraped_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    source = relationship("ContentSource", back_populates="updates")
 
 
 class HostNotification(Base):
