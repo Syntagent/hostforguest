@@ -169,6 +169,7 @@ async def test_event_recommendation_service_unit_scoring(
         longitude=14.27,
     )
     db_session.add(host)
+    await db_session.flush()
     group = GuestGroup(
         id=uuid.uuid4(),
         host_id=host.id,

@@ -422,8 +422,9 @@ class TestHostEndpoints:
         # Act
         response = await async_client.get("/api/v1/hosts/me/profile", headers=headers)
         
-        # Assert
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        # Assert — empty profile shell (200) so onboarding UI can render create form
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json().get("host_id")
     
     async def test_invalid_token(self, async_client: AsyncClient):
         """Test API calls with invalid token."""

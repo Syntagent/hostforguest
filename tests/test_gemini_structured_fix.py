@@ -232,10 +232,10 @@ Experience Promise:
         # Act
         result = await host_onboarding_service.generate_host_profile_suggestions(sample_host_info)
         
-        # Assert
-        assert result["success"] is False
-        assert "error" in result
-        assert "All AI generation methods failed" in result["error"]
+        # Assert — service falls back to rule-based suggestions when AI is unavailable
+        assert result["success"] is True
+        assert result.get("suggestions")
+        assert result.get("provider") == "rule_based"
     
     def test_pydantic_model_validation(self):
         """Test that the AIProfileSuggestions Pydantic model validates correctly."""

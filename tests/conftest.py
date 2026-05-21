@@ -1,11 +1,22 @@
 """
 Pytest configuration and fixtures for TouristGuideLocal tests.
+
+Default: in-memory SQLite (fast CI). Set ``RUN_POSTGRES_TESTS=1`` to exercise
+compose Postgres on ``localhost:5434`` (see ``scripts/run-postgres-regression.sh``).
 """
 
 import os
 
-# Prevent app lifespan from opening real Postgres; tests use SQLite via get_db overrides.
-os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
+_RUN_POSTGRES_TESTS = os.getenv("RUN_POSTGRES_TESTS", "").lower() in ("1", "true", "yes")
+
+# Prevent app lifespan from opening real Postgres; tests use fixture-managed DB.
+if not _RUN_POSTGRES_TESTS:
+    os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
+else:
+    os.environ["TOURISTGUIDE_PYTEST"] = "1"
+    # Host-side regression: compose publishes 5434; .env may still say POSTGRES_SERVER=postgres.
+    os.environ.setdefault("POSTGRES_SERVER", "localhost")
+    os.environ.setdefault("POSTGRES_PORT", "5434")
 
 import pytest
 import pytest_asyncio
@@ -16,7 +27,7 @@ from typing import AsyncGenerator
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.services.settings_service import SettingsService
 from app.models.host import Host
@@ -24,12 +35,22 @@ from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
 
 
-test_engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",
-    echo=False,
-    poolclass=StaticPool,
-    connect_args={"check_same_thread": False}
-)
+if _RUN_POSTGRES_TESTS:
+    from app.core.config import settings
+
+    test_engine = create_async_engine(
+        settings.async_postgres_url,
+        echo=False,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+    )
+else:
+    test_engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
 
 TestSessionLocal = async_sessionmaker(
     test_engine,
@@ -37,32 +58,75 @@ TestSessionLocal = async_sessionmaker(
     expire_on_commit=False
 )
 
+if _RUN_POSTGRES_TESTS:
+    # Single engine for fixtures and TestClient routes (avoids split-brain on one DB).
+    import app.db.postgresql.connection as _pg
+
+    _pg.engine = test_engine
+    _pg.AsyncSessionLocal = TestSessionLocal
+    _pg.USE_POSTGRESQL = True
+
 
 def _register_models_for_sqlite_metadata() -> None:
     """Ensure ORM tables are on Base.metadata before create_all."""
     import app.models.host  # noqa: F401
+    import app.models.partner  # noqa: F401
     import app.models.guest_group  # noqa: F401
     import app.models.attraction  # noqa: F401
+    import app.models.recommendation  # noqa: F401
+    import app.models.itinerary  # noqa: F401
     import app.models.settings  # noqa: F401
     import app.models.channel_integration  # noqa: F401
     import app.models.maintenance  # noqa: F401
     import app.models.adaptation  # noqa: F401
-    import app.models.partner  # noqa: F401
     import app.models.content_source  # noqa: F401
+    import app.models.subscription  # noqa: F401
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _reset_test_sqlite_schema() -> AsyncGenerator[None, None]:
-    """
-    Shared in-memory SQLite for TestSessionLocal and FastAPI get_db override.
-    Recreate schema each test so async HTTP clients see the same DB as fixtures.
-    """
-    from app.db.postgresql.connection import Base
+_integration_full_db_initialized = False
+
+
+async def _recreate_all_tables() -> None:
+    from app.db.postgresql.connection import (
+        Base,
+        ensure_attraction_host_contributions_schema,
+    )
+
+    from sqlalchemy import text
 
     _register_models_for_sqlite_metadata()
     async with test_engine.begin() as conn:
+        if _RUN_POSTGRES_TESTS:
+            await conn.execute(
+                text("DROP TABLE IF EXISTS attraction_host_contributions CASCADE")
+            )
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_attraction_host_contributions_schema()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_test_db_schema(request: pytest.FixtureRequest) -> AsyncGenerator[None, None]:
+    """
+    Recreate schema each test so async HTTP clients see the same DB as fixtures.
+    Uses SQLite in-memory by default, or compose Postgres when RUN_POSTGRES_TESTS=1.
+
+    ``test_integration_full`` resets once per module so class-scoped workflow state persists.
+    """
+    global _integration_full_db_initialized
+
+    mod = getattr(request.node, "module", None)
+    mod_name = getattr(mod, "__name__", "") or ""
+    if mod_name.endswith("test_integration_full"):
+        if _integration_full_db_initialized:
+            yield
+            return
+        _integration_full_db_initialized = True
+        await _recreate_all_tables()
+        yield
+        return
+
+    await _recreate_all_tables()
     yield
 
 

@@ -77,12 +77,25 @@ async def test_embedding_persistence(db_session, ai_service, monkeypatch):
     monkeypatch.setattr(VectorService, "generate_embedding", _stub_embedding)
     vector_service = VectorService(db_session, ai_service)
     
-    # Create test attraction
+    from app.models.host import Host
+
+    host = Host(
+        id=uuid.uuid4(),
+        email=f"vec-{uuid.uuid4().hex[:10]}@example.com",
+        hashed_password="hashed",
+        first_name="Vec",
+        last_name="Host",
+        address="1 St",
+        city="Lovran",
+    )
+    db_session.add(host)
+    await db_session.flush()
+
     attraction = Attraction(
         id=uuid.uuid4(),
         name="Test Beach",
         description="Beautiful beach for swimming",
-        created_by_host_id=uuid.uuid4(),
+        created_by_host_id=host.id,
         city="Lovran",
         attraction_type="beach"
     )

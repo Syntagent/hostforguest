@@ -88,8 +88,8 @@ async def test_get_host_profile_endpoint(async_client: AsyncClient):
         headers={"X-Session-Token": token},
     )
 
-    assert response.status_code == 404
-    assert "Host profile not found" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json().get("host_id")
 
 
 @pytest.mark.asyncio
