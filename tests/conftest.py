@@ -48,6 +48,7 @@ def _register_models_for_sqlite_metadata() -> None:
     import app.models.maintenance  # noqa: F401
     import app.models.adaptation  # noqa: F401
     import app.models.partner  # noqa: F401
+    import app.models.content_source  # noqa: F401
 
 
 @pytest_asyncio.fixture(autouse=True)

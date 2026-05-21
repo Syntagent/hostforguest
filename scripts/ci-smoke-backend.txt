@@ -11,6 +11,7 @@ tests/test_attractions_crud_simple.py
 tests/test_attractions_functionality.py
 tests/test_guest_groups_simple.py
 tests/test_guest_groups_functionality.py
+tests/test_event_recommendations_sqlite.py
 tests/test_host_endpoints.py
 tests/test_host_service.py
 # Host-scoped partners + cleaning (tenant-style APIs)

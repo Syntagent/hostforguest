@@ -20,4 +20,12 @@ if [[ ${#paths[@]} -eq 0 ]]; then
   echo "No test paths in ${LIST}" >&2
   exit 1
 fi
-exec python -m pytest "${paths[@]}" -q --tb=short "$@"
+PY="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "${PY}" ]]; then
+  PY="$(command -v python3 || command -v python || true)"
+fi
+if [[ -z "${PY}" ]]; then
+  echo "No python interpreter found (.venv/bin/python, python3, or python)" >&2
+  exit 127
+fi
+exec "${PY}" -m pytest "${paths[@]}" -q --tb=short "$@"
