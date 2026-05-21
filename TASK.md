@@ -14,7 +14,7 @@
 - [x] **Event recommendations CI coverage** — Added `tests/test_event_recommendations_sqlite.py` (in-memory SQLite + HTTP) for scoring, personalization payload, feed bootstrap, and QA-event filtering. Registered `content_source` models in `tests/conftest.py`. Added path to `scripts/ci-smoke-backend.txt`.
 - [x] **CI smoke script** — `scripts/ci-smoke-backend.sh` now prefers `.venv/bin/python` (falls back to `python3`/`python`).
 - [x] **Live API tests** — `tests/test_event_recommendations.py` skipped unless `RUN_LIVE_API_TESTS=1` (avoids false failures when no API on `8006`).
-- [x] **PostgreSQL regression pass** — `scripts/run-postgres-regression.sh` (compose Postgres on `localhost:5434`, `RUN_POSTGRES_TESTS=1`). Fixed `import_models()` ordering, `attraction_host_contributions` DDL, unified test/app engine on Postgres, `NullPool`, integration module single reset. **429 passed**, 14 skipped (2026-05-21).
+- [x] **PostgreSQL regression pass** — `scripts/run-postgres-regression.sh` (compose Postgres on `localhost:5434`, `RUN_POSTGRES_TESTS=1`). Fixed `import_models()` ordering, `attraction_host_contributions` DDL, unified test/app engine on Postgres, `NullPool`, integration module single reset. **429 passed**, 14 skipped. Commit `a71d004` (2026-05-21).
 
 ## Next Technical Work
 - [ ] Add a production reverse-proxy example.
