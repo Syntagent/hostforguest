@@ -1,22 +1,16 @@
 """
 Pytest configuration and fixtures for TouristGuideLocal tests.
 
-Default: in-memory SQLite (fast CI). Set ``RUN_POSTGRES_TESTS=1`` to exercise
-compose Postgres on ``localhost:5434`` (see ``scripts/run-postgres-regression.sh``).
+Requires PostgreSQL (compose on localhost:5434). Use ``scripts/run-postgres-regression.sh``
+or ``scripts/ci-smoke-backend.sh`` to start Postgres and export test env vars.
 """
 
 import os
 
-_RUN_POSTGRES_TESTS = os.getenv("RUN_POSTGRES_TESTS", "").lower() in ("1", "true", "yes")
-
-# Prevent app lifespan from opening real Postgres; tests use fixture-managed DB.
-if not _RUN_POSTGRES_TESTS:
-    os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
-else:
-    os.environ["TOURISTGUIDE_PYTEST"] = "1"
-    # Host-side regression: compose publishes 5434; .env may still say POSTGRES_SERVER=postgres.
-    os.environ.setdefault("POSTGRES_SERVER", "localhost")
-    os.environ.setdefault("POSTGRES_PORT", "5434")
+os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
+os.environ.setdefault("RUN_POSTGRES_TESTS", "1")
+os.environ.setdefault("POSTGRES_SERVER", "localhost")
+os.environ.setdefault("POSTGRES_PORT", "5434")
 
 import pytest
 import pytest_asyncio
@@ -27,60 +21,41 @@ from typing import AsyncGenerator
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.pool import NullPool
 
 from app.services.settings_service import SettingsService
 from app.models.host import Host
 from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
 
+from app.core.config import settings
 
-if _RUN_POSTGRES_TESTS:
-    from app.core.config import settings
-
-    test_engine = create_async_engine(
-        settings.async_postgres_url,
-        echo=False,
-        poolclass=NullPool,
-        pool_pre_ping=True,
-    )
-else:
-    test_engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        echo=False,
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
-    )
+test_engine = create_async_engine(
+    settings.async_postgres_url,
+    echo=False,
+    poolclass=NullPool,
+    pool_pre_ping=True,
+)
 
 TestSessionLocal = async_sessionmaker(
     test_engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
 
-if _RUN_POSTGRES_TESTS:
-    # Single engine for fixtures and TestClient routes (avoids split-brain on one DB).
-    import app.db.postgresql.connection as _pg
+# Single engine for fixtures and TestClient routes (avoids split-brain on one DB).
+import app.db.postgresql.connection as _pg
 
-    _pg.engine = test_engine
-    _pg.AsyncSessionLocal = TestSessionLocal
-    _pg.USE_POSTGRESQL = True
+_pg.engine = test_engine
+_pg.AsyncSessionLocal = TestSessionLocal
+_pg.USE_POSTGRESQL = True
 
 
-def _register_models_for_sqlite_metadata() -> None:
+def _register_models_for_metadata() -> None:
     """Ensure ORM tables are on Base.metadata before create_all."""
-    import app.models.host  # noqa: F401
-    import app.models.partner  # noqa: F401
-    import app.models.guest_group  # noqa: F401
-    import app.models.attraction  # noqa: F401
-    import app.models.recommendation  # noqa: F401
-    import app.models.itinerary  # noqa: F401
-    import app.models.settings  # noqa: F401
-    import app.models.channel_integration  # noqa: F401
-    import app.models.maintenance  # noqa: F401
-    import app.models.adaptation  # noqa: F401
-    import app.models.content_source  # noqa: F401
-    import app.models.subscription  # noqa: F401
+    from app.db.postgresql.connection import import_models
+
+    import_models()
 
 
 _integration_full_db_initialized = False
@@ -94,12 +69,11 @@ async def _recreate_all_tables() -> None:
 
     from sqlalchemy import text
 
-    _register_models_for_sqlite_metadata()
+    _register_models_for_metadata()
     async with test_engine.begin() as conn:
-        if _RUN_POSTGRES_TESTS:
-            await conn.execute(
-                text("DROP TABLE IF EXISTS attraction_host_contributions CASCADE")
-            )
+        await conn.execute(
+            text("DROP TABLE IF EXISTS attraction_host_contributions CASCADE")
+        )
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     await ensure_attraction_host_contributions_schema()
@@ -109,7 +83,6 @@ async def _recreate_all_tables() -> None:
 async def _reset_test_db_schema(request: pytest.FixtureRequest) -> AsyncGenerator[None, None]:
     """
     Recreate schema each test so async HTTP clients see the same DB as fixtures.
-    Uses SQLite in-memory by default, or compose Postgres when RUN_POSTGRES_TESTS=1.
 
     ``test_integration_full`` resets once per module so class-scoped workflow state persists.
     """
@@ -297,13 +270,13 @@ async def sample_host(db_session):
         last_name="Host",
         address="1 Fixture St",
         city="Lovran",
-        business_type="apartment"
+        business_type="apartment",
     )
-    
+
     db_session.add(host)
     await db_session.commit()
     await db_session.refresh(host)
-    
+
     return host
 
 
@@ -311,7 +284,7 @@ async def sample_host(db_session):
 async def sample_attractions(db_session, sample_host):
     """Create sample attractions for testing."""
     attractions = []
-    
+
     for i in range(5):
         attraction = Attraction(
             id=uuid.uuid4(),
@@ -319,16 +292,16 @@ async def sample_attractions(db_session, sample_host):
             description=f"Description for attraction {i+1}",
             created_by_host_id=sample_host.id,
             city="Lovran",
-            attraction_type="beach" if i % 2 == 0 else "cultural"
+            attraction_type="beach" if i % 2 == 0 else "cultural",
         )
         db_session.add(attraction)
         attractions.append(attraction)
-    
+
     await db_session.commit()
-    
+
     for attraction in attractions:
         await db_session.refresh(attraction)
-    
+
     return attractions
 
 
@@ -342,11 +315,11 @@ async def sample_guest_group(db_session, sample_host):
         group_size=4,
         interests=["beach", "family_friendly"],
         check_in_date=datetime.utcnow().date(),
-        check_out_date=(datetime.utcnow() + timedelta(days=7)).date()
+        check_out_date=(datetime.utcnow() + timedelta(days=7)).date(),
     )
-    
+
     db_session.add(guest_group)
     await db_session.commit()
     await db_session.refresh(guest_group)
-    
+
     return guest_group

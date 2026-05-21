@@ -11,13 +11,12 @@ tests/test_attractions_crud_simple.py
 tests/test_attractions_functionality.py
 tests/test_guest_groups_simple.py
 tests/test_guest_groups_functionality.py
-tests/test_event_recommendations_sqlite.py
 tests/test_host_endpoints.py
 tests/test_host_service.py
 # Host-scoped partners + cleaning (tenant-style APIs)
 tests/test_partners_host_scoped.py
 tests/test_host_cleaning.py
-# Itinerary + full session flows (regression guard; SQLite fixtures)
+# Itinerary + full session flows (regression guard; Postgres fixtures)
 tests/test_itinerary_system.py
 tests/test_session_system.py
 tests/test_adaptation_vision.py

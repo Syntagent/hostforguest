@@ -12,7 +12,7 @@
 
 Full detail: **`.cursor/rules/touristguide-local-dev.mdc`** (always applied in Cursor).
 
-**Tests:** full `pytest` sets `PYTEST_CURRENT_TEST` so in-app rate limiting is skipped; you can also set `DISABLE_RATE_LIMIT=1`. CI smoke also sets **`TOURISTGUIDE_PYTEST=1`** so app lifespan skips real Postgres bootstrap (tests use SQLite via `tests/conftest.py`). See **`docs/RATE_LIMITING.md`** for production vs multi-instance behavior.
+**Tests:** full `pytest` sets `PYTEST_CURRENT_TEST` so in-app rate limiting is skipped; you can also set `DISABLE_RATE_LIMIT=1`. CI smoke sets **`TOURISTGUIDE_PYTEST=1`** and uses compose Postgres on **`localhost:5434`** (`tests/conftest.py`). Run **`bash scripts/ci-smoke-backend.sh`** or **`bash scripts/run-postgres-regression.sh`** for the full suite. See **`docs/RATE_LIMITING.md`** for production vs multi-instance behavior.
 
 **CI smoke (same list as GitHub Actions):** repo root **`npm run test:ci-smoke`** (Windows) or **`npm run test:ci-smoke:sh`** / **`bash scripts/ci-smoke-backend.sh`** — paths live in **`scripts/ci-smoke-backend.txt`** (edit that file to widen or narrow coverage).
 

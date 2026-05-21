@@ -1,5 +1,4 @@
-# Default CI: backend tests (SQLite fixtures) + frontend production build.
-# Postgres is optional for local dev; most tests use in-memory SQLite (see tests/conftest.py).
+# CI: backend tests against compose Postgres + frontend production build.
 
 name: CI
 
@@ -18,11 +17,31 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ENVIRONMENT: development
+      # Matches local compose / .env expectations for smoke tests
       DISABLE_RATE_LIMIT: "1"
-      # VectorService uses a deterministic stub under pytest; this avoids any stray ST load in workers.
       SKIP_SENTENCE_TRANSFORMERS: "1"
-      # Skip app lifespan Postgres bootstrap; tests use SQLite via get_db overrides.
       TOURISTGUIDE_PYTEST: "1"
+      RUN_POSTGRES_TESTS: "1"
+      USE_POSTGRESQL: "true"
+      POSTGRES_SERVER: localhost
+      POSTGRES_PORT: "5434"
+      POSTGRES_USER: tourist_guide_user
+      POSTGRES_DB: tourist_guide_db
+      POSTGRES_PASSWORD: ci_smoke_password
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: tourist_guide_user
+          POSTGRES_PASSWORD: ci_smoke_password
+          POSTGRES_DB: tourist_guide_db
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U tourist_guide_user -d tourist_guide_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +57,6 @@ jobs:
 
       - name: Pytest (CI smoke)
         run: |
-          # Same modules as `npm run test:ci-smoke` (scripts/ci-smoke-backend.txt).
           python -m pytest $(grep -v '^#' scripts/ci-smoke-backend.txt | grep -v '^$' | tr '\n' ' ') -q --tb=short
 
   frontend:
