@@ -80,11 +80,18 @@ docker compose config --quiet
 
 Incremental DDL is in `migrations/`; order is listed in `migrations/MIGRATION_ORDER.txt`. With Postgres reachable (e.g. Docker on `localhost:5434`) and `psql` on your PATH:
 
+```bash
+bash scripts/apply-migrations.sh --dry-run   # list files only
+bash scripts/apply-migrations.sh             # apply (needs psql + POSTGRES_PASSWORD)
+```
+
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/apply_migrations.ps1
 ```
 
-Use `-DryRun` to list files only. Set `POSTGRES_PASSWORD` in the environment if required.
+Use `--dry-run` / `-DryRun` to list files only. Set `POSTGRES_PASSWORD` in the environment if required. Prod VPS example: `bash scripts/apply-migrations.sh --port 5439` (see `docs/REVERSE_PROXY.md`).
 
 Support app:
 
