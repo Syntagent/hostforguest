@@ -123,7 +123,7 @@ curl http://localhost:8000/health
 curl http://localhost:8000/api/v1/docs
 ```
 
-Put the API and frontend behind a reverse proxy and configure `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` for the public domains.
+Put the API and frontend behind a reverse proxy and configure `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` for the public domains. Example configs: **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** (`deploy/nginx/`, `deploy/caddy/`, or Cloudflare Tunnel in `cloudflared-ingress.example.yml`).
 
 ## Security Notes
 

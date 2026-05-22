@@ -1,0 +1,29 @@
+# HostForGuest — Caddy reverse proxy (example)
+#
+# Copy to /etc/caddy/Caddyfile.d/hostforguest.caddy (or merge into main Caddyfile).
+# Caddy obtains TLS automatically when the domain resolves to this host.
+#
+# VPS production: UI 127.0.0.1:3007, API 127.0.0.1:8006
+# Default docker compose: UI 127.0.0.1:3001, API 127.0.0.1:8000
+#
+# Env:
+#   NEXT_PUBLIC_API_URL=https://hostforguest.example.com
+#   CORS_ORIGINS=https://hostforguest.example.com
+
+hostforguest.example.com {
+	encode gzip
+
+	handle /api* {
+		reverse_proxy 127.0.0.1:8006 {
+			flush_interval -1
+		}
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:8006
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3007
+	}
+}

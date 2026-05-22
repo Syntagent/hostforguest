@@ -16,16 +16,19 @@
 - [x] **PostgreSQL regression pass** — `scripts/run-postgres-regression.sh` (compose Postgres on `localhost:5434`, `RUN_POSTGRES_TESTS=1`). Fixed `import_models()` ordering, `attraction_host_contributions` DDL, unified test/app engine on Postgres, `NullPool`, integration module single reset. **429 passed**, 14 skipped. Commit `a71d004` (2026-05-21).
 - [x] **Remove SQLite test path** — Deleted `tests/test_event_recommendations_sqlite.py`; `tests/conftest.py` and CI smoke use PostgreSQL only (no in-memory SQLite).
 
+## Completed (2026-05-22)
+
+- [x] **Production reverse-proxy example** — `deploy/nginx/hostforguest.conf.example`, `deploy/caddy/Caddyfile.example`, and **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** (path routing, port maps, Cloudflare cross-links, migration apply loop).
+
 ## Next Technical Work
-- [ ] Add a production reverse-proxy example.
-- [ ] Add database migration runner guidance for existing deployments.
+- [ ] Add database migration runner script (SQL loop is documented in `docs/REVERSE_PROXY.md`; optional `scripts/apply-migrations.sh`).
 - [ ] Review frontend build output and remove generated service-worker files if they are not intentionally source-controlled.
 - [ ] Decide whether `.cursor/plans` should stay in the public repo.
 
 ## Top impact candidates (for next session)
 
-1. Production reverse-proxy example (nginx/Caddy) aligned with `DEPLOYMENT.md` and Cloudflare tunnel docs.
-3. Guest events UI E2E in Playwright wired into a non-interactive CI job (host + guest flows on 3055/8000).
+1. Guest events UI E2E in Playwright wired into a non-interactive CI job (host + guest flows on 3055/8000).
+2. `scripts/apply-migrations.sh` for existing production DBs (see `migrations/MIGRATION_ORDER.txt`).
 
 ## Validation Commands
 
