@@ -18,17 +18,19 @@
 
 ## Completed (2026-05-22)
 
-- [x] **Production reverse-proxy example** — `deploy/nginx/hostforguest.conf.example`, `deploy/caddy/Caddyfile.example`, and **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** (path routing, port maps, Cloudflare cross-links, migration apply loop).
+- [x] **Production reverse-proxy example** — `deploy/nginx/hostforguest.conf.example`, `deploy/caddy/Caddyfile.example`, **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** (path routing, port maps, Cloudflare cross-links, migration apply loop), CI contract test `tests/test_deploy_reverse_proxy_examples.py`.
+
+## Completed (2026-05-22, continued)
+
+- [x] **`scripts/apply-migrations.sh`** — Bash migration runner (parity with `apply_migrations.ps1`); dry-run works without `psql`; `tests/test_apply_migrations_script.py`.
 
 ## Next Technical Work
-- [ ] Add database migration runner script (SQL loop is documented in `docs/REVERSE_PROXY.md`; optional `scripts/apply-migrations.sh`).
 - [ ] Review frontend build output and remove generated service-worker files if they are not intentionally source-controlled.
 - [ ] Decide whether `.cursor/plans` should stay in the public repo.
 
 ## Top impact candidates (for next session)
 
 1. Guest events UI E2E in Playwright wired into a non-interactive CI job (host + guest flows on 3055/8000).
-2. `scripts/apply-migrations.sh` for existing production DBs (see `migrations/MIGRATION_ORDER.txt`).
 
 ## Validation Commands
 

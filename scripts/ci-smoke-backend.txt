@@ -1,9 +1,11 @@
 # Paths passed to pytest (one per line). Used by GitHub Actions, ci-smoke-backend.ps1, and ci-smoke-backend.sh.
 # For full itinerary coverage run: python -m pytest tests/test_itinerary_system.py -q
 tests/test_main.py
+tests/test_apply_migrations_script.py
 tests/test_auth.py
 tests/test_auth_status.py
 tests/test_config_safety.py
+tests/test_deploy_reverse_proxy_examples.py
 tests/test_connection.py
 tests/test_session_system_basic.py
 tests/test_attractions_crud.py

@@ -1,29 +1,38 @@
-# HostForGuest — Caddy reverse proxy (example)
+# HostForGuest — same-origin production with automatic HTTPS
 #
-# Copy to /etc/caddy/Caddyfile.d/hostforguest.caddy (or merge into main Caddyfile).
-# Caddy obtains TLS automatically when the domain resolves to this host.
+# 1. Replace APP_DOMAIN and upstream ports (8006/3007 = VPS prod; 8000/3001 = default Docker)
+# 2. sudo cp Caddyfile.example /etc/caddy/Caddyfile  # or include from Caddy's sites dir
+# 3. sudo caddy validate --config /etc/caddy/Caddyfile
+# 4. sudo systemctl reload caddy
 #
-# VPS production: UI 127.0.0.1:3007, API 127.0.0.1:8006
-# Default docker compose: UI 127.0.0.1:3001, API 127.0.0.1:8000
-#
-# Env:
-#   NEXT_PUBLIC_API_URL=https://hostforguest.example.com
-#   CORS_ORIGINS=https://hostforguest.example.com
+# .env:
+#   NEXT_PUBLIC_API_URL=https://APP_DOMAIN
+#   CORS_ORIGINS=https://APP_DOMAIN
 
-hostforguest.example.com {
-	encode gzip
+APP_DOMAIN {
+    encode gzip
 
-	handle /api* {
-		reverse_proxy 127.0.0.1:8006 {
-			flush_interval -1
-		}
-	}
+    # FastAPI — preserve /api prefix (do not use handle_path; it strips the prefix)
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8006 {
+            transport http {
+                read_timeout 300s
+                write_timeout 300s
+            }
+        }
+    }
 
-	handle /health {
-		reverse_proxy 127.0.0.1:8006
-	}
+    handle /health {
+        reverse_proxy 127.0.0.1:8006
+    }
 
-	handle {
-		reverse_proxy 127.0.0.1:3007
-	}
+    # Next.js UI (catch-all)
+    handle {
+        reverse_proxy 127.0.0.1:3007
+    }
 }
+
+# Split-origin API host (optional):
+# api.APP_DOMAIN {
+#     reverse_proxy 127.0.0.1:8006
+# }

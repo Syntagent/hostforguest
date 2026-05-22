@@ -99,6 +99,10 @@ async def _reset_test_db_schema(request: pytest.FixtureRequest) -> AsyncGenerato
         yield
         return
 
+    if mod_name.endswith("test_deploy_reverse_proxy_examples"):
+        yield
+        return
+
     await _recreate_all_tables()
     yield
 

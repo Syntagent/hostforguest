@@ -1,50 +1,46 @@
-# HostForGuest — nginx reverse proxy (example)
+# HostForGuest — same-origin production (UI + /api on one hostname)
 #
-# Copy to /etc/nginx/sites-available/hostforguest.conf and symlink into sites-enabled.
-# Replace hostforguest.example.com and upstream ports to match your stack.
+# 1. Copy to /etc/nginx/sites-available/hostforguest.conf
+# 2. Replace APP_DOMAIN and upstream ports (8006/3007 = VPS prod; 8000/3001 = default Docker)
+# 3. Point TLS certs at your paths (or terminate TLS at Cloudflare and listen on :80 only)
+# 4. sudo ln -s .../sites-available/hostforguest.conf sites-enabled/
+# 5. sudo nginx -t && sudo systemctl reload nginx
 #
-# VPS production (docker-compose.vps-prod.yml): UI 127.0.0.1:3007, API 127.0.0.1:8006
-# Default docker compose (--profile docker-api): UI :3001, API :8000
-#
-# Env (production):
-#   NEXT_PUBLIC_API_URL=https://hostforguest.example.com
-#   CORS_ORIGINS=https://hostforguest.example.com
-#
-# TLS: use certbot (certbot --nginx) or terminate TLS in Cloudflare Tunnel instead.
+# .env:
+#   NEXT_PUBLIC_API_URL=https://APP_DOMAIN
+#   CORS_ORIGINS=https://APP_DOMAIN
 
 upstream hostforguest_api {
     server 127.0.0.1:8006;
-    keepalive 16;
+    keepalive 32;
 }
 
 upstream hostforguest_ui {
     server 127.0.0.1:3007;
-    keepalive 8;
+    keepalive 16;
 }
 
 server {
     listen 80;
     listen [::]:80;
-    server_name hostforguest.example.com;
+    server_name APP_DOMAIN;
 
-    # Redirect HTTP → HTTPS when TLS is enabled (uncomment after certbot)
-    # return 301 https://$host$request_uri;
+    # Redirect HTTP → HTTPS when TLS is on this host
+    return 301 https://$host$request_uri;
 }
 
 server {
-    # listen 443 ssl http2;
-    # listen [::]:443 ssl http2;
-    listen 80;
-    listen [::]:80;
-    server_name hostforguest.example.com;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name APP_DOMAIN;
 
-    # ssl_certificate     /etc/letsencrypt/live/hostforguest.example.com/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/hostforguest.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/APP_DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/APP_DOMAIN/privkey.pem;
 
     client_max_body_size 32m;
 
-    # FastAPI: /api/v1/*, /health, OpenAPI under /api/v1/docs
-    location /api {
+    # FastAPI — must be before the UI catch-all
+    location /api/ {
         proxy_pass http://hostforguest_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -56,16 +52,14 @@ server {
         proxy_send_timeout 300s;
     }
 
-    location /health {
-        proxy_pass http://hostforguest_api;
+    # Health check (optional direct probe)
+    location = /health {
+        proxy_pass http://hostforguest_api/health;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Next.js standalone container
+    # Next.js standalone / Node frontend
     location / {
         proxy_pass http://hostforguest_ui;
         proxy_http_version 1.1;
@@ -77,3 +71,17 @@ server {
         proxy_set_header Connection "upgrade";
     }
 }
+
+# --- Split-origin (optional): API on api.APP_DOMAIN ---
+# upstream hostforguest_api_only { server 127.0.0.1:8006; }
+# server {
+#     listen 443 ssl http2;
+#     server_name api.APP_DOMAIN;
+#     ssl_certificate     /etc/letsencrypt/live/api.APP_DOMAIN/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/api.APP_DOMAIN/privkey.pem;
+#     location / {
+#         proxy_pass http://hostforguest_api_only;
+#         proxy_set_header Host $host;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#     }
+# }

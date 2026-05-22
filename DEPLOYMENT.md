@@ -67,6 +67,10 @@ For nginx, Caddy, path-based routing (`/api` → API, `/` → UI), port maps, an
 
 On this VPS, public access uses **Cloudflare Tunnel** only — see **[docs/VPS_CLOUDFLARE.md](docs/VPS_CLOUDFLARE.md)**.
 
+## Reverse proxy (nginx / Caddy / Cloudflare)
+
+See **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** for path routing, port maps, migration apply loop, and smoke checks. Example configs: [`deploy/nginx/hostforguest.conf.example`](deploy/nginx/hostforguest.conf.example), [`deploy/caddy/Caddyfile.example`](deploy/caddy/Caddyfile.example). Tunnel ingress: [`cloudflared-ingress.example.yml`](cloudflared-ingress.example.yml), [`docs/VPS_CLOUDFLARE.md`](docs/VPS_CLOUDFLARE.md).
+
 ## Docker Server Smoke Test
 
 For a simple server deployment behind a reverse proxy:

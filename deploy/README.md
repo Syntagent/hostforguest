@@ -1,8 +1,10 @@
-# Deployment examples
+# Deploy examples
 
-| Path | Purpose |
-|------|---------|
-| [`nginx/hostforguest.conf.example`](nginx/hostforguest.conf.example) | nginx site block: `/api` → API, `/` → Next.js |
-| [`caddy/Caddyfile.example`](caddy/Caddyfile.example) | Caddy v2 equivalent with automatic HTTPS |
+Copy-paste configs for production edges. Full guide: **[docs/REVERSE_PROXY.md](../docs/REVERSE_PROXY.md)**.
 
-Read **[docs/REVERSE_PROXY.md](../docs/REVERSE_PROXY.md)** for port maps, environment variables, Cloudflare Tunnel notes, and migration guidance.
+| File | Role |
+|------|------|
+| [nginx/hostforguest.conf.example](nginx/hostforguest.conf.example) | Same-origin TLS + `/api` → FastAPI, `/` → Next.js |
+| [caddy/Caddyfile.example](caddy/Caddyfile.example) | Same layout with automatic HTTPS |
+
+Replace `APP_DOMAIN` and upstream ports (`8006` / `3007` for VPS prod; `8000` / `3001` for default Docker) before enabling.

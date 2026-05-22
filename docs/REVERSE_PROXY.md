@@ -109,7 +109,15 @@ New databases are bootstrapped by `init-db/` and SQLAlchemy `create_all` in the 
 1. List order: `migrations/MIGRATION_ORDER.txt`
 2. Apply each file once against the target DB (idempotent scripts are preferred; review each file before re-running).
 
-Example (prod Postgres on localhost `5439`):
+Preferred (reads `migrations/MIGRATION_ORDER.txt`):
+
+```bash
+export POSTGRES_PASSWORD='…'
+bash scripts/apply-migrations.sh --host 127.0.0.1 --port 5439 --dry-run
+bash scripts/apply-migrations.sh --host 127.0.0.1 --port 5439
+```
+
+Manual loop (equivalent):
 
 ```bash
 export PGPASSWORD='…'
