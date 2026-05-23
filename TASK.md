@@ -24,13 +24,17 @@
 
 - [x] **`scripts/apply-migrations.sh`** — Bash migration runner (parity with `apply_migrations.ps1`); dry-run works without `psql`; `tests/test_apply_migrations_script.py`.
 
+## Completed (2026-05-23)
+
+- [x] **Guest events Playwright CI** — `scripts/seed_e2e_guest.py` + `scripts/run-e2e-ci.sh` + `tests/e2e/ci-guest-events.spec.ts` (local stack on **8000/3055**); GitHub Actions job `e2e-guest-events`; contract test `tests/test_e2e_ci_harness.py`. Ben/production specs under `tests/e2e/ben_*.spec.ts` remain for manual runs against deployed env.
+
 ## Next Technical Work
 - [ ] Review frontend build output and remove generated service-worker files if they are not intentionally source-controlled.
 - [ ] Decide whether `.cursor/plans` should stay in the public repo.
 
 ## Top impact candidates (for next session)
 
-1. Guest events UI E2E in Playwright wired into a non-interactive CI job (host + guest flows on 3055/8000).
+1. Extend CI guest E2E to host dashboard smoke (dev login + overview tab) using the same harness pattern.
 
 ## Validation Commands
 
@@ -39,6 +43,7 @@ docker compose config --quiet
 python -m compileall -q app
 bash scripts/ci-smoke-backend.sh
 bash scripts/run-postgres-regression.sh    # full pytest on compose Postgres (excludes tests/e2e)
+npm run test:e2e:ci                      # Playwright guest events smoke (8000 + 3055)
 npm run build --prefix frontend
 npm run build --prefix support_app/day_planner
 ```

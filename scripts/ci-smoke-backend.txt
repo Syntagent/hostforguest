@@ -2,6 +2,7 @@
 # For full itinerary coverage run: python -m pytest tests/test_itinerary_system.py -q
 tests/test_main.py
 tests/test_apply_migrations_script.py
+tests/test_e2e_ci_harness.py
 tests/test_auth.py
 tests/test_auth_status.py
 tests/test_config_safety.py

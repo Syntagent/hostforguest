@@ -13,9 +13,29 @@
     "docker:stop-api": "docker compose stop api frontend",
     "check:ports": "powershell -ExecutionPolicy Bypass -File scripts/check-dev-ports.ps1",
     "test:ci-smoke": "powershell -ExecutionPolicy Bypass -File scripts/ci-smoke-backend.ps1",
-    "test:ci-smoke:sh": "bash scripts/ci-smoke-backend.sh"
+    "test:ci-smoke:sh": "bash scripts/ci-smoke-backend.sh",
+    "test:e2e:ci": "bash scripts/run-e2e-ci.sh"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "concurrently": "^9.1.2"
-  }
+  },
+  "version": "1.0.0",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Syntagent/hostforguest.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Syntagent/hostforguest/issues"
+  },
+  "homepage": "https://github.com/Syntagent/hostforguest#readme"
 }

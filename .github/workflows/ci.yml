@@ -76,3 +76,40 @@ jobs:
         run: |
           npm ci --prefix frontend
           npm run build --prefix frontend
+
+  e2e-guest-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ENVIRONMENT: development
+      DEBUG: "true"
+      DISABLE_RATE_LIMIT: "1"
+      SKIP_SENTENCE_TRANSFORMERS: "1"
+      USE_POSTGRESQL: "true"
+      POSTGRES_SERVER: localhost
+      POSTGRES_PORT: "5434"
+      POSTGRES_USER: tourist_guide_user
+      POSTGRES_DB: tourist_guide_db
+      DEV_LOGIN_SEED_ENABLED: "true"
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install root npm deps (Playwright)
+        run: npm ci
+
+      - name: Guest events E2E smoke
+        run: bash scripts/run-e2e-ci.sh
