@@ -91,6 +91,7 @@ jobs:
       POSTGRES_USER: tourist_guide_user
       POSTGRES_DB: tourist_guide_db
       DEV_LOGIN_SEED_ENABLED: "true"
+      DEV_LOGIN_SEED_FORCE: "true"
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     steps:
       - uses: actions/checkout@v4

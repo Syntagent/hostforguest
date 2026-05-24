@@ -7,7 +7,7 @@ export default defineConfig({
   testDir: ".",
   timeout: 120000,
   workers: 1,
-  testMatch: ["ci-guest-events.spec.ts"],
+  testMatch: ["ci-guest-events.spec.ts", "ci-host-dashboard.spec.ts"],
   use: {
     baseURL,
     storageState: { cookies: [], origins: [] },

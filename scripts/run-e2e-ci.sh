@@ -21,6 +21,7 @@ export POSTGRES_PORT="${POSTGRES_PORT:-5434}"
 export POSTGRES_USER="${POSTGRES_USER:-tourist_guide_user}"
 export POSTGRES_DB="${POSTGRES_DB:-tourist_guide_db}"
 export DEV_LOGIN_SEED_ENABLED="${DEV_LOGIN_SEED_ENABLED:-true}"
+export DEV_LOGIN_SEED_FORCE="${DEV_LOGIN_SEED_FORCE:-true}"
 export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-${API_URL}}"
 
 PY="${REPO_ROOT}/.venv/bin/python"
@@ -113,4 +114,4 @@ echo "Running Playwright (access code ${E2E_GUEST_ACCESS_CODE})..."
 npx playwright install chromium
 npx playwright test --config tests/e2e/playwright.ci.config.ts
 
-echo "E2E guest events smoke passed."
+echo "E2E guest + host dashboard smoke passed."
