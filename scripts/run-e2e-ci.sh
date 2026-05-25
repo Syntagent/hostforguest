@@ -114,4 +114,4 @@ echo "Running Playwright (access code ${E2E_GUEST_ACCESS_CODE})..."
 npx playwright install chromium
 npx playwright test --config tests/e2e/playwright.ci.config.ts
 
-echo "E2E guest + host dashboard smoke passed."
+echo "E2E smoke passed (guest events + host dashboard, including create group)."

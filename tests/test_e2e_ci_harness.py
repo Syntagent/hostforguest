@@ -50,3 +50,10 @@ def test_playwright_ci_config_includes_host_dashboard() -> None:
     text = PW_CONFIG.read_text(encoding="utf-8")
     assert "ci-guest-events.spec.ts" in text
     assert "ci-host-dashboard.spec.ts" in text
+
+
+def test_ci_host_dashboard_spec_covers_create_group_flow() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "Create New Group" in text
+    assert "Create New Guest Group" in text
+    assert "Create Group" in text

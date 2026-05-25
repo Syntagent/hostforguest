@@ -32,14 +32,19 @@
 
 - [x] **Host dashboard Playwright CI** — `tests/e2e/ci-host-auth.ts` + `tests/e2e/ci-host-dashboard.spec.ts` (dev API session + overview/guests/account tabs); wired into `playwright.ci.config.ts` and `run-e2e-ci.sh`.
 
+## Completed (2026-05-25)
+
+- [x] **CI host create-guest-group E2E** — `ci-host-dashboard.spec.ts` opens the Guests tab, submits the create-group modal, and asserts the new group appears (no cleanup). Contract test `test_ci_host_dashboard_spec_covers_create_group_flow`.
+- [x] **Rename GitHub Actions E2E job** — `e2e-guest-events` → `e2e-smoke` (guest events + host dashboard).
+
 ## Next Technical Work
 - [ ] Review frontend build output and remove generated service-worker files if they are not intentionally source-controlled.
 - [ ] Decide whether `.cursor/plans` should stay in the public repo.
 
 ## Top impact candidates (for next session)
 
-1. Extend CI host E2E with a lightweight create-guest-group flow (modal only, no cleanup required).
-2. Rename GitHub Actions job `e2e-guest-events` → `e2e-smoke` once host specs are stable in CI.
+1. Extend CI host E2E with a lightweight tab-load sweep (Channels, Maintenance) similar to `ben_host_dashboard.spec.ts`.
+2. Add a contract test that `.github/workflows/ci.yml` job id is `e2e-smoke`.
 
 ## Validation Commands
 

@@ -39,4 +39,28 @@ test.describe("CI host dashboard", () => {
     await expect(page.getByText(DEV_EMAIL, { exact: true })).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
   });
+
+  test("guests tab opens create group modal and saves a new group", async ({ page, request }) => {
+    await ensureHostDashboard(page, request);
+    await openHostTab(page, "Guests");
+
+    await page.getByRole("button", { name: "Create New Group" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Create New Guest Group" })
+    ).toBeVisible({ timeout: 15000 });
+
+    const groupName = `CI E2E Group ${Date.now()}`;
+    await page
+      .getByPlaceholder("e.g., Smith Family, Business Trip Group")
+      .fill(groupName);
+
+    const createBtn = page.getByRole("button", { name: "Create Group", exact: true });
+    await expect(createBtn).toBeEnabled();
+    await createBtn.click();
+
+    await expect(page.getByRole("heading", { name: "Create New Guest Group" })).toBeHidden({
+      timeout: 30000,
+    });
+    await expect(page.getByText(groupName).first()).toBeVisible({ timeout: 30000 });
+  });
 });

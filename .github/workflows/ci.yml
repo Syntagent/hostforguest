@@ -77,7 +77,7 @@ jobs:
           npm ci --prefix frontend
           npm run build --prefix frontend
 
-  e2e-guest-events:
+  e2e-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -112,5 +112,5 @@ jobs:
       - name: Install root npm deps (Playwright)
         run: npm ci
 
-      - name: Guest events E2E smoke
+      - name: E2E smoke (guest events + host dashboard)
         run: bash scripts/run-e2e-ci.sh
