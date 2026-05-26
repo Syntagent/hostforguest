@@ -62,6 +62,24 @@ test.describe("CI host dashboard", () => {
     });
   });
 
+  test("adaptation, map, discover, and cleaning tabs load", async ({ page, request }) => {
+    await ensureHostDashboard(page, request);
+
+    await openHostTab(page, "Adaptation");
+    await expect(page.getByText(/Adaptation studio/i).first()).toBeVisible({ timeout: 20000 });
+
+    await openHostTab(page, "Map");
+    await expect(page.getByText(/Attractions Map/i).first()).toBeVisible({ timeout: 20000 });
+
+    await openHostTab(page, "Discover");
+    await expect(page.getByText(/Discover New Places/i).first()).toBeVisible({ timeout: 20000 });
+
+    await openHostTab(page, "Cleaning");
+    await expect(page.getByRole("heading", { name: /Cleaning & turnover/i })).toBeVisible({
+      timeout: 20000,
+    });
+  });
+
   test("channels and maintenance tabs load", async ({ page, request }) => {
     await ensureHostDashboard(page, request);
     await openHostTab(page, "Channels");

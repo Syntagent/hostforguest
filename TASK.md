@@ -44,10 +44,11 @@
 - [x] **Exclude `.cursor/plans/` from Git** — Added to `.gitignore`; removed tracked plan files from the index (kept locally).
 
 - [x] **CI host Stay, Routes, Insights tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs`.
+- [x] **CI host Adaptation, Map, Discover, Cleaning tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_remaining_host_tabs`.
 
 ## Top impact candidates (for next session)
 
-1. Extend CI host E2E with remaining dashboard tabs (Adaptation, Map, Discover, Cleaning) similar to `ben_host_dashboard.spec.ts`.
+1. Add Attractions tab CRUD smoke to CI host E2E (lighter than `ben_host_dashboard` create-attraction flow).
 
 ## Validation Commands
 

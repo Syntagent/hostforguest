@@ -80,6 +80,15 @@ def test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs() -> None:
     assert "Routes & itineraries" in text
 
 
+def test_ci_host_dashboard_spec_covers_remaining_host_tabs() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "adaptation, map, discover, and cleaning tabs load" in text
+    assert 'openHostTab(page, "Adaptation")' in text
+    assert 'openHostTab(page, "Map")' in text
+    assert 'openHostTab(page, "Discover")' in text
+    assert 'openHostTab(page, "Cleaning")' in text
+
+
 def test_github_ci_workflow_defines_e2e_smoke_job() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "e2e-smoke:" in text
