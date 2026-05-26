@@ -20,8 +20,9 @@ export POSTGRES_SERVER="${POSTGRES_SERVER:-localhost}"
 export POSTGRES_PORT="${POSTGRES_PORT:-5434}"
 export POSTGRES_USER="${POSTGRES_USER:-tourist_guide_user}"
 export POSTGRES_DB="${POSTGRES_DB:-tourist_guide_db}"
-export DEV_LOGIN_SEED_ENABLED="${DEV_LOGIN_SEED_ENABLED:-true}"
-export DEV_LOGIN_SEED_FORCE="${DEV_LOGIN_SEED_FORCE:-true}"
+# Always enable dev seed for this harness (ignore .env false — seed script + Playwright need dev@).
+export DEV_LOGIN_SEED_ENABLED=true
+export DEV_LOGIN_SEED_FORCE=true
 export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-${API_URL}}"
 
 PY="${REPO_ROOT}/.venv/bin/python"

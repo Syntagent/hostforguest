@@ -7,6 +7,9 @@ export const DEV_PASSWORD =
 
 const API_BASE = process.env.PLAYWRIGHT_API_URL || "http://127.0.0.1:8000";
 
+/** Serial CI specs reuse one page — avoid redundant API re-logins that can race AuthProvider. */
+let hostSessionReady = false;
+
 async function fetchDevSessionToken(request: APIRequestContext): Promise<string> {
   const res = await request.post(`${API_BASE}/api/v1/hosts/login`, {
     data: { email: DEV_EMAIL, password: DEV_PASSWORD },
@@ -38,9 +41,14 @@ export async function loginAsDevHost(page: Page, request: APIRequestContext) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
   await waitForDashboardShell(page);
-  await expect(page.getByRole("button", { name: "Guests", exact: true }).first()).toBeVisible({
-    timeout: 60000,
-  });
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    if (await isHostShellVisible(page)) {
+      hostSessionReady = true;
+      return;
+    }
+    await page.waitForTimeout(1000);
+  }
+  throw new Error("Host dashboard shell did not appear after dev login");
 }
 
 async function waitForDashboardShell(page: Page) {
@@ -51,27 +59,36 @@ async function waitForDashboardShell(page: Page) {
 }
 
 export async function ensureHostDashboard(page: Page, request: APIRequestContext) {
-  const overviewTab = page.getByRole("button", { name: "Overview", exact: true }).first();
+  await waitForDashboardShell(page);
+
+  if (hostSessionReady && (await isHostShellVisible(page))) {
+    return;
+  }
+
+  if (await isHostShellVisible(page)) {
+    hostSessionReady = true;
+    return;
+  }
 
   if (!page.url().includes("/dashboard")) {
     await loginAsDevHost(page, request);
-  } else if (!(await isHostShellVisible(page))) {
-    const onLogin = await page.locator("#email").isVisible({ timeout: 2000 }).catch(() => false);
-    if (onLogin) {
-      await loginAsDevHost(page, request);
-    } else {
-      await page.goto("/dashboard", { waitUntil: "domcontentloaded", timeout: 60000 });
-      await waitForDashboardShell(page);
-    }
+    return;
   }
 
+  await page.goto("/dashboard", { waitUntil: "domcontentloaded", timeout: 60000 });
   await waitForDashboardShell(page);
-
-  if (!(await isHostShellVisible(page))) {
-    await loginAsDevHost(page, request);
+  if (await isHostShellVisible(page)) {
+    hostSessionReady = true;
+    return;
   }
 
-  await expect(overviewTab).toBeVisible({ timeout: 60000 });
+  const onLogin = await page.locator("#email").isVisible({ timeout: 2000 }).catch(() => false);
+  if (onLogin) {
+    await loginAsDevHost(page, request);
+    return;
+  }
+
+  await loginAsDevHost(page, request);
 }
 
 export async function openHostTab(page: Page, label: string) {

@@ -70,6 +70,16 @@ def test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs() -> None:
     assert "Create issue" in text
 
 
+def test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "stay, routes, and insights tabs load" in text
+    assert 'openHostTab(page, "Stay")' in text
+    assert 'openHostTab(page, "Routes")' in text
+    assert 'openHostTab(page, "Insights")' in text
+    assert "Accommodation Management" in text
+    assert "Routes & itineraries" in text
+
+
 def test_github_ci_workflow_defines_e2e_smoke_job() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "e2e-smoke:" in text

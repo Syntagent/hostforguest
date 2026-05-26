@@ -43,9 +43,11 @@
 - [x] **CI host Channels + Maintenance tab smoke** — `ci-host-dashboard.spec.ts` asserts Booking.com panel and Maintenance headings/actions; contract test `test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs`.
 - [x] **Exclude `.cursor/plans/` from Git** — Added to `.gitignore`; removed tracked plan files from the index (kept locally).
 
+- [x] **CI host Stay, Routes, Insights tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs`.
+
 ## Top impact candidates (for next session)
 
-1. Extend CI host E2E with a lightweight tab-load sweep for more tabs (Stay, Routes, Insights) similar to `ben_host_dashboard.spec.ts` remaining-tabs test.
+1. Extend CI host E2E with remaining dashboard tabs (Adaptation, Map, Discover, Cleaning) similar to `ben_host_dashboard.spec.ts`.
 
 ## Validation Commands
 
