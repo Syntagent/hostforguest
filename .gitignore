@@ -143,6 +143,11 @@ node_modules/
 frontend/.next/
 frontend/out/
 
+# next-pwa emits these into public/ when NEXT_PWA=true (do not commit)
+frontend/public/sw.js
+frontend/public/swe-worker-*.js
+frontend/public/workbox-*.js
+
 # Vite build output
 support_app/**/dist/
 

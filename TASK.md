@@ -37,14 +37,16 @@
 - [x] **CI host create-guest-group E2E** — `ci-host-dashboard.spec.ts` opens the Guests tab, submits the create-group modal, and asserts the new group appears (no cleanup). Contract test `test_ci_host_dashboard_spec_covers_create_group_flow`.
 - [x] **Rename GitHub Actions E2E job** — `e2e-guest-events` → `e2e-smoke` (guest events + host dashboard).
 
+## Completed (2026-05-26)
+
+- [x] **Remove stale next-pwa artifacts from `frontend/public/`** — Deleted committed `sw.js`, `swe-worker-*.js`, and `workbox-*.js` (PWA is opt-in via `NEXT_PWA=true` in `next.config.ts`). Added `.gitignore` rules and contract tests in `tests/test_e2e_ci_harness.py` (`test_github_ci_workflow_defines_e2e_smoke_job`, `test_frontend_public_has_no_committed_next_pwa_artifacts`).
+
 ## Next Technical Work
-- [ ] Review frontend build output and remove generated service-worker files if they are not intentionally source-controlled.
 - [ ] Decide whether `.cursor/plans` should stay in the public repo.
 
 ## Top impact candidates (for next session)
 
 1. Extend CI host E2E with a lightweight tab-load sweep (Channels, Maintenance) similar to `ben_host_dashboard.spec.ts`.
-2. Add a contract test that `.github/workflows/ci.yml` job id is `e2e-smoke`.
 
 ## Validation Commands
 

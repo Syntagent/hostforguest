@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+FRONTEND_PUBLIC = REPO_ROOT / "frontend" / "public"
 RUN_SCRIPT = REPO_ROOT / "scripts" / "run-e2e-ci.sh"
 SEED_SCRIPT = REPO_ROOT / "scripts" / "seed_e2e_guest.py"
 PW_CONFIG = REPO_ROOT / "tests" / "e2e" / "playwright.ci.config.ts"
@@ -57,3 +59,17 @@ def test_ci_host_dashboard_spec_covers_create_group_flow() -> None:
     assert "Create New Group" in text
     assert "Create New Guest Group" in text
     assert "Create Group" in text
+
+
+def test_github_ci_workflow_defines_e2e_smoke_job() -> None:
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "e2e-smoke:" in text
+    assert "e2e-guest-events:" not in text
+    assert "bash scripts/run-e2e-ci.sh" in text
+
+
+def test_frontend_public_has_no_committed_next_pwa_artifacts() -> None:
+    """next-pwa writes sw/workbox files at build time when NEXT_PWA=true — not source."""
+    assert not (FRONTEND_PUBLIC / "sw.js").exists()
+    assert not list(FRONTEND_PUBLIC.glob("swe-worker-*.js"))
+    assert not list(FRONTEND_PUBLIC.glob("workbox-*.js"))
