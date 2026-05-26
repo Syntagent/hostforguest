@@ -58,6 +58,34 @@ test.describe("CI host dashboard", () => {
     });
   });
 
+  test("attractions tab creates attraction from address and city", async ({ page, request }) => {
+    await ensureHostDashboard(page, request);
+    await openHostTab(page, "Attractions");
+
+    await page.getByRole("button", { name: "Add New Attraction" }).click();
+    await expect(page.getByRole("heading", { name: "Create New Attraction" })).toBeVisible({
+      timeout: 20000,
+    });
+
+    const name = `CI E2E Attraction ${Date.now()}`;
+    await page.getByPlaceholder(/attraction|name/i).first().fill(name);
+    await page.locator("textarea").first().fill("CI E2E attraction created without Google Maps client geocoding.");
+    await page.locator('input[placeholder*="City"], input[placeholder*="city"]').first().fill("Lovran");
+    await page
+      .locator('input[placeholder*="Address"], input[placeholder*="address"]')
+      .first()
+      .fill("Stari grad 12");
+
+    const createBtn = page.getByRole("button", { name: "Create Attraction", exact: true });
+    await expect(createBtn).toBeEnabled();
+    await createBtn.click();
+
+    await expect(page.getByRole("heading", { name: "Create New Attraction" })).toBeHidden({
+      timeout: 45000,
+    });
+    await expect(page.getByText(name).first()).toBeVisible({ timeout: 45000 });
+  });
+
   test("stay, routes, and insights tabs load", async ({ page, request }) => {
     await ensureHostDashboard(page, request);
 

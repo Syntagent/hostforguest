@@ -96,7 +96,7 @@ class AttractionService:
                     "countrycodes": "hr",
                     "addressdetails": 0,
                 },
-                headers={"User-Agent": "TouristGuideLocal/1.0"},
+                headers={"User-Agent": "HostForGuest/1.0"},
                 timeout=8,
             )
             if response.status_code != 200:
@@ -145,7 +145,11 @@ class AttractionService:
         longitude: Optional[float],
     ) -> Tuple[Optional[float], Optional[float]]:
         if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
-            return float(latitude), float(longitude)
+            if latitude == 0 and longitude == 0:
+                latitude = None
+                longitude = None
+            else:
+                return float(latitude), float(longitude)
 
         query = self._build_geocode_query(address=address, city=city)
         if not query:
@@ -229,6 +233,7 @@ class AttractionService:
                 required_equipment=attraction_data.required_equipment,
                 name_translations=attraction_data.name_translations,
                 description_translations=attraction_data.description_translations,
+                featured_image_url=attraction_data.featured_image_url,
                 image_gallery=attraction_data.image_gallery,
                 status=AttractionStatus.DRAFT  # Start as draft
             )

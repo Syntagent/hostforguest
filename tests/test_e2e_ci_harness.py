@@ -88,6 +88,13 @@ def test_ci_host_dashboard_spec_covers_attractions_create_modal() -> None:
     assert "Create New Attraction" in text
 
 
+def test_ci_host_dashboard_spec_covers_attractions_create_submit() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "attractions tab creates attraction from address and city" in text
+    assert "Create Attraction" in text
+    assert "CI E2E Attraction" in text
+
+
 def test_ci_host_dashboard_spec_covers_remaining_host_tabs() -> None:
     text = PW_HOST_SPEC.read_text(encoding="utf-8")
     assert "adaptation, map, discover, and cleaning tabs load" in text

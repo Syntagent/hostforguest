@@ -69,7 +69,7 @@ interface GoogleMapPreviewProps {
 interface EnhancedAttractionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: Partial<Attraction>) => void;
+  onSubmit: (data: Partial<Attraction>) => void | Promise<void>;
   data: Partial<Attraction>;
   onChange: (data: Partial<Attraction>) => void;
   mode: 'create' | 'edit';
@@ -874,27 +874,41 @@ export const EnhancedAttractionModal: React.FC<EnhancedAttractionModalProps> = (
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!data.name || !data.address || !data.city) {
-      setAiGenerationStatus('❌ Please fill in at least name, address and city');
+    if (!data.name?.trim() || !data.description?.trim() || !data.address?.trim() || !data.city?.trim()) {
+      setAiGenerationStatus('❌ Please fill in name, description, address, and city');
+      setTimeout(() => setAiGenerationStatus(''), 4000);
+      return;
+    }
+
+    if (!data.attraction_type) {
+      setAiGenerationStatus('❌ Please select an attraction type');
       setTimeout(() => setAiGenerationStatus(''), 3000);
       return;
     }
 
     const coordinates = await resolveCoordinatesBeforeSubmit();
-    if (!coordinates) {
-      setAiGenerationStatus('❌ Unable to resolve geolocation. Please pick a Place result or adjust address/city.');
+    const hasAddressForServerGeo = Boolean(data.address?.trim() && data.city?.trim());
+    if (!coordinates && !hasAddressForServerGeo) {
+      setAiGenerationStatus('❌ Unable to resolve geolocation. Pick a Google Place or adjust address/city.');
       setTimeout(() => setAiGenerationStatus(''), 5000);
       return;
     }
 
     const payload = {
       ...data,
-      latitude: coordinates.lat,
-      longitude: coordinates.lng,
+      ...(coordinates
+        ? { latitude: coordinates.lat, longitude: coordinates.lng }
+        : { latitude: null, longitude: null }),
     };
     onChange(payload);
-    onSubmit(payload);
-    onClose();
+
+    try {
+      await onSubmit(payload);
+      onClose();
+    } catch {
+      setAiGenerationStatus('❌ Save failed. Check you are signed in and try again.');
+      setTimeout(() => setAiGenerationStatus(''), 5000);
+    }
   };
 
   /**

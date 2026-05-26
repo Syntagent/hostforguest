@@ -27,6 +27,7 @@ import {
   X,
   Route,
   Palette,
+  UserCircle,
 } from "lucide-react";
 import { hostsApi, guestGroupsApi, attractionsApi, realtimeApi, HostProfile, GuestGroup, Attraction, GuestEVisitorData, GuestEVisitorDataCreate, API_BASE_URL } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
@@ -50,7 +51,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   /** After first successful load cycle, never swap the whole page for a skeleton (avoids "blank" UI while refresh runs). */
   const [dashboardReady, setDashboardReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  type DashboardTab = 'overview' | 'accommodation' | 'channels' | 'groups' | 'attractions' | 'routes' | 'maintenance' | 'adaptation' | 'insights' | 'map' | 'discover' | 'cleaning';
+  type DashboardTab = 'overview' | 'accommodation' | 'channels' | 'groups' | 'attractions' | 'routes' | 'maintenance' | 'adaptation' | 'insights' | 'map' | 'discover' | 'cleaning' | 'account';
   const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
 
   // Guest Groups state
@@ -201,7 +202,19 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
       // Load real-time updates from Crawl4AI
       const realtimeResponse = await realtimeApi.getUpdates();
       if (realtimeResponse.success && realtimeResponse.data) {
-        setRealtimeUpdates(realtimeResponse.data.slice(0, 5)); // Latest 5 updates
+        setRealtimeUpdates(
+          realtimeResponse.data.slice(0, 8).map((u) => ({
+            id: u.id,
+            title: u.title,
+            content: u.content,
+            description: u.description || u.content,
+            created_at: u.created_at,
+            source: u.source_name || u.source,
+            content_type: u.content_type,
+            url: u.url,
+            relevant_cities: u.relevant_cities,
+          }))
+        );
       } else if (realtimeResponse.status === 401) {
         console.error('Authentication failed for real-time updates');
         logout();
@@ -217,29 +230,37 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   };
 
   const handleCreateGroup = async () => {
-    try {
-      const response = await guestGroupsApi.create(createGroupData);
-      if (response.success && response.data) {
-        setGuestGroups([...guestGroups, response.data]);
-        setShowCreateGroupModal(false);
-        setCreateGroupData({
-          group_name: '',
-          group_size: 2,
-          preferences: [{
-            guest_name: '',
-            age_range: 'adult',
-            interests: [],
-            mobility_level: 'high',
-            budget_level: 'medium',
-            language_preference: 'en'
-          }]
-        });
-        // Reload dashboard data to update analytics
-        await loadDashboardData();
-      }
-    } catch (error) {
-      console.error('Error creating guest group:', error);
+    const name = createGroupData.group_name?.trim();
+    if (!name) {
+      window.alert("Please enter a group name.");
+      throw new Error("group_name required");
     }
+    const response = await guestGroupsApi.create({
+      ...createGroupData,
+      group_name: name,
+    });
+    if (!response.success || !response.data) {
+      const msg =
+        (response as { error?: string }).error ||
+        "Could not create guest group. Try again.";
+      window.alert(msg);
+      throw new Error(msg);
+    }
+    setGuestGroups([...guestGroups, response.data]);
+    setShowCreateGroupModal(false);
+    setCreateGroupData({
+      group_name: '',
+      group_size: 2,
+      preferences: [{
+        guest_name: '',
+        age_range: 'adult',
+        interests: [],
+        mobility_level: 'high',
+        budget_level: 'medium',
+        language_preference: 'en'
+      }]
+    });
+    await loadDashboardData();
   };
 
   const copyAccessCode = (accessCode: string) => {
@@ -328,31 +349,54 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
     }
   };
 
-  // Attraction handlers
-  const handleCreateAttraction = async () => {
+  type AttractionFormData = typeof createAttractionData;
+
+  const sanitizeAttractionPayload = (raw: AttractionFormData) => {
+    const {
+      google_place_id: _gp,
+      google_maps_url: _gm,
+      ...rest
+    } = raw;
+    return {
+      ...rest,
+      duration_hours:
+        typeof rest.duration_hours === "number" ? rest.duration_hours : undefined,
+    };
+  };
+
+  // Attraction handlers — accepts payload from EnhancedAttractionModal (avoids stale React state)
+  const handleCreateAttraction = async (payloadFromModal?: AttractionFormData) => {
+    const data = payloadFromModal ?? createAttractionData;
+    if (payloadFromModal) {
+      setCreateAttractionData(payloadFromModal);
+    }
+
     try {
-      // Check if user is authenticated
       if (!currentHost) {
         console.error('No authenticated user found for attraction creation');
         setError('Authentication required. Please log in again.');
         return;
       }
 
-      // Validate required fields
+      const hasClientGeo =
+        typeof data.latitude === "number" && typeof data.longitude === "number";
+      const hasAddressForGeo = Boolean(data.address?.trim() && data.city?.trim());
       if (
-        !createAttractionData.name ||
-        !createAttractionData.description ||
-        !createAttractionData.attraction_type ||
-        !createAttractionData.city ||
-        typeof createAttractionData.latitude !== "number" ||
-        typeof createAttractionData.longitude !== "number"
+        !data.name?.trim() ||
+        !data.description?.trim() ||
+        !data.attraction_type ||
+        !data.city?.trim() ||
+        (!hasClientGeo && !hasAddressForGeo)
       ) {
-        setError('Please fill in all required fields (name, description, attraction type, city, geolocation)');
+        setError(
+          'Please fill in all required fields (name, description, attraction type, city, and address or map location)'
+        );
         return;
       }
 
-      const response = await attractionsApi.create(createAttractionData);
+      const response = await attractionsApi.create(sanitizeAttractionPayload(data));
       if (response.success && response.data) {
+        setError(null);
         setAttractions([...attractions, response.data]);
         setShowCreateAttractionModal(false);
         setSelectedPlace(null);
@@ -388,48 +432,74 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         });
         // Reload dashboard data to update analytics
         await loadDashboardData();
-      } else if (response.status === 401) {
+        return;
+      }
+      if (response.status === 401) {
         console.error('Authentication failed for attraction creation');
         logout();
-      } else if (response.status === 422) {
-        console.error('Validation error:', response.error);
-        setError(`Validation error: ${response.error}`);
-      } else {
-        console.error('Failed to create attraction:', response.error);
-        setError(`Failed to create attraction: ${response.error}`);
+        throw new Error('Session expired');
       }
+      const msg =
+        response.status === 422
+          ? `Validation error: ${response.error}`
+          : `Failed to create attraction: ${response.error || 'Unknown error'}`;
+      console.error(msg);
+      setError(msg);
+      throw new Error(msg);
     } catch (error) {
+      if (error instanceof Error && error.message.includes('Session expired')) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.startsWith('Failed to create')) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.startsWith('Validation error')) {
+        throw error;
+      }
       console.error('Error creating attraction:', error);
-      setError('Network error occurred while creating attraction');
+      const msg = 'Network error occurred while creating attraction';
+      setError(msg);
+      throw new Error(msg);
     }
   };
 
-  const handleEditAttraction = async () => {
+  const handleEditAttraction = async (payloadFromModal?: AttractionFormData) => {
     if (!selectedAttraction) return;
 
+    const data = payloadFromModal ?? createAttractionData;
+    if (payloadFromModal) {
+      setCreateAttractionData(payloadFromModal);
+    }
+
     try {
-      // Check if user is authenticated
       if (!currentHost) {
         console.error('No authenticated user found for attraction update');
         setError('Authentication required. Please log in again.');
         return;
       }
 
-      // Validate required fields
+      const hasClientGeo =
+        typeof data.latitude === "number" && typeof data.longitude === "number";
+      const hasAddressForGeo = Boolean(data.address?.trim() && data.city?.trim());
       if (
-        !createAttractionData.name ||
-        !createAttractionData.description ||
-        !createAttractionData.attraction_type ||
-        !createAttractionData.city ||
-        typeof createAttractionData.latitude !== "number" ||
-        typeof createAttractionData.longitude !== "number"
+        !data.name?.trim() ||
+        !data.description?.trim() ||
+        !data.attraction_type ||
+        !data.city?.trim() ||
+        (!hasClientGeo && !hasAddressForGeo)
       ) {
-        setError('Please fill in all required fields (name, description, attraction type, city, geolocation)');
+        setError(
+          'Please fill in all required fields (name, description, attraction type, city, and address or map location)'
+        );
         return;
       }
 
-      const response = await attractionsApi.update(selectedAttraction.id, createAttractionData);
+      const response = await attractionsApi.update(
+        selectedAttraction.id,
+        sanitizeAttractionPayload(data)
+      );
       if (response.success && response.data) {
+        setError(null);
         setAttractions(attractions.map(attraction =>
           attraction.id === selectedAttraction.id ? response.data! : attraction
         ));
@@ -468,19 +538,32 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         });
         // Reload dashboard data to update analytics
         await loadDashboardData();
-      } else if (response.status === 401) {
+        return;
+      }
+      if (response.status === 401) {
         console.error('Authentication failed for attraction update');
         logout();
-      } else if (response.status === 422) {
-        console.error('Validation error:', response.error);
-        setError(`Validation error: ${response.error}`);
-      } else {
-        console.error('Failed to update attraction:', response.error);
-        setError(`Failed to update attraction: ${response.error}`);
+        throw new Error('Session expired');
       }
+      const msg =
+        response.status === 422
+          ? `Validation error: ${response.error}`
+          : `Failed to update attraction: ${response.error || 'Unknown error'}`;
+      console.error(msg);
+      setError(msg);
+      throw new Error(msg);
     } catch (error) {
+      if (error instanceof Error && (
+        error.message.includes('Session expired') ||
+        error.message.startsWith('Failed to update') ||
+        error.message.startsWith('Validation error')
+      )) {
+        throw error;
+      }
       console.error('Error updating attraction:', error);
-      setError('Network error occurred while updating attraction');
+      const msg = 'Network error occurred while updating attraction';
+      setError(msg);
+      throw new Error(msg);
     }
   };
 
@@ -1049,6 +1132,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           { id: "discover", label: "Discover", icon: <Search /> },
           { id: "cleaning", label: "Cleaning", icon: <Sparkles /> },
           { id: "insights", label: "Insights", icon: <Compass /> },
+          { id: "account", label: "Account", icon: <UserCircle /> },
         ]}
         activeItem={activeTab}
         onSelectItem={(id) => setActiveTab(id as DashboardTab)}

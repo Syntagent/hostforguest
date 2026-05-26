@@ -47,10 +47,11 @@
 - [x] **CI host Adaptation, Map, Discover, Cleaning tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_remaining_host_tabs`.
 
 - [x] **CI host Attractions create-modal smoke** — Opens Add New Attraction modal and cancels (no DB write); contract test `test_ci_host_dashboard_spec_covers_attractions_create_modal`.
+- [x] **CI host full attraction create** — Submits create form with address+city (server Nominatim geocode, no Google Maps client key); contract test `test_ci_host_dashboard_spec_covers_attractions_create_submit`. Frontend allows create without client lat/lng when address+city are set.
 
 ## Top impact candidates (for next session)
 
-1. Optional: CI host full attraction create (submit form) if regression signal is needed beyond the modal smoke.
+1. Optional: add `GOOGLE_MAPS_API_KEY` to GitHub Actions secrets for faster server-side geocoding in CI (Nominatim fallback is sufficient today).
 
 ## Validation Commands
 

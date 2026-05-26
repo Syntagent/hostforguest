@@ -12,6 +12,7 @@ tests/test_session_system_basic.py
 tests/test_attractions_crud.py
 tests/test_attractions_crud_simple.py
 tests/test_attractions_functionality.py
+tests/test_attraction_geocoding_fallback.py
 tests/test_guest_groups_simple.py
 tests/test_guest_groups_functionality.py
 tests/test_host_endpoints.py
