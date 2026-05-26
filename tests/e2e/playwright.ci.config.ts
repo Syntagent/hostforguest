@@ -11,7 +11,8 @@ export default defineConfig({
   use: {
     baseURL,
     storageState: { cookies: [], origins: [] },
-    viewport: { width: 1280, height: 900 },
+    // Wider than 1280px so AppLayout does not auto-collapse the sidebar (max-width: 1280px).
+    viewport: { width: 1366, height: 900 },
     trace: "on-first-retry",
     extraHTTPHeaders: {},
   },

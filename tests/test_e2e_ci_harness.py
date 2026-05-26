@@ -61,6 +61,15 @@ def test_ci_host_dashboard_spec_covers_create_group_flow() -> None:
     assert "Create Group" in text
 
 
+def test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "channels and maintenance tabs load" in text
+    assert 'openHostTab(page, "Channels")' in text
+    assert 'openHostTab(page, "Maintenance")' in text
+    assert "Booking.com" in text
+    assert "Create issue" in text
+
+
 def test_github_ci_workflow_defines_e2e_smoke_job() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "e2e-smoke:" in text

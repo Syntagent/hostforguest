@@ -40,6 +40,29 @@ test.describe("CI host dashboard", () => {
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
   });
 
+  test("channels and maintenance tabs load", async ({ page, request }) => {
+    await ensureHostDashboard(page, request);
+    await openHostTab(page, "Channels");
+
+    await expect(page.getByRole("heading", { name: "Booking.com" })).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByText(/Booking\.com extranet/i).first()).toBeVisible({
+      timeout: 15000,
+    });
+
+    await openHostTab(page, "Maintenance");
+    await expect(page.getByRole("heading", { name: "Maintenance" })).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByRole("button", { name: "Create issue" })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("heading", { name: "Preventive schedules" })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
   test("guests tab opens create group modal and saves a new group", async ({ page, request }) => {
     await ensureHostDashboard(page, request);
     await openHostTab(page, "Guests");
