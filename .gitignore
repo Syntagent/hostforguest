@@ -158,5 +158,8 @@ test_output.txt
 .vscode/
 .idea/
 
+# Cursor agent plans (local only; not for public distribution)
+.cursor/plans/
+
 # OS
 Desktop.ini

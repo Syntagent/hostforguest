@@ -40,13 +40,12 @@
 ## Completed (2026-05-26)
 
 - [x] **Remove stale next-pwa artifacts from `frontend/public/`** — Deleted committed `sw.js`, `swe-worker-*.js`, and `workbox-*.js` (PWA is opt-in via `NEXT_PWA=true` in `next.config.ts`). Added `.gitignore` rules and contract tests in `tests/test_e2e_ci_harness.py` (`test_github_ci_workflow_defines_e2e_smoke_job`, `test_frontend_public_has_no_committed_next_pwa_artifacts`).
-
-## Next Technical Work
-- [ ] Decide whether `.cursor/plans` should stay in the public repo.
+- [x] **CI host Channels + Maintenance tab smoke** — `ci-host-dashboard.spec.ts` asserts Booking.com panel and Maintenance headings/actions; contract test `test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs`.
+- [x] **Exclude `.cursor/plans/` from Git** — Added to `.gitignore`; removed tracked plan files from the index (kept locally).
 
 ## Top impact candidates (for next session)
 
-1. Extend CI host E2E with a lightweight tab-load sweep (Channels, Maintenance) similar to `ben_host_dashboard.spec.ts`.
+1. Extend CI host E2E with a lightweight tab-load sweep for more tabs (Stay, Routes, Insights) similar to `ben_host_dashboard.spec.ts` remaining-tabs test.
 
 ## Validation Commands
 
