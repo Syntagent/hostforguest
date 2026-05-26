@@ -8,7 +8,7 @@ Google Maps integration, transportation planning, and collaborative features.
 import logging
 import os
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, and_, or_
 from sqlalchemy.orm import selectinload
@@ -22,7 +22,8 @@ from app.models import (
     Itinerary, DayPlan, ItineraryActivity, ActivityVote, Attraction, GuestGroup, Host,
     ItineraryCreate, ItineraryResponse, ItineraryWithDetails, ItineraryAssignFromTemplate,
     DayPlanCreate, DayPlanResponse, DayPlanWithActivities,
-    ActivityCreate, ActivityResponse, ActivityVoteCreate, ActivityVoteResponse,
+    ActivityCreate, ActivityUpdate, ActivityResponse, ActivityVoteCreate, ActivityVoteResponse,
+    ItineraryUpdate, RoutePointCreate, RoutePointReorder, RoutePointResponse,
     GoogleMapsDirectionsRequest, GoogleMapsDirectionsResponse,
     ItinerarySuggestionRequest, ItinerarySuggestionResponse,
     ItineraryStatus, ActivityStatus, TransportMode, WeatherSuitability,
@@ -35,6 +36,15 @@ from app.services.ai_service_fallback import AIServiceWithFallback
 from app.services.guest_group_service import host_owns_guest_group
 
 logger = logging.getLogger(__name__)
+
+
+def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize datetimes for TIMESTAMP WITHOUT TIME ZONE columns."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _strip_markdown_json_fence(text: str) -> str:
@@ -731,8 +741,8 @@ class ItineraryService:
                 activity_type=activity_data.activity_type,
                 category=activity_data.category,
                 sequence_order=next_order,
-                scheduled_start_time=activity_data.scheduled_start_time,
-                scheduled_end_time=activity_data.scheduled_end_time,
+                scheduled_start_time=_naive_utc(activity_data.scheduled_start_time),
+                scheduled_end_time=_naive_utc(activity_data.scheduled_end_time),
                 estimated_duration=activity_data.estimated_duration,
                 location_name=activity_data.location_name,
                 address=activity_data.address,
@@ -775,6 +785,192 @@ class ItineraryService:
             await self.db.rollback()
             logger.error(f"Error adding activity to day plan: {e}")
             return None
+
+    async def update_itinerary(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: ItineraryUpdate,
+    ) -> Optional[ItineraryResponse]:
+        try:
+            itinerary = await self._get_itinerary(itinerary_id)
+            if not itinerary or itinerary.host_id != host_id:
+                return None
+            payload = data.model_dump(exclude_unset=True)
+            for key, value in payload.items():
+                setattr(itinerary, key, value)
+            itinerary.updated_at = datetime.utcnow()
+            await self.db.commit()
+            await self.db.refresh(itinerary)
+            return ItineraryResponse.model_validate(itinerary)
+        except Exception as e:
+            await self.db.rollback()
+            logger.error("Error updating itinerary %s: %s", itinerary_id, e)
+            return None
+
+    async def list_route_points(
+        self, itinerary_id: uuid.UUID, host_id: uuid.UUID
+    ) -> Optional[List[RoutePointResponse]]:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        stmt = (
+            select(ItineraryActivity, DayPlan)
+            .join(DayPlan, ItineraryActivity.day_plan_id == DayPlan.id)
+            .where(DayPlan.itinerary_id == itinerary_id)
+            .order_by(DayPlan.day_number, ItineraryActivity.sequence_order)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        return [
+            RoutePointResponse(
+                id=act.id,
+                day_plan_id=act.day_plan_id,
+                name=act.title,
+                latitude=act.latitude,
+                longitude=act.longitude,
+                description=act.description,
+                order_index=act.sequence_order,
+                estimated_duration=act.estimated_duration,
+            )
+            for act, _dp in rows
+        ]
+
+    async def add_route_point(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: RoutePointCreate,
+    ) -> Optional[RoutePointResponse]:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        day_plan = await self._get_day_plan(data.day_plan_id)
+        if not day_plan or day_plan.itinerary_id != itinerary_id:
+            return None
+        order = data.order_index or await self._get_next_activity_sequence(data.day_plan_id)
+        start = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+        end = start + timedelta(minutes=data.estimated_duration)
+        created = await self.add_activity_to_day(
+            data.day_plan_id,
+            ActivityCreate(
+                title=data.name,
+                description=data.description,
+                activity_type="tnt_point",
+                location_name=data.name,
+                scheduled_start_time=start,
+                scheduled_end_time=end,
+                estimated_duration=data.estimated_duration,
+                latitude=data.latitude,
+                longitude=data.longitude,
+            ),
+        )
+        if not created:
+            return None
+        act = await self._get_activity(created.id)
+        if act and act.sequence_order != order:
+            act.sequence_order = order
+            await self.db.commit()
+            await self.db.refresh(act)
+        elif act:
+            pass
+        else:
+            act = None
+        row = act or await self._get_activity(created.id)
+        if not row:
+            return None
+        return RoutePointResponse(
+            id=row.id,
+            day_plan_id=row.day_plan_id,
+            name=row.title,
+            latitude=row.latitude,
+            longitude=row.longitude,
+            description=row.description,
+            order_index=row.sequence_order,
+            estimated_duration=row.estimated_duration,
+        )
+
+    async def update_route_point(
+        self,
+        point_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: ActivityUpdate,
+    ) -> Optional[RoutePointResponse]:
+        act = await self._get_activity(point_id)
+        if not act:
+            return None
+        day_plan = await self._get_day_plan(act.day_plan_id)
+        itinerary = await self._get_itinerary(day_plan.itinerary_id) if day_plan else None
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        payload = data.model_dump(exclude_unset=True)
+        if "title" in payload:
+            act.title = payload["title"]
+            if "location_name" not in payload:
+                act.location_name = payload["title"]
+        if "location_name" in payload:
+            act.location_name = payload["location_name"]
+        for key in ("description", "address", "latitude", "longitude", "host_tip", "estimated_duration"):
+            if key in payload:
+                setattr(act, key, payload[key])
+        if "sequence_order" in payload:
+            act.sequence_order = payload["sequence_order"]
+        if "scheduled_start_time" in payload:
+            act.scheduled_start_time = _naive_utc(payload["scheduled_start_time"])
+        if "scheduled_end_time" in payload:
+            act.scheduled_end_time = _naive_utc(payload["scheduled_end_time"])
+        act.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(act)
+        return RoutePointResponse(
+            id=act.id,
+            day_plan_id=act.day_plan_id,
+            name=act.title,
+            latitude=act.latitude,
+            longitude=act.longitude,
+            description=act.description,
+            order_index=act.sequence_order,
+            estimated_duration=act.estimated_duration,
+        )
+
+    async def delete_route_point(self, point_id: uuid.UUID, host_id: uuid.UUID) -> bool:
+        act = await self._get_activity(point_id)
+        if not act:
+            return False
+        day_plan = await self._get_day_plan(act.day_plan_id)
+        itinerary = await self._get_itinerary(day_plan.itinerary_id) if day_plan else None
+        if not itinerary or itinerary.host_id != host_id:
+            return False
+        day_plan_id = act.day_plan_id
+        await self.db.delete(act)
+        await self.db.commit()
+        await self._update_day_plan_totals(day_plan_id)
+        return True
+
+    async def reorder_route_points(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: RoutePointReorder,
+    ) -> bool:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return False
+        day_plan = await self._get_day_plan(data.day_plan_id)
+        if not day_plan or day_plan.itinerary_id != itinerary_id:
+            return False
+        for idx, act_id in enumerate(data.ordered_activity_ids, start=1):
+            act = await self._get_activity(act_id)
+            if not act or act.day_plan_id != data.day_plan_id:
+                return False
+            act.sequence_order = idx
+        await self.db.commit()
+        return True
+
+    async def _get_activity(self, activity_id: uuid.UUID) -> Optional[ItineraryActivity]:
+        stmt = select(ItineraryActivity).where(ItineraryActivity.id == activity_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     # Google Maps Integration
     
@@ -1501,17 +1697,13 @@ Rules:
     ) -> Tuple[ItineraryCreate, List[DayPlanCreate], List[ActivityCreate]]:
         """Generate an optimized itinerary structure (guest-specific or generic template)."""
         is_generic = guest_group is None
-        # Template: optional date range; use placeholder span for structure only
+        host_ref = await self._get_host(host_id)
+        host_city = (host_ref.city if host_ref and host_ref.city else None) or "Lovran"
+
         if is_generic:
             start_date = None
             end_date = None
-            base_label = (
-                (host.city or "Lovran")
-                + ", Croatia"
-            )
-            host_ref = await self._get_host(host_id)
-            if host_ref and host_ref.city:
-                base_label = f"{host_ref.city}, Croatia"
+            base_label = f"{host_city}, Croatia"
         else:
             start_date = date.today() + timedelta(days=1)
             end_date = start_date + timedelta(days=request.duration_days - 1)

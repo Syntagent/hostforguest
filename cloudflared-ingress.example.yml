@@ -1,0 +1,21 @@
+# Cloudflare Tunnel ingress — merge into Zero Trust → Tunnels → Public Hostname
+# (order: more specific path rules before catch-all host rules)
+#
+# Production stack: Docker on 127.0.0.1:3007 (UI) + 8006 (API)
+# Development stack: host Next on 3055 (proxies /api → 8010 via Next dev rewrite)
+#
+# DNS: CNAME hostforguest.syntagent.com and hostforguest-dev.syntagent.com → tunnel
+
+ingress:
+  # --- Production (hostforguest.syntagent.com) ---
+  - hostname: hostforguest.syntagent.com
+    path: /api
+    service: http://127.0.0.1:8006
+  - hostname: hostforguest.syntagent.com
+    service: http://127.0.0.1:3007
+
+  # --- Development (hostforguest-dev.syntagent.com) ---
+  - hostname: hostforguest-dev.syntagent.com
+    service: http://127.0.0.1:3055
+
+  - service: http_status:404

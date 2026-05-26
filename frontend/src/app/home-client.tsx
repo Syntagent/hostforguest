@@ -17,20 +17,19 @@ import {
   Sparkles,
   Star,
   Phone,
-  Users,
 } from "lucide-react";
 
 const contactEmail =
-  process.env.NEXT_PUBLIC_CONTACT_EMAIL || "hello@touristguidelocal.hr";
+  process.env.NEXT_PUBLIC_CONTACT_EMAIL || "info@syntagent.com";
 const contactPhone =
-  process.env.NEXT_PUBLIC_CONTACT_PHONE || "Available on request";
+  process.env.NEXT_PUBLIC_CONTACT_PHONE || "+385 98 622 793";
 
 export default function HomeClient() {
   const features = [
     {
-      title: "AI-Powered Recommendations",
+      title: "AI Guest Recommendations",
       description:
-        "Create personalized experiences for your guests with intelligent recommendations based on their preferences and your local knowledge.",
+        "Deliver personalized local guides for every guest — restaurants, wineries, events, and hidden gems tailored to their preferences and your local knowledge.",
       icon: <Bot className="h-7 w-7" />,
       benefits: [
         "Personalized guest experiences",
@@ -39,48 +38,52 @@ export default function HomeClient() {
       ],
     },
     {
-      title: "Real-Time Croatian Tourism Data",
+      title: "Local Business Integration",
       description:
-        "Access live updates from Croatian tourism sources to keep your recommendations current and accurate.",
-      icon: <Sparkles className="h-7 w-7" />,
-      benefits: ["Live tourism updates", "Official event information", "Weather-based suggestions"],
+        "Connect guests with restaurants, wineries, OPGs, and local providers — building authentic partnerships across the Kvarner region.",
+      icon: <Building2 className="h-7 w-7" />,
+      benefits: [
+        "Partner with local businesses",
+        "Curated authentic experiences",
+        "Support local tourism economy",
+      ],
     },
     {
-      title: "Easy Guest Management",
+      title: "Simple Access Codes",
       description:
-        "Manage your guests with simple access codes, track their preferences, and provide collaborative itinerary planning.",
-      icon: <Users className="h-7 w-7" />,
+        "Generate secure access codes for guest groups. No guest registration required — simple onboarding and preference tracking.",
+      icon: <KeyRound className="h-7 w-7" />,
       benefits: ["Simple guest onboarding", "Group preference tracking", "Activity feedback system"],
     },
     {
-      title: "Lovran Area Expertise",
+      title: "Kvarner Region Focus",
       description:
-        "Starting with beautiful Lovran and Istria, showcase your local knowledge of Croatian hidden gems and authentic experiences.",
+        "Launching in the Kvarner region with plans to expand across the Adriatic — authentic Croatian experiences from Rijeka to the islands.",
       icon: <Compass className="h-7 w-7" />,
-      benefits: ["Local business partnerships", "Seasonal event integration", "Cultural authenticity"],
+      benefits: ["Kvarner pilot program", "Seasonal event integration", "Cultural authenticity"],
     },
   ];
 
   const testimonials = [
     {
-      name: "Marija Kovač",
-      location: "Villa Adriatic, Lovran",
+      name: "HostForGuest Beta",
+      location: "Coming to Kvarner region",
       quote:
-        "TouristGuideLocal transformed how I interact with my guests. They love the personalized recommendations and I've seen a significant increase in satisfaction ratings.",
+        "We are piloting HostForGuest with accommodation hosts in the Kvarner region. Join the beta program and be among the first to offer AI-powered local guides to your guests.",
       rating: 5,
     },
     {
-      name: "Petar Jurić",
-      location: "Apartment Opatija",
+      name: "AI-Powered Recommendations",
+      location: "Powered by Syntagent",
       quote:
-        "The AI recommendations are spot-on! My guests appreciate the authentic local experiences, and it's helped me build lasting relationships with them.",
+        "HostForGuest uses advanced AI to create personalized local experiences for every guest, from wine recommendations to cultural events and hidden gems.",
       rating: 5,
     },
     {
-      name: "Ana Matić",
-      location: "Villa Istria, Rovinj",
+      name: "Kvarner Region Launch",
+      location: "Starting Summer 2026",
       quote:
-        "The real-time Croatian tourism data keeps my recommendations fresh. I love how easy it is to create access codes and manage multiple guest groups.",
+        "Our pilot program launches in the Kvarner region, partnering with local tourism providers to bring authentic Croatian experiences to every guest.",
       rating: 5,
     },
   ];
@@ -88,34 +91,34 @@ export default function HomeClient() {
   return (
     <div className="min-h-screen">
       <HeroSection
-        title="Transform Your Croatian Hospitality"
-        subtitle="TouristGuideLocal - B2B Platform for Croatian Hosts"
-        description="Create exceptional guest experiences with AI-powered local guide services. Connect international tourists with authentic Croatian culture, from Lovran to the entire Croatian coast."
+        title="AI Local Guide for Your Guests"
+        subtitle="HostForGuest — by Syntagent"
+        description="Transform your guest experience with AI-powered local recommendations. Help your guests discover authentic restaurants, wineries, events, and hidden gems — all through a simple conversational interface."
         backgroundGradient="from-blue-600 via-teal-600 to-green-600"
-        ctaText="Start Your Host Journey"
-        ctaHref="/onboarding"
-        secondaryCtaText="Host Login"
-        secondaryCtaHref="/login"
+        ctaText="Join the Beta"
+        ctaHref="/login"
+        secondaryCtaText="Learn More"
+        secondaryCtaHref="https://syntagent.com"
       >
         <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center items-center text-white/80">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 bg-green-400 rounded-full"></span>
-            <span className="text-sm">Live Croatian Tourism Data</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
             <span className="text-sm">AI-Powered Recommendations</span>
           </div>
           <div className="flex items-center gap-2">
+            <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
+            <span className="text-sm">Kvarner Region Pilot</span>
+          </div>
+          <div className="flex items-center gap-2">
             <span className="w-2 h-2 bg-purple-400 rounded-full"></span>
-            <span className="text-sm">Authentic Croatian Experiences</span>
+            <span className="text-sm">Built by Syntagent</span>
           </div>
         </div>
       </HeroSection>
 
       <FeatureSection
         title="Everything You Need for Premium Hospitality"
-        subtitle="Powerful tools designed specifically for Croatian tourist hosts"
+        subtitle="AI-powered local guide platform for accommodation hosts and their guests. Built by Syntagent."
         features={features}
         className="bg-white"
       />
@@ -123,9 +126,9 @@ export default function HomeClient() {
       <section className="py-20 bg-gray-50">
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-16">
-            <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">How TouristGuideLocal Works</h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-              Simple, powerful workflow designed for Croatian hosts
+            <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">How HostForGuest Works</h2>
+            <p className="text-xl text-slate-300 max-w-3xl mx-auto">
+              Simple, powerful workflow designed for accommodation hosts
             </p>
           </div>
 
@@ -135,7 +138,7 @@ export default function HomeClient() {
                 step: "1",
                 title: "Host Onboarding",
                 description:
-                  "Create your profile with AI assistance, share your local knowledge, and set up your Croatian hospitality business.",
+                  "Create your profile with AI assistance, share your local knowledge, and set up your hospitality offering.",
                 icon: <Building2 className="h-7 w-7" />,
               },
               {
@@ -162,14 +165,14 @@ export default function HomeClient() {
             ].map((item, index) => (
               <Card key={index} className="text-center hover:shadow-lg transition-shadow">
                 <CardContent className="p-6">
-                  <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-2xl mx-auto mb-4">
+                  <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white text-2xl mx-auto mb-4 shadow-lg">
                     {item.icon}
                   </div>
-                  <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold text-sm mx-auto mb-3">
+                  <div className="w-8 h-8 bg-blue-500/30 text-blue-300 rounded-full flex items-center justify-center font-bold text-sm mx-auto mb-3">
                     {item.step}
                   </div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-2">{item.title}</h3>
-                  <p className="text-gray-600 text-sm leading-relaxed">{item.description}</p>
+                  <h3 className="text-lg font-semibold text-white mb-2">{item.title}</h3>
+                  <p className="text-slate-300 text-sm leading-relaxed">{item.description}</p>
                 </CardContent>
               </Card>
             ))}
@@ -177,12 +180,95 @@ export default function HomeClient() {
         </div>
       </section>
 
+      {/* AI Services & API Keys section */}
+      <section className="py-20 bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">AI-Powered Features &amp; API Keys</h2>
+            <p className="text-xl text-blue-200 max-w-3xl mx-auto">
+              HostForGuest uses AI (OpenAI, Google Gemini) for personalized recommendations, itinerary generation, and smart search
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+            {/* Option 1 */}
+            <Card className="bg-slate-800/80 backdrop-blur border-slate-600/50 hover:border-blue-500 transition-all">
+              <CardContent className="p-8">
+                <div className="w-14 h-14 bg-gradient-to-br from-green-400 to-emerald-600 rounded-full flex items-center justify-center mb-5">
+                  <KeyRound className="h-7 w-7 text-white" />
+                </div>
+                <h3 className="text-xl font-bold text-white mb-2">Use Your Own API Keys</h3>
+                <p className="text-slate-300 text-sm mb-4">
+                  Bring your own OpenAI or Google Gemini keys. Full control over usage and costs.
+                </p>
+                <ul className="space-y-2 text-sm text-slate-300">
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-1">✓</span>
+                    Add keys in Host Settings &gt; AI Configuration
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-1">✓</span>
+                    Your keys, your billing, no middleman
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-1">✓</span>
+                    Works immediately after setup
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+
+            {/* Option 2 */}
+            <Card className="bg-white/10 backdrop-blur border-white/20 hover:border-purple-400 transition-all">
+              <CardContent className="p-8">
+                <div className="w-14 h-14 bg-gradient-to-br from-purple-400 to-pink-600 rounded-full flex items-center justify-center mb-5">
+                  <Sparkles className="h-7 w-7 text-white" />
+                </div>
+                <h3 className="text-xl font-bold text-white mb-2">Syntagent-Managed Keys</h3>
+                <p className="text-slate-300 text-sm mb-4">
+                  <span className="inline-block bg-green-500/20 text-green-300 text-xs font-semibold px-2 py-0.5 rounded-full mb-2">3-day free trial</span><br />
+                  Subscribe and let us handle the AI infrastructure. No technical setup needed.
+                </p>
+                <ul className="space-y-2 text-sm text-slate-300">
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-1">✦</span>
+                    No API keys to manage or configure
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-1">✦</span>
+                    Predictable monthly subscription
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-1">✦</span>
+                    All AI features included
+                  </li>
+                </ul>
+                <div className="mt-6 pt-4 border-t border-white/10">
+                  <p className="text-xs text-slate-400">
+                    Contact: {contactEmail} | {contactPhone}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="text-center mt-8">
+            <p className="text-blue-300 text-sm">
+              New hosts get a <strong className="text-green-300">3-day free trial</strong> of all AI features — no API key needed. After the grace period, add your own keys or subscribe to continue using AI features.
+            </p>
+            <p className="text-blue-400 text-xs mt-2">
+              Guests can always browse local recommendations and content without an API key. AI-powered generation (itineraries, smart search) requires active AI access.
+            </p>
+          </div>
+        </div>
+      </section>
+
       <section className="py-20 bg-white">
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-16">
-            <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Trusted by Croatian Hosts</h2>
+            <h2 className="text-3xl md:text-4xl font-bold text-white mb-4">Join the HostForGuest Beta</h2>
             <p className="text-xl text-gray-600">
-              Join the growing community of premium Croatian hospitality providers
+              Be among the first hosts to offer AI-powered local guides in the Kvarner region
             </p>
           </div>
 
@@ -210,17 +296,17 @@ export default function HomeClient() {
       <section className="py-20 bg-gradient-to-r from-blue-600 to-purple-600">
         <div className="max-w-4xl mx-auto text-center px-6">
           <h2 className="text-3xl md:text-4xl font-bold text-white mb-6">
-            Ready to Elevate Your Croatian Hospitality?
+            Ready to Transform Your Guest Experience?
           </h2>
           <p className="text-xl text-blue-100 mb-8">
-            Join Croatian hosts who are creating exceptional guest experiences with AI-powered local guide services.
+            Join the HostForGuest beta and offer AI-powered local guides to your guests in the Kvarner region.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link
-              href="/onboarding"
+              href="/login"
               className="inline-flex items-center justify-center rounded-lg px-6 py-3 text-lg font-semibold text-blue-600 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-blue-600 bg-white hover:bg-blue-50"
             >
-              Start Free Onboarding
+              Join the Beta
             </Link>
             <Link
               href="/guest/join"
@@ -230,7 +316,7 @@ export default function HomeClient() {
             </Link>
           </div>
           <p className="text-blue-200 text-sm mt-6">
-            No credit card required • Setup in 5 minutes • Croatian tourism data included
+            3-day free trial • No credit card required • Setup in minutes • Powered by Syntagent AI
           </p>
         </div>
       </section>
@@ -239,17 +325,27 @@ export default function HomeClient() {
         <div className="max-w-7xl mx-auto px-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div>
-              <h3 className="text-lg font-semibold mb-4">TouristGuideLocal</h3>
+              <h3 className="text-lg font-semibold mb-4">HostForGuest</h3>
               <p className="text-gray-400 text-sm">
-                Empowering Croatian hosts with AI-powered local guide services for exceptional guest experiences.
+                AI-powered local guide platform for accommodation hosts and their guests. Built by Syntagent.
+              </p>
+              <p className="mt-3 text-sm">
+                <a
+                  href="https://syntagent.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  Powered by Syntagent →
+                </a>
               </p>
             </div>
             <div>
               <h4 className="font-semibold mb-3">For Hosts</h4>
               <ul className="space-y-2 text-sm text-gray-400">
                 <li>
-                  <Link href="/onboarding" className="hover:text-white">
-                    Get Started
+                  <Link href="/login" className="hover:text-white">
+                    Join Beta
                   </Link>
                 </li>
                 <li>
@@ -258,8 +354,8 @@ export default function HomeClient() {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/pricing" className="hover:text-white">
-                    Pricing
+                  <Link href="/onboarding" className="hover:text-white">
+                    Get Started
                   </Link>
                 </li>
                 <li>
@@ -270,12 +366,12 @@ export default function HomeClient() {
               </ul>
             </div>
             <div>
-              <h4 className="font-semibold mb-3">Croatian Regions</h4>
+              <h4 className="font-semibold mb-3">Regions</h4>
               <ul className="space-y-2 text-sm text-gray-400">
-                <li>Istria (Lovran, Opatija, Rovinj)</li>
+                <li>Kvarner (Rijeka, Opatija, Krk)</li>
+                <li>Istria (Rovinj, Pula)</li>
                 <li>Dalmatia (Split, Dubrovnik)</li>
-                <li>Kvarner (Rijeka, Krk)</li>
-                <li>Central Croatia (Zagreb)</li>
+                <li>Expanding across Adriatic</li>
               </ul>
             </div>
             <div>
@@ -288,16 +384,16 @@ export default function HomeClient() {
                   <Phone className="h-4 w-4" /> {contactPhone}
                 </li>
                 <li className="flex items-center gap-2">
-                  <MapPin className="h-4 w-4" /> Lovran, Istria, Croatia
+                  <MapPin className="h-4 w-4" /> Kvarner, Croatia
                 </li>
                 <li className="flex items-center gap-2">
-                  <ShieldCheck className="h-4 w-4" /> Croatian Tourism Certified
+                  <ShieldCheck className="h-4 w-4" /> Built by Syntagent
                 </li>
               </ul>
             </div>
           </div>
           <div className="border-t border-gray-800 mt-8 pt-8 text-center text-sm text-gray-400">
-            <p>&copy; 2024 TouristGuideLocal. All rights reserved. Crafted for modern Croatian hospitality.</p>
+            <p>&copy; 2026 HostForGuest by Syntagent. All rights reserved.</p>
           </div>
         </div>
       </footer>

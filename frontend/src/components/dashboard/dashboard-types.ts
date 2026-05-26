@@ -71,4 +71,8 @@ export interface RealtimeUpdateSnippet {
   content: string;
   created_at: string;
   description?: string;
+  source?: string;
+  content_type?: string;
+  url?: string;
+  relevant_cities?: string[];
 }

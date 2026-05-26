@@ -30,15 +30,20 @@ export const AccessCodeForm: React.FC = () => {
         throw new Error("Access code must be at least 6 characters");
       }
 
-      // Test access code with API
-      const response = await guestGroupsApi.getByAccessCode(accessCode.trim());
-      
+      const code = accessCode.trim();
+      const response = await guestGroupsApi.getByAccessCode(code);
+
       if (!response.success) {
         throw new Error(response.error || "Invalid access code");
       }
 
-      // Profile + preferences first, then main guest app
-      router.push(`/guest/setup/${accessCode.trim()}`);
+      const prefsResponse = await guestGroupsApi.getGuestPreferences(code);
+      const hasPreferences =
+        prefsResponse.success &&
+        Array.isArray(prefsResponse.data) &&
+        prefsResponse.data.length > 0;
+
+      router.push(hasPreferences ? `/guest/${code}` : `/guest/setup/${code}`);
       
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to validate access code");

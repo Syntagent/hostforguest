@@ -14,6 +14,7 @@ import { AttractionsTab } from "@/components/dashboard/attractions-tab";
 import { RoutesTab } from "@/components/dashboard/routes-tab";
 import { MaintenanceTab } from "@/components/dashboard/maintenance-tab";
 import { AdaptationTab } from "@/components/dashboard/adaptation-tab";
+import { AccountTab } from "@/components/dashboard/account-tab";
 import type { Attraction, GuestGroup, HostProfile } from "@/lib/api";
 import type { AccommodationOverview, DashboardStatsCard } from "@/components/dashboard/dashboard-types";
 
@@ -29,7 +30,8 @@ type DashboardTab =
   | "insights"
   | "map"
   | "discover"
-  | "cleaning";
+  | "cleaning"
+  | "account";
 
 interface HostDashboardMainContentProps {
   activeTab: DashboardTab;
@@ -37,6 +39,7 @@ interface HostDashboardMainContentProps {
   guestGroups: GuestGroup[];
   realtimeUpdates: Array<{ id: string; title: string; content: string; description?: string; created_at: string }>;
   loadDashboardData: () => void;
+  dashboardLoading?: boolean;
   accommodationInfo: AccommodationOverview | null;
   setProfile: React.Dispatch<React.SetStateAction<HostProfile | null>>;
   profile: HostProfile | null;
@@ -69,6 +72,7 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
   guestGroups,
   realtimeUpdates,
   loadDashboardData,
+  dashboardLoading,
   accommodationInfo,
   setProfile,
   profile,
@@ -98,6 +102,7 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
           realtimeUpdates={realtimeUpdates}
           onRefresh={loadDashboardData}
           accommodationInfo={accommodationInfo}
+          isLoading={dashboardLoading}
         />
       );
     }
@@ -199,7 +204,21 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
       );
     }
 
-    return <InsightsTab realtimeUpdates={realtimeUpdates} onRefresh={loadDashboardData} />;
+    if (activeTab === "account") {
+      return <AccountTab />;
+    }
+
+    if (activeTab === "insights") {
+      return (
+        <InsightsTab
+          realtimeUpdates={realtimeUpdates}
+          onRefresh={loadDashboardData}
+          hostCity={profile?.city || accommodationInfo?.property?.location?.city}
+        />
+      );
+    }
+
+    return null;
   };
 
   return (

@@ -15,13 +15,26 @@ import type {
   RealtimeUpdateSnippet,
 } from "./dashboard-types";
 
+function StatCardSkeleton() {
+  return (
+    <div
+      className="animate-pulse rounded-2xl bg-gradient-to-br from-gray-100 to-gray-200/80 p-6"
+      style={{ minHeight: "6.5rem" }}
+    >
+      <div className="mb-3 h-4 w-24 rounded bg-gray-300/80" />
+      <div className="h-8 w-16 rounded bg-gray-300/80" />
+    </div>
+  );
+}
+
 export const OverviewTab: React.FC<{
   statsCards: DashboardStatsCard[];
   guestGroups: GuestGroup[];
   realtimeUpdates: RealtimeUpdateSnippet[];
   onRefresh: () => void;
   accommodationInfo: AccommodationOverview | null;
-}> = ({ statsCards, guestGroups, realtimeUpdates, onRefresh, accommodationInfo }) => {
+  isLoading?: boolean;
+}> = ({ statsCards, guestGroups, realtimeUpdates, onRefresh, accommodationInfo, isLoading }) => {
   const property = accommodationInfo?.property;
   const location = property?.location;
   const capacity = property?.capacity;
@@ -54,6 +67,13 @@ export const OverviewTab: React.FC<{
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4 }}
       >
+        {isLoading ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => (
+              <StatCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : (
         <BentoGrid
           items={statsCards.map((stat) => ({
             title: stat.title,
@@ -76,9 +96,10 @@ export const OverviewTab: React.FC<{
           }))}
           className="grid-cols-1 md:grid-cols-2 xl:grid-cols-4"
         />
+        )}
       </motion.div>
 
-      <Card className="bg-gradient-to-br from-green-50 to-blue-50">
+      <Card className={`bg-gradient-to-br from-green-50 to-blue-50 ${isLoading ? "animate-pulse" : ""}`}>
         <CardHeader>
           <CardTitle>Your Accommodation Details</CardTitle>
           <CardDescription>Property information for personalized guest experiences</CardDescription>
@@ -306,10 +327,13 @@ export const OverviewTab: React.FC<{
                   className="rounded-lg bg-gradient-to-r from-blue-50 to-purple-50 p-3"
                 >
                   <p className="text-sm font-medium">{update.title || "Tourism Update"}</p>
-                  <p className="mt-1 text-sm text-gray-600">
-                    {update.description ||
+                  <p className="mt-1 text-sm text-gray-600 line-clamp-2">
+                    {update.description || update.content ||
                       "New information available from Croatian tourism sources"}
                   </p>
+                  {update.source ? (
+                    <p className="mt-1 text-xs text-gray-500">Source: {update.source}</p>
+                  ) : null}
                 </div>
               ))}
               {realtimeUpdates.length === 0 && (

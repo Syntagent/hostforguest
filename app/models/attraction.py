@@ -611,7 +611,7 @@ CROATIAN_SEASONAL_EVENTS = [
 
 class AttractionSearchRequest(SQLModel):
     """Attraction search request model."""
-    query: Optional[str] = None
+    query: Optional[str] = Field(default=None, alias="q")
     city: Optional[str] = None
     attraction_type: Optional[str] = None
     category: Optional[str] = None

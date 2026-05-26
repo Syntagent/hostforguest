@@ -1,5 +1,5 @@
 """
-Services package for TouristGuideLocal.
+Services package for HostForGuest.
 
 Contains business logic and service layer classes.
 """

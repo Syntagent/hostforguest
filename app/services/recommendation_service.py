@@ -384,6 +384,31 @@ class RecommendationService:
             return "winter"
     
     # Feedback and Analytics
+    async def get_guest_group_analytics(self, guest_group_id: uuid.UUID) -> Dict[str, Any]:
+        """Recommendation analytics for a single guest group."""
+        gg = await self._get_guest_group_with_preferences(guest_group_id)
+        if not gg:
+            return {
+                "guest_group_id": str(guest_group_id),
+                "recommendations_given": 0,
+                "recommendations_accepted": 0,
+                "acceptance_rate": 0.0,
+                "satisfaction_rating": None,
+            }
+        group = gg["group"]
+        given = int(group.recommendations_given or 0)
+        accepted = int(group.recommendations_accepted or 0)
+        rate = (accepted / given) if given else 0.0
+        return {
+            "guest_group_id": str(guest_group_id),
+            "recommendations_given": given,
+            "recommendations_accepted": accepted,
+            "acceptance_rate": round(rate, 3),
+            "satisfaction_rating": group.satisfaction_rating,
+            "group_name": group.group_name,
+            "status": group.status,
+        }
+
     async def get_host_analytics(self, host_id: uuid.UUID, days: int = 30) -> RecommendationAnalytics:
         """
         Aggregate recommendation analytics for the host dashboard.

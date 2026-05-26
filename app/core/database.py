@@ -1,7 +1,7 @@
 """
-Multi-database manager for TouristGuideLocal.
+Multi-database manager for HostForGuest.
 
-Handles PostgreSQL (with pgvector) for the Croatian tourist platform.
+Handles PostgreSQL (with pgvector) for the accommodation host platform.
 """
 
 import logging

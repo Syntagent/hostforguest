@@ -12,6 +12,8 @@ import uuid
 import secrets
 import string
 
+from pydantic import field_validator
+
 from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -323,6 +325,17 @@ class GuestGroupResponse(GuestGroupBase):
     access_code: Optional[str] = Field(default=None, max_length=32)
     # Current accommodation/property for this group (from host_profiles)
     accommodation: Optional[GuestGroupAccommodationSummary] = None
+
+    @field_validator(
+        "age_groups",
+        "interests",
+        "mobility_requirements",
+        "dietary_restrictions",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_json_lists(cls, value: Any) -> List[str]:
+        return value if isinstance(value, list) else []
 
     class Config:
         from_attributes = True

@@ -39,7 +39,7 @@ async def initialize_crawl4ai_sources():
                 {
                     **source_config,
                     "headers": {
-                        "User-Agent": "TouristGuideLocal/1.0 Crawl4AI Croatian Tourism Monitor",
+                        "User-Agent": "HostForGuest/1.0 Crawl4AI Croatian Tourism Monitor",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                         "Accept-Language": "hr,en;q=0.9",
                         "Accept-Encoding": "gzip, deflate",

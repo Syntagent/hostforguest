@@ -27,10 +27,10 @@ import {
   X,
   Route,
   Palette,
-  UserCircle,
 } from "lucide-react";
-import { hostsApi, guestGroupsApi, attractionsApi, realtimeApi, HostProfile, GuestGroup, Attraction, GuestEVisitorData, GuestEVisitorDataCreate, API_BASE_URL } from "@/lib/api";
+import { hostsApi, guestGroupsApi, attractionsApi, HostProfile, GuestGroup, Attraction, GuestEVisitorData, GuestEVisitorDataCreate, API_BASE_URL } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
+import { useToast } from "@/components/ui/toast";
 import type { CreateGroupFormData, DashboardAnalytics } from "./dashboard-types";
 import { AppLayout } from "@/components/layout/app-layout";
 import { HostDashboardMainContent } from "./widgets/host-dashboard-main-content";
@@ -42,6 +42,7 @@ interface HostDashboardProps {
 
 export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   const { user: currentHost, logout, devLogin } = useAuth();
+  const { showToast } = useToast();
   const [profile, setProfile] = useState<HostProfile | null>(null);
   const [guestGroups, setGuestGroups] = useState<GuestGroup[]>([]);
   const [attractions, setAttractions] = useState<Attraction[]>([]);
@@ -51,7 +52,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   /** After first successful load cycle, never swap the whole page for a skeleton (avoids "blank" UI while refresh runs). */
   const [dashboardReady, setDashboardReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  type DashboardTab = 'overview' | 'accommodation' | 'channels' | 'groups' | 'attractions' | 'routes' | 'maintenance' | 'adaptation' | 'insights' | 'map' | 'discover' | 'cleaning' | 'account';
+  type DashboardTab = 'overview' | 'accommodation' | 'channels' | 'groups' | 'attractions' | 'routes' | 'maintenance' | 'adaptation' | 'insights' | 'map' | 'discover' | 'cleaning';
   const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
 
   // Guest Groups state
@@ -159,66 +160,20 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         return;
       }
 
-      // Load host analytics data
-      const analyticsResponse = await hostsApi.getAnalytics();
-      if (analyticsResponse.success && analyticsResponse.data) {
-        setAnalytics(analyticsResponse.data);
-      } else if (analyticsResponse.status === 401) {
-        console.error('Authentication failed for analytics');
+      const bundle = await hostsApi.getDashboardStats();
+      if (bundle.status === 401) {
         logout();
         return;
       }
-
-      // Load host profile
-      const hostResponse = await hostsApi.getProfile();
-      if (hostResponse.success && hostResponse.data) {
-        setProfile(hostResponse.data);
-      } else if (hostResponse.status === 401) {
-        console.error('Authentication failed for profile');
-        logout();
-        return;
-      }
-
-      // Load guest groups
-      const groupsResponse = await guestGroupsApi.getByHost();
-      if (groupsResponse.success && groupsResponse.data) {
-        setGuestGroups(groupsResponse.data);
-      } else if (groupsResponse.status === 401) {
-        console.error('Authentication failed for guest groups');
-        logout();
-        return;
-      }
-
-      // Load attractions
-      const attractionsResponse = await attractionsApi.getByHost();
-      if (attractionsResponse.success && attractionsResponse.data) {
-        setAttractions(attractionsResponse.data);
-      } else if (attractionsResponse.status === 401) {
-        console.error('Authentication failed for attractions');
-        logout();
-        return;
-      }
-
-      // Load real-time updates from Crawl4AI
-      const realtimeResponse = await realtimeApi.getUpdates();
-      if (realtimeResponse.success && realtimeResponse.data) {
-        setRealtimeUpdates(
-          realtimeResponse.data.slice(0, 8).map((u) => ({
-            id: u.id,
-            title: u.title,
-            content: u.content,
-            description: u.description || u.content,
-            created_at: u.created_at,
-            source: u.source_name || u.source,
-            content_type: u.content_type,
-            url: u.url,
-            relevant_cities: u.relevant_cities,
-          }))
-        );
-      } else if (realtimeResponse.status === 401) {
-        console.error('Authentication failed for real-time updates');
-        logout();
-        return;
+      if (bundle.success && bundle.data) {
+        const d = bundle.data;
+        if (d.analytics) setAnalytics(d.analytics as DashboardAnalytics);
+        if (d.profile) setProfile(d.profile as HostProfile);
+        if (d.guest_groups) setGuestGroups(d.guest_groups);
+        if (d.attractions) setAttractions(d.attractions);
+        if (d.realtime_updates) setRealtimeUpdates(d.realtime_updates);
+      } else {
+        setError(bundle.error || "Failed to load dashboard data.");
       }
     } catch (error) {
       console.error('Error loading dashboard data:', error);
@@ -230,37 +185,57 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   };
 
   const handleCreateGroup = async () => {
-    const name = createGroupData.group_name?.trim();
-    if (!name) {
-      window.alert("Please enter a group name.");
-      throw new Error("group_name required");
+    const group_name = createGroupData.group_name?.trim();
+    if (!group_name) {
+      window.alert("Group name is required.");
+      return;
     }
-    const response = await guestGroupsApi.create({
-      ...createGroupData,
-      group_name: name,
-    });
-    if (!response.success || !response.data) {
-      const msg =
-        (response as { error?: string }).error ||
-        "Could not create guest group. Try again.";
-      window.alert(msg);
-      throw new Error(msg);
+    try {
+      const response = await guestGroupsApi.create({
+        group_name,
+        group_size: createGroupData.group_size,
+      });
+      if (response.success && response.data) {
+        setGuestGroups([...guestGroups, response.data]);
+        setShowCreateGroupModal(false);
+        setCreateGroupData({
+          group_name: '',
+          group_size: 2,
+          preferences: [{
+            guest_name: '',
+            age_range: 'adult',
+            interests: [],
+            mobility_level: 'high',
+            budget_level: 'medium',
+            language_preference: 'en'
+          }]
+        });
+        showToast({
+          type: "success",
+          title: "Guest group saved",
+          message: `"${response.data.group_name}" was created successfully.`,
+        });
+        await loadDashboardData();
+        return;
+      }
+      if (response.status === 401) {
+        showToast({ type: "error", title: "Session expired", message: "Please log in again." });
+        logout();
+        return;
+      }
+      showToast({
+        type: "error",
+        title: "Could not save group",
+        message: response.error || "Please check the group name and try again.",
+      });
+    } catch (error) {
+      console.error('Error creating guest group:', error);
+      showToast({
+        type: "error",
+        title: "Network error",
+        message: "Could not reach the server while creating the guest group.",
+      });
     }
-    setGuestGroups([...guestGroups, response.data]);
-    setShowCreateGroupModal(false);
-    setCreateGroupData({
-      group_name: '',
-      group_size: 2,
-      preferences: [{
-        guest_name: '',
-        age_range: 'adult',
-        interests: [],
-        mobility_level: 'high',
-        budget_level: 'medium',
-        language_preference: 'en'
-      }]
-    });
-    await loadDashboardData();
   };
 
   const copyAccessCode = (accessCode: string) => {
@@ -349,54 +324,31 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
     }
   };
 
-  type AttractionFormData = typeof createAttractionData;
-
-  const sanitizeAttractionPayload = (raw: AttractionFormData) => {
-    const {
-      google_place_id: _gp,
-      google_maps_url: _gm,
-      ...rest
-    } = raw;
-    return {
-      ...rest,
-      duration_hours:
-        typeof rest.duration_hours === "number" ? rest.duration_hours : undefined,
-    };
-  };
-
-  // Attraction handlers — accepts payload from EnhancedAttractionModal (avoids stale React state)
-  const handleCreateAttraction = async (payloadFromModal?: AttractionFormData) => {
-    const data = payloadFromModal ?? createAttractionData;
-    if (payloadFromModal) {
-      setCreateAttractionData(payloadFromModal);
-    }
-
+  // Attraction handlers
+  const handleCreateAttraction = async () => {
     try {
+      // Check if user is authenticated
       if (!currentHost) {
         console.error('No authenticated user found for attraction creation');
         setError('Authentication required. Please log in again.');
         return;
       }
 
-      const hasClientGeo =
-        typeof data.latitude === "number" && typeof data.longitude === "number";
-      const hasAddressForGeo = Boolean(data.address?.trim() && data.city?.trim());
+      // Validate required fields
       if (
-        !data.name?.trim() ||
-        !data.description?.trim() ||
-        !data.attraction_type ||
-        !data.city?.trim() ||
-        (!hasClientGeo && !hasAddressForGeo)
+        !createAttractionData.name ||
+        !createAttractionData.description ||
+        !createAttractionData.attraction_type ||
+        !createAttractionData.city ||
+        typeof createAttractionData.latitude !== "number" ||
+        typeof createAttractionData.longitude !== "number"
       ) {
-        setError(
-          'Please fill in all required fields (name, description, attraction type, city, and address or map location)'
-        );
+        setError('Please fill in all required fields (name, description, attraction type, city, geolocation)');
         return;
       }
 
-      const response = await attractionsApi.create(sanitizeAttractionPayload(data));
+      const response = await attractionsApi.create(createAttractionData);
       if (response.success && response.data) {
-        setError(null);
         setAttractions([...attractions, response.data]);
         setShowCreateAttractionModal(false);
         setSelectedPlace(null);
@@ -432,74 +384,48 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         });
         // Reload dashboard data to update analytics
         await loadDashboardData();
-        return;
-      }
-      if (response.status === 401) {
+      } else if (response.status === 401) {
         console.error('Authentication failed for attraction creation');
         logout();
-        throw new Error('Session expired');
+      } else if (response.status === 422) {
+        console.error('Validation error:', response.error);
+        setError(`Validation error: ${response.error}`);
+      } else {
+        console.error('Failed to create attraction:', response.error);
+        setError(`Failed to create attraction: ${response.error}`);
       }
-      const msg =
-        response.status === 422
-          ? `Validation error: ${response.error}`
-          : `Failed to create attraction: ${response.error || 'Unknown error'}`;
-      console.error(msg);
-      setError(msg);
-      throw new Error(msg);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('Session expired')) {
-        throw error;
-      }
-      if (error instanceof Error && error.message.startsWith('Failed to create')) {
-        throw error;
-      }
-      if (error instanceof Error && error.message.startsWith('Validation error')) {
-        throw error;
-      }
       console.error('Error creating attraction:', error);
-      const msg = 'Network error occurred while creating attraction';
-      setError(msg);
-      throw new Error(msg);
+      setError('Network error occurred while creating attraction');
     }
   };
 
-  const handleEditAttraction = async (payloadFromModal?: AttractionFormData) => {
+  const handleEditAttraction = async () => {
     if (!selectedAttraction) return;
 
-    const data = payloadFromModal ?? createAttractionData;
-    if (payloadFromModal) {
-      setCreateAttractionData(payloadFromModal);
-    }
-
     try {
+      // Check if user is authenticated
       if (!currentHost) {
         console.error('No authenticated user found for attraction update');
         setError('Authentication required. Please log in again.');
         return;
       }
 
-      const hasClientGeo =
-        typeof data.latitude === "number" && typeof data.longitude === "number";
-      const hasAddressForGeo = Boolean(data.address?.trim() && data.city?.trim());
+      // Validate required fields
       if (
-        !data.name?.trim() ||
-        !data.description?.trim() ||
-        !data.attraction_type ||
-        !data.city?.trim() ||
-        (!hasClientGeo && !hasAddressForGeo)
+        !createAttractionData.name ||
+        !createAttractionData.description ||
+        !createAttractionData.attraction_type ||
+        !createAttractionData.city ||
+        typeof createAttractionData.latitude !== "number" ||
+        typeof createAttractionData.longitude !== "number"
       ) {
-        setError(
-          'Please fill in all required fields (name, description, attraction type, city, and address or map location)'
-        );
+        setError('Please fill in all required fields (name, description, attraction type, city, geolocation)');
         return;
       }
 
-      const response = await attractionsApi.update(
-        selectedAttraction.id,
-        sanitizeAttractionPayload(data)
-      );
+      const response = await attractionsApi.update(selectedAttraction.id, createAttractionData);
       if (response.success && response.data) {
-        setError(null);
         setAttractions(attractions.map(attraction =>
           attraction.id === selectedAttraction.id ? response.data! : attraction
         ));
@@ -538,32 +464,19 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         });
         // Reload dashboard data to update analytics
         await loadDashboardData();
-        return;
-      }
-      if (response.status === 401) {
+      } else if (response.status === 401) {
         console.error('Authentication failed for attraction update');
         logout();
-        throw new Error('Session expired');
+      } else if (response.status === 422) {
+        console.error('Validation error:', response.error);
+        setError(`Validation error: ${response.error}`);
+      } else {
+        console.error('Failed to update attraction:', response.error);
+        setError(`Failed to update attraction: ${response.error}`);
       }
-      const msg =
-        response.status === 422
-          ? `Validation error: ${response.error}`
-          : `Failed to update attraction: ${response.error || 'Unknown error'}`;
-      console.error(msg);
-      setError(msg);
-      throw new Error(msg);
     } catch (error) {
-      if (error instanceof Error && (
-        error.message.includes('Session expired') ||
-        error.message.startsWith('Failed to update') ||
-        error.message.startsWith('Validation error')
-      )) {
-        throw error;
-      }
       console.error('Error updating attraction:', error);
-      const msg = 'Network error occurred while updating attraction';
-      setError(msg);
-      throw new Error(msg);
+      setError('Network error occurred while updating attraction');
     }
   };
 
@@ -1132,7 +1045,6 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           { id: "discover", label: "Discover", icon: <Search /> },
           { id: "cleaning", label: "Cleaning", icon: <Sparkles /> },
           { id: "insights", label: "Insights", icon: <Compass /> },
-          { id: "account", label: "Account", icon: <UserCircle /> },
         ]}
         activeItem={activeTab}
         onSelectItem={(id) => setActiveTab(id as DashboardTab)}
@@ -1162,6 +1074,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           guestGroups={guestGroups}
           realtimeUpdates={realtimeUpdates}
           loadDashboardData={loadDashboardData}
+          dashboardLoading={loading && dashboardReady}
           accommodationInfo={accommodationInfo}
           setProfile={setProfile}
           profile={profile}
@@ -1270,6 +1183,65 @@ const AccommodationTab: React.FC<{
     ]
   });
   const [rulesModalBanner, setRulesModalBanner] = React.useState<string | null>(null);
+  const [geocodeStatus, setGeocodeStatus] = React.useState<
+    "idle" | "loading" | "exact" | "approx" | "error"
+  >("idle");
+  const geocodeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runAccommodationGeocode = React.useCallback(
+    async (fields?: { address?: string; city?: string; county?: string }) => {
+      const address = (fields?.address ?? editData.address ?? "").trim();
+      const city = (fields?.city ?? editData.city ?? "").trim();
+      const county = (fields?.county ?? editData.county ?? "").trim();
+      if (!address && !city) {
+        setGeocodeStatus("idle");
+        return;
+      }
+
+      setGeocodeStatus("loading");
+      try {
+        const response = await hostsApi.geocodeLocation({ address, city, county });
+        if (response.success && response.data) {
+          setEditData((prev: typeof editData) => ({
+            ...prev,
+            latitude: response.data!.latitude,
+            longitude: response.data!.longitude,
+          }));
+          setGeocodeStatus(response.data.precision === "address" ? "exact" : "approx");
+        } else {
+          setGeocodeStatus("error");
+        }
+      } catch {
+        setGeocodeStatus("error");
+      }
+    },
+    [editData.address, editData.city, editData.county]
+  );
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    if (geocodeTimerRef.current) {
+      clearTimeout(geocodeTimerRef.current);
+    }
+    const address = (editData.address || "").trim();
+    const city = (editData.city || "").trim();
+    const county = (editData.county || "").trim();
+    if (!address && !city) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    geocodeTimerRef.current = setTimeout(() => {
+      void runAccommodationGeocode({ address, city, county });
+    }, 900);
+    return () => {
+      if (geocodeTimerRef.current) {
+        clearTimeout(geocodeTimerRef.current);
+      }
+    };
+  }, [isEditing, editData.address, editData.city, editData.county, runAccommodationGeocode]);
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const googleMapsBrowserKey =
@@ -1788,6 +1760,8 @@ const AccommodationTab: React.FC<{
                       ...prev,
                       address: e.target.value
                     }))}
+                    onBlur={() => { void runAccommodationGeocode(); }}
+                    placeholder="Street and number (GPS updates automatically)"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 ) : (
@@ -1816,6 +1790,22 @@ const AccommodationTab: React.FC<{
                     ) : null}
                     {isEditing && (
                       <div className="mt-2 space-y-2">
+                        {geocodeStatus === "loading" && (
+                          <p className="text-xs text-blue-600">Looking up GPS from address…</p>
+                        )}
+                        {geocodeStatus === "exact" && (
+                          <p className="text-xs text-green-600">GPS set automatically from address.</p>
+                        )}
+                        {geocodeStatus === "approx" && (
+                          <p className="text-xs text-amber-600">
+                            Approximate GPS set (city/area level). You can fine-tune coordinates below.
+                          </p>
+                        )}
+                        {geocodeStatus === "error" && (
+                          <p className="text-xs text-red-600">
+                            Could not locate this address. Add city and county, or enter GPS manually.
+                          </p>
+                        )}
                         <p className="text-xs font-medium text-gray-600">GPS coordinates (WGS84)</p>
                         <input
                           type="number"

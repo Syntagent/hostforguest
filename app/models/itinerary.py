@@ -6,14 +6,14 @@ timing, and Google Maps integration for Croatian tourism experiences.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from enum import Enum
 import uuid
 
 from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey, Date, Time
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, model_validator, field_validator
 from sqlmodel import SQLModel, Field
 
 from app.db.postgresql.connection import Base
@@ -403,12 +403,87 @@ class ActivityCreate(ActivityBase):
     booking_required: bool = Field(default=False)
     priority_level: str = Field(default="medium", max_length=20)
 
+    @field_validator("scheduled_start_time", "scheduled_end_time", mode="before")
+    @classmethod
+    def _coerce_naive_schedule(cls, value: Any) -> datetime:
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        raise TypeError("scheduled time must be datetime or ISO string")
+
+
+class ItineraryUpdate(SQLModel):
+    """Partial itinerary update (route template or guest itinerary)."""
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    base_location: Optional[str] = Field(default=None, max_length=200)
+    base_latitude: Optional[float] = None
+    base_longitude: Optional[float] = None
+    pace: Optional[str] = Field(default=None, max_length=20)
+    budget_level: Optional[str] = Field(default=None, max_length=20)
+
+
+class ActivityUpdate(SQLModel):
+    """Update a route stop / TNT point (itinerary activity)."""
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    location_name: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    sequence_order: Optional[int] = Field(default=None, ge=1)
+    estimated_duration: Optional[int] = Field(default=None, ge=1)
+    scheduled_start_time: Optional[datetime] = None
+    scheduled_end_time: Optional[datetime] = None
+    host_tip: Optional[str] = None
+
+
+class RoutePointReorder(SQLModel):
+    """Reorder TNT points within a day plan."""
+    day_plan_id: uuid.UUID
+    ordered_activity_ids: List[uuid.UUID] = Field(min_length=1)
+
+
+class RoutePointCreate(SQLModel):
+    """Add a TNT point to a route day."""
+    day_plan_id: uuid.UUID
+    name: str = Field(max_length=200)
+    latitude: float
+    longitude: float
+    description: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=1)
+    estimated_duration: int = Field(default=60, ge=1)
+
+
+class RoutePointResponse(SQLModel):
+    """TNT point exposed on route APIs."""
+    id: uuid.UUID
+    day_plan_id: uuid.UUID
+    name: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    description: Optional[str] = None
+    order_index: int
+    estimated_duration: int
+
+    class Config:
+        from_attributes = True
+
 
 class ActivityResponse(ActivityBase):
     """Activity response model."""
     id: uuid.UUID
     day_plan_id: uuid.UUID
     sequence_order: int
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
     status: str
     travel_time_minutes: int
     travel_distance_km: float

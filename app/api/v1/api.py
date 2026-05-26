@@ -1,5 +1,5 @@
 """
-Main API router for TouristGuideLocal v1.
+Main API router for HostForGuest v1.
 
 Includes all API endpoints for the Croatian tourist host platform.
 """

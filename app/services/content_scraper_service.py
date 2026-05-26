@@ -60,7 +60,7 @@ class ContentScraperService:
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
             headers={
-                'User-Agent': 'TouristGuideLocal/1.0 Croatian Tourism Content Monitor'
+                'User-Agent': 'HostForGuest/1.0 Croatian Tourism Content Monitor'
             }
         )
         return self
@@ -458,7 +458,9 @@ class ContentScraperService:
                 quality_score=quality_score,
                 relevance_score=relevance_score,
                 content_hash=content_hash,
-                status="pending"
+                status="approved"
+                if quality_score >= (source.quality_threshold or 0.7)
+                else "pending",
             )
 
             self.db.add(update)

@@ -17,6 +17,8 @@ from sqlalchemy import select, and_
 from app.core.database import get_db
 from app.services.crawl4ai_scraper_service import Crawl4AIScraperService
 from app.services.ai_service import AIService
+from app.services.events_feed_service import EventsFeedService
+from app.models.content_source import ContentType
 from app.models.content_source import ContentSource, ContentUpdate, SourceStatus
 from app.models.host import Host
 from pydantic import BaseModel
@@ -110,26 +112,20 @@ async def get_real_time_updates(
     try:
         logger.info(f"Getting real-time updates: city={city}, content_types={content_types}, hours={hours}")
         
-        # Initialize AI service and scraper
-        ai_service = AIService()
-        
-        async with Crawl4AIScraperService(db, ai_service) as scraper:
-            # Parse content types filter
-            content_type_list = None
-            if content_types:
-                content_type_list = [ct.strip() for ct in content_types.split(",")]
-            
-            # Get real-time updates
-            updates = await scraper.get_real_time_updates(
-                city=city,
-                content_types=content_type_list
-            )
-            
-            # Apply limit
-            updates = updates[:limit]
-            
-            logger.info(f"Retrieved {len(updates)} real-time updates")
-            return updates
+        feed = EventsFeedService(db)
+        content_type_list = None
+        if content_types:
+            content_type_list = [ct.strip() for ct in content_types.split(",")]
+
+        updates = await feed.get_updates(
+            city=city,
+            content_types=content_type_list,
+            hours=hours,
+            limit=limit,
+        )
+
+        logger.info(f"Retrieved {len(updates)} real-time updates")
+        return updates
             
     except Exception as e:
         logger.error(f"Error getting real-time updates: {e}")
@@ -385,6 +381,56 @@ async def refresh_data_sources(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to start manual refresh"
         )
+
+
+@router.post("/sources/init")
+async def initialize_tourism_sources(db: AsyncSession = Depends(get_db)):
+    """Register Croatian tourism sources (idempotent)."""
+    try:
+        feed = EventsFeedService(db)
+        result = await feed.ensure_tourism_sources()
+        seed = await feed.seed_regional_events_if_needed()
+        return {"success": True, "sources": result, "seed": seed}
+    except Exception as e:
+        logger.error(f"Failed to init tourism sources: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to initialize tourism sources",
+        )
+
+
+@router.post("/events/bootstrap")
+async def bootstrap_events_feed(
+    db: AsyncSession = Depends(get_db),
+    city: Optional[str] = Query("Lovran", description="City focus for seeded events"),
+):
+    """Init sources, seed regional events, return availability summary."""
+    try:
+        feed = EventsFeedService(db)
+        return await feed.bootstrap_feed(city=city)
+    except Exception as e:
+        logger.error(f"Events bootstrap failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to bootstrap events feed",
+        )
+
+
+@router.get("/events", response_model=List[RealTimeUpdateResponse])
+async def get_events_updates(
+    db: AsyncSession = Depends(get_db),
+    city: Optional[str] = Query(None, description="Filter by city"),
+    hours: int = Query(168, ge=1, le=720),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """Convenience endpoint: recent events only."""
+    feed = EventsFeedService(db)
+    return await feed.get_updates(
+        city=city,
+        content_types=[ContentType.EVENTS],
+        hours=hours,
+        limit=limit,
+    )
 
 
 @router.get("/health")

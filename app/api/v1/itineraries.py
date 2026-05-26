@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.models import (
     Host,
     ItineraryCreate,
+    ItineraryUpdate,
     ItineraryResponse,
     ItineraryWithDetails,
     ItineraryAssignFromTemplate,
@@ -23,9 +24,13 @@ from app.models import (
     DayPlanResponse,
     DayPlanWithActivities,
     ActivityCreate,
+    ActivityUpdate,
     ActivityResponse,
     ActivityVoteCreate,
     ActivityVoteResponse,
+    RoutePointCreate,
+    RoutePointReorder,
+    RoutePointResponse,
     GoogleMapsDirectionsRequest,
     GoogleMapsDirectionsResponse,
     ItinerarySuggestionRequest,
@@ -186,6 +191,107 @@ async def create_itinerary(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create itinerary",
         ) from e
+
+
+@router.put("/{itinerary_id}", response_model=ItineraryResponse)
+async def update_itinerary(
+    itinerary_id: uuid.UUID,
+    body: ItineraryUpdate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save route template / itinerary metadata (title, base location, etc.)."""
+    svc = ItineraryService(db)
+    updated = await svc.update_itinerary(itinerary_id, current_host.id, body)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Itinerary not found or access denied",
+        )
+    return updated
+
+
+@router.get("/{itinerary_id}/route-points", response_model=List[RoutePointResponse])
+async def list_route_points(
+    itinerary_id: uuid.UUID,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """List TNT / route stops for an itinerary (all days)."""
+    svc = ItineraryService(db)
+    points = await svc.list_route_points(itinerary_id, current_host.id)
+    if points is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Itinerary not found")
+    return points
+
+
+@router.post(
+    "/{itinerary_id}/route-points",
+    response_model=RoutePointResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_route_point(
+    itinerary_id: uuid.UUID,
+    body: RoutePointCreate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a TNT point to a day on this route."""
+    svc = ItineraryService(db)
+    point = await svc.add_route_point(itinerary_id, current_host.id, body)
+    if not point:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not add route point (invalid itinerary or day plan)",
+        )
+    return point
+
+
+@router.put("/route-points/{point_id}", response_model=RoutePointResponse)
+async def update_route_point(
+    point_id: uuid.UUID,
+    body: ActivityUpdate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a TNT point."""
+    svc = ItineraryService(db)
+    point = await svc.update_route_point(point_id, current_host.id, body)
+    if not point:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route point not found")
+    return point
+
+
+@router.delete("/route-points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route_point(
+    point_id: uuid.UUID,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a TNT point."""
+    svc = ItineraryService(db)
+    ok = await svc.delete_route_point(point_id, current_host.id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route point not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/{itinerary_id}/route-points/reorder")
+async def reorder_route_points(
+    itinerary_id: uuid.UUID,
+    body: RoutePointReorder,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reorder TNT points within a day."""
+    svc = ItineraryService(db)
+    ok = await svc.reorder_route_points(itinerary_id, current_host.id, body)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not reorder route points",
+        )
+    return {"success": True}
 
 
 @router.get("/{itinerary_id}", response_model=ItineraryWithDetails)

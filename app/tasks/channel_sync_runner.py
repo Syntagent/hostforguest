@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +22,16 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
+
+_HEARTBEAT_PATH = os.environ.get("CHANNEL_SYNC_HEARTBEAT_PATH", "/tmp/channel_sync_heartbeat")
+
+
+def _touch_heartbeat() -> None:
+    try:
+        with open(_HEARTBEAT_PATH, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except OSError as exc:
+        logger.warning("Could not write channel sync heartbeat: %s", exc)
 
 
 async def main() -> None:
@@ -31,6 +42,7 @@ async def main() -> None:
     await create_db_and_tables()
     interval = int(os.environ.get("CHANNEL_SYNC_INTERVAL_SEC", "300"))
     logger.info("Channel sync worker started (interval=%ss)", interval)
+    _touch_heartbeat()
     while True:
         try:
             poll = await run_reservation_poll_cycle()
@@ -40,6 +52,7 @@ async def main() -> None:
                 logger.info("Replay batch: %s", replay)
         except Exception:
             logger.exception("Channel sync cycle error")
+        _touch_heartbeat()
         await asyncio.sleep(max(30, interval))
 
 

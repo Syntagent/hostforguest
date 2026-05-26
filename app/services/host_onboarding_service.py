@@ -174,11 +174,28 @@ Please create suggestions that reflect MY actual name, experience and story, not
                         "model": fallback_response.get("model", "unknown")
                     }
                 
-                return {"success": False, "error": "All AI generation methods failed"}
+                logger.warning("AI profile generation unavailable; using rule-based fallback")
+                return {
+                    "success": True,
+                    "suggestions": self._rule_based_profile_suggestions(context),
+                    "reasoning": "Rule-based profile suggestions (AI unavailable)",
+                    "alternatives": self._generate_profile_alternatives(context),
+                    "provider": "rule_based",
+                    "model": "fallback",
+                }
                 
         except Exception as e:
             logger.error(f"Error generating host profile suggestions: {e}")
-            return {"success": False, "error": str(e)}
+            return {
+                "success": True,
+                "suggestions": self._rule_based_profile_suggestions(
+                    {"location": {"city": basic_info.get("city", "Lovran")}, "host": basic_info, "property": basic_info}
+                ),
+                "reasoning": "Rule-based profile suggestions (error fallback)",
+                "alternatives": [],
+                "provider": "rule_based",
+                "model": "fallback",
+            }
 
     async def generate_local_attraction_suggestions(
         self,
@@ -325,11 +342,22 @@ Please create suggestions that reflect MY actual name, experience and story, not
             # Basic validation
             validation_results = self._validate_profile_data(profile_data)
             
+            enhancements: List[Dict[str, Any]] = []
             if not validation_results["is_valid"]:
+                for field in validation_results.get("missing_fields", []):
+                    enhancements.append(
+                        {
+                            "category": "required_fields",
+                            "suggestion": f"Add {field.replace('_', ' ')}",
+                            "priority": "high",
+                            "implementation": "easy",
+                        }
+                    )
                 return {
-                    "success": False,
+                    "success": True,
                     "validation": validation_results,
-                    "enhancements": []
+                    "enhancements": enhancements,
+                    "completeness_score": self._calculate_completeness_score(profile_data),
                 }
             
             # Generate enhancement suggestions
@@ -840,6 +868,31 @@ Focus on practical improvements that the host can easily implement."""
             "Highlight adventure and outdoor activities",
             "Showcase cultural and historical knowledge"
         ]
+
+    def _rule_based_profile_suggestions(self, context: Dict[str, Any]) -> Dict[str, List[str]]:
+        """Deterministic profile suggestions when AI is unavailable."""
+        location = context.get("location") or {}
+        host_info = context.get("host") or context
+        city = location.get("city") or host_info.get("city") or "Lovran"
+        first = host_info.get("first_name") or "your host"
+        story = (host_info.get("location_story") or "").strip()
+        property_name = host_info.get("property_name") or host_info.get("business_name") or "our place"
+        return {
+            "welcome_message": [
+                f"Welcome to {city}! I'm {first} — looking forward to hosting you at {property_name}."
+            ],
+            "description": [
+                story or f"Authentic stay in {city} with personal recommendations from a local host."
+            ],
+            "local_tips": [
+                f"Stroll through {city} and the waterfront",
+                "Day trip to Opatija or Učka Nature Park",
+                "Try local seafood and Istrian wine",
+            ],
+            "guest_experience": [
+                "Families and couples who enjoy culture, nature, and relaxed coastal stays"
+            ],
+        }
 
     def _generate_welcome_message_tips(self) -> List[str]:
         """Generate tips for writing effective welcome messages."""

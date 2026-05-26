@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
 
     # Application Configuration
-    app_name: str = "TouristGuideLocal"
+    app_name: str = "HostForGuest"
     app_version: str = "1.0.0"
     debug: bool = True
     environment: str = "development"

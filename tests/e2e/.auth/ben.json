@@ -1,0 +1,18 @@
+{
+  "cookies": [],
+  "origins": [
+    {
+      "origin": "https://hostforguest.syntagent.com",
+      "localStorage": [
+        {
+          "name": "session_token",
+          "value": "L2mQ9PmIBN-CnXGBa320nw2EiUj3Y41b632Qx1BY-sA"
+        },
+        {
+          "name": "refresh_token",
+          "value": "536eLWbLeFzSptcHPmj-2M76ilN0sUmhOQZbZY2rHO4"
+        }
+      ]
+    }
+  ]
+}

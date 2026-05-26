@@ -1,0 +1,55 @@
+# VPS production: full stack on localhost-only ports (Cloudflare Tunnel in front).
+# Usage:
+#   docker compose -p hostforguest-prod -f docker-compose.yml -f docker-compose.vps-prod.yml \
+#     --profile docker-api up -d --build
+
+services:
+  postgres:
+    container_name: hostforguest_prod_postgres
+    ports: !override
+      - "127.0.0.1:5439:5432"
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: "${POSTGRES_HOST_AUTH_METHOD:-md5}"
+
+  api:
+    container_name: hostforguest_prod_api
+    ports: !override
+      - "127.0.0.1:8006:8000"
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      # Use container hostname — shared `tourist_guide_network` has dev+prod both aliased as "postgres".
+      POSTGRES_SERVER: hostforguest_prod_postgres
+      POSTGRES_PORT: "5432"
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      CORS_ORIGINS: "${CORS_ORIGINS:-https://hostforguest.syntagent.com,http://127.0.0.1:3007,http://localhost:3007,http://127.0.0.1:3055,http://localhost:3055}"
+      DISABLE_RATE_LIMIT: "${DISABLE_RATE_LIMIT:-1}"
+
+  frontend:
+    container_name: hostforguest_prod_frontend
+    ports: !override
+      - "127.0.0.1:3007:3000"
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-https://hostforguest.syntagent.com}"
+
+  channel_sync:
+    container_name: hostforguest_prod_channel_sync
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,time; p=os.environ.get('CHANNEL_SYNC_HEARTBEAT_PATH','/tmp/channel_sync_heartbeat'); raise SystemExit(0 if os.path.isfile(p) and time.time()-os.path.getmtime(p)<900 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      POSTGRES_SERVER: hostforguest_prod_postgres
+      POSTGRES_PORT: "5432"
+      CHANNEL_SYNC_HEARTBEAT_PATH: "/tmp/channel_sync_heartbeat"

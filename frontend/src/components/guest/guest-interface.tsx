@@ -15,7 +15,7 @@ import {
   Compass,
   Handshake,
   Landmark,
-  Map,
+  Map as MapIcon,
   MapPin,
   PartyPopper,
   Sparkles,
@@ -50,7 +50,13 @@ import {
   type GuestTestimonialEntry,
   type HostFavoriteLocalSpot,
   type ItineraryActivity,
+  type GuestEventRecommendation,
 } from "@/lib/api";
+import {
+  GuestEventsTab,
+  GuestEventsPreview,
+  resolveGuestCity,
+} from "@/components/guest/guest-events-section";
 
 const GuestMap = dynamic(
   () =>
@@ -63,7 +69,158 @@ interface GuestInterfaceProps {
   className?: string;
 }
 
-type GuestTab = "welcome" | "recommendations" | "itinerary" | "map" | "maintenance";
+type GuestTab =
+  | "welcome"
+  | "events"
+  | "recommendations"
+  | "itinerary"
+  | "map"
+  | "maintenance";
+
+type SavedEventMetadata = {
+  event_id: string;
+  title?: string;
+  source?: string;
+  description?: string;
+  url?: string;
+  event_type?: string;
+  cities?: string[];
+  regions?: string[];
+  start_date?: string;
+  end_date?: string;
+  admission_info?: string;
+  booking_required?: boolean;
+  distance_km?: number;
+  why_recommended?: string;
+  plan_hint?: string;
+  saved_at?: string;
+  host_status?: string;
+  host_note?: string;
+  host_action_at?: string;
+  planned_at?: string;
+  guest_action?: string;
+  guest_note?: string;
+  guest_action_at?: string;
+  preferred_day_plan_id?: string;
+  preferred_day_number?: number;
+  preferred_day_title?: string;
+  itinerary_activity_id?: string;
+  itinerary_day_plan_id?: string;
+  itinerary_activity_title?: string;
+  itinerary_activity_start_time?: string;
+  itinerary_activity_end_time?: string;
+};
+
+type SavedEventIntentPatch = {
+  guest_action?: string;
+  guest_note?: string;
+  preferred_day_plan_id?: string;
+  preferred_day_number?: number;
+  preferred_day_title?: string;
+};
+
+type PlanDayOption = {
+  id: string;
+  day_number: number;
+  title?: string | null;
+};
+
+type SavedEventsCache = {
+  v: 1;
+  ids: string[];
+  details: Record<string, SavedEventMetadata>;
+};
+
+function parseSavedEventsCache(raw: string | null): {
+  ids: string[];
+  details: Record<string, SavedEventMetadata>;
+} {
+  const empty = { ids: [] as string[], details: {} as Record<string, SavedEventMetadata> };
+  if (!raw) return empty;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return {
+        ids: parsed.filter((id): id is string => typeof id === "string"),
+        details: {},
+      };
+    }
+    if (parsed && typeof parsed === "object") {
+      const obj = parsed as { ids?: unknown; details?: unknown };
+      if (Array.isArray(obj.ids)) {
+        return {
+          ids: obj.ids.filter((id): id is string => typeof id === "string"),
+          details:
+            obj.details && typeof obj.details === "object" && !Array.isArray(obj.details)
+              ? (obj.details as Record<string, SavedEventMetadata>)
+              : {},
+        };
+      }
+    }
+  } catch {
+    /* ignore malformed cache */
+  }
+  return empty;
+}
+
+function serializeSavedEventsCache(
+  ids: string[],
+  details: Record<string, SavedEventMetadata>
+): string {
+  const prunedDetails: Record<string, SavedEventMetadata> = {};
+  for (const id of ids) {
+    const row = details[id];
+    if (row?.event_id) prunedDetails[id] = row;
+  }
+  const payload: SavedEventsCache = { v: 1, ids, details: prunedDetails };
+  return JSON.stringify(payload);
+}
+
+function persistSavedEventsCache(
+  key: string,
+  ids: string[],
+  details: Record<string, SavedEventMetadata>
+) {
+  try {
+    localStorage.setItem(key, serializeSavedEventsCache(ids, details));
+  } catch {
+    /* ignore storage quota/private mode */
+  }
+}
+
+function snapshotSavedEventFromRecommendation(
+  event: GuestEventRecommendation,
+  existing?: SavedEventMetadata,
+  patch?: SavedEventIntentPatch
+): SavedEventMetadata {
+  const now = new Date().toISOString();
+  return {
+    ...existing,
+    event_id: event.id,
+    title: event.title,
+    source: event.source,
+    description: event.description,
+    url: event.url || undefined,
+    event_type: event.event_type || undefined,
+    cities: event.cities,
+    regions: event.regions,
+    start_date: event.start_date || undefined,
+    end_date: event.end_date || undefined,
+    admission_info: event.admission_info || undefined,
+    booking_required: event.booking_required,
+    distance_km: event.distance_km ?? undefined,
+    why_recommended: event.why_recommended,
+    plan_hint: event.plan_hint,
+    saved_at: existing?.saved_at || now,
+    ...patch,
+    ...(patch
+      ? {
+          guest_action: patch.guest_action || existing?.guest_action || "plan_request",
+          guest_action_at: now,
+        }
+      : {}),
+  };
+}
 
 export const GuestInterface: React.FC<GuestInterfaceProps> = ({ 
   accessCode, 
@@ -74,6 +231,9 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [itineraries, setItineraries] = useState<Itinerary[]>([]);
   const [hostOfferings, setHostOfferings] = useState<GuestHostOfferingsPayload | null>(null);
+  const [eventRecommendations, setEventRecommendations] = useState<GuestEventRecommendation[]>([]);
+  const [savedEventIds, setSavedEventIds] = useState<string[]>([]);
+  const [savedEventDetails, setSavedEventDetails] = useState<Record<string, SavedEventMetadata>>({});
   const [guestPreferences, setGuestPreferences] = useState<GuestPreferenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -84,6 +244,7 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
   const [recFeedback, setRecFeedback] = useState<Record<string, 1 | 5>>({});
 
   const feedbackStorageKey = useMemo(() => `tg_rec_fb_${accessCode}`, [accessCode]);
+  const savedEventsStorageKey = useMemo(() => `tg_saved_events_${accessCode}`, [accessCode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -97,6 +258,19 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
       /* ignore */
     }
   }, [feedbackStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(savedEventsStorageKey);
+      const cache = parseSavedEventsCache(raw);
+      setSavedEventIds(cache.ids);
+      setSavedEventDetails(cache.details);
+    } catch {
+      setSavedEventIds([]);
+      setSavedEventDetails({});
+    }
+  }, [savedEventsStorageKey]);
 
   const loadGuestData = useCallback(async (mode: "initial" | "refresh" = "initial") => {
     if (mode === "initial") {
@@ -171,15 +345,40 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         setItineraries([]);
       }
 
-      if (
+      const offerings =
         hostOffResponse.success &&
         hostOffResponse.data &&
         hostOffResponse.data.success &&
         hostOffResponse.data.host_offerings
-      ) {
-        setHostOfferings(hostOffResponse.data.host_offerings);
-      } else {
-        setHostOfferings(null);
+          ? hostOffResponse.data.host_offerings
+          : null;
+      setHostOfferings(offerings);
+
+      const [eventRecRes, savedEventsRes] = await Promise.all([
+        guestGroupsApi.getEventRecommendations(accessCode, 15),
+        guestGroupsApi.getSavedEvents(accessCode),
+      ]);
+      setEventRecommendations(
+        eventRecRes.success && eventRecRes.data?.recommendations
+          ? eventRecRes.data.recommendations
+          : []
+      );
+      if (savedEventsRes.success && savedEventsRes.data?.saved_event_ids) {
+        const serverIds = savedEventsRes.data.saved_event_ids;
+        const serverDetails = Object.fromEntries(
+          (savedEventsRes.data.saved_events || []).map((event) => [event.event_id, event])
+        );
+        setSavedEventIds((prev) => {
+          const merged = Array.from(
+            new Set([...serverIds, ...prev])
+          );
+          setSavedEventDetails((prevDetails) => {
+            const nextDetails = { ...prevDetails, ...serverDetails };
+            persistSavedEventsCache(savedEventsStorageKey, merged, nextDetails);
+            return nextDetails;
+          });
+          return merged;
+        });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
@@ -189,7 +388,7 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         setRefreshing(false);
       }
     }
-  }, [accessCode, router, feedbackStorageKey]);
+  }, [accessCode, router, feedbackStorageKey, savedEventsStorageKey]);
 
   useEffect(() => {
     void loadGuestData("initial");
@@ -200,6 +399,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     switch (activeTab) {
       case "welcome":
         return "Your curated Croatian journey";
+      case "events":
+        return name
+          ? `What's on near ${name}'s stay`
+          : "Festivals and happenings near your stay";
       case "recommendations":
         return name
           ? `Places and experiences picked for ${name}`
@@ -219,10 +422,94 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     }
   }, [activeTab, guestGroup?.group_name]);
 
+  const guestCity = useMemo(
+    () => resolveGuestCity(hostOfferings),
+    [hostOfferings]
+  );
+
   const openRecommendationDetail = useCallback((rec: Recommendation) => {
     setDetailRec(rec);
     setDetailOpen(true);
   }, []);
+
+  const toggleSavedEvent = useCallback(
+    (event: GuestEventRecommendation) => {
+      const shouldSave = !savedEventIds.includes(event.id);
+      setSavedEventIds((prev) => {
+        const exists = prev.includes(event.id);
+        const next = exists ? prev.filter((id) => id !== event.id) : [event.id, ...prev];
+        setSavedEventDetails((prevDetails) => {
+          const nextDetails = { ...prevDetails };
+          if (!exists) {
+            nextDetails[event.id] = snapshotSavedEventFromRecommendation(event, prevDetails[event.id]);
+          } else {
+            delete nextDetails[event.id];
+          }
+          persistSavedEventsCache(savedEventsStorageKey, next, nextDetails);
+          return nextDetails;
+        });
+        return next;
+      });
+      void (shouldSave
+        ? guestGroupsApi.saveEvent(accessCode, event).then((res) => {
+            if (res.success && res.data?.saved_events) {
+              const nextDetails = Object.fromEntries(
+                res.data.saved_events.map((row) => [row.event_id, row])
+              );
+              const nextIds = res.data.saved_event_ids;
+              setSavedEventDetails(nextDetails);
+              setSavedEventIds(nextIds);
+              persistSavedEventsCache(savedEventsStorageKey, nextIds, nextDetails);
+            }
+          })
+        : guestGroupsApi.removeSavedEvent(accessCode, event.id).then((res) => {
+            if (res.success && res.data?.saved_events) {
+              const nextDetails = Object.fromEntries(
+                res.data.saved_events.map((row) => [row.event_id, row])
+              );
+              const nextIds = res.data.saved_event_ids;
+              setSavedEventDetails(nextDetails);
+              setSavedEventIds(nextIds);
+              persistSavedEventsCache(savedEventsStorageKey, nextIds, nextDetails);
+            }
+          }));
+    },
+    [accessCode, savedEventIds, savedEventsStorageKey]
+  );
+
+  const updateSavedEventIntent = useCallback(
+    async (event: GuestEventRecommendation, patch: SavedEventIntentPatch) => {
+      const exists = savedEventIds.includes(event.id);
+      setSavedEventIds((prevIds) => {
+        const nextIds = prevIds.includes(event.id) ? prevIds : [event.id, ...prevIds];
+        setSavedEventDetails((prevDetails) => {
+          const nextDetails = {
+            ...prevDetails,
+            [event.id]: snapshotSavedEventFromRecommendation(event, prevDetails[event.id], patch),
+          };
+          persistSavedEventsCache(savedEventsStorageKey, nextIds, nextDetails);
+          return nextDetails;
+        });
+        return nextIds;
+      });
+
+      if (!exists) {
+        const saveRes = await guestGroupsApi.saveEvent(accessCode, event);
+        if (!saveRes.success) return;
+      }
+      const res = await guestGroupsApi.updateSavedEventForGuest(accessCode, event.id, patch);
+      if (res.success && res.data?.saved_events) {
+        const nextDetails = Object.fromEntries(
+          res.data.saved_events.map((row) => [row.event_id, row])
+        );
+        const nextIds = res.data.saved_event_ids;
+        setSavedEventDetails(nextDetails);
+        setSavedEventIds(nextIds);
+        persistSavedEventsCache(savedEventsStorageKey, nextIds, nextDetails);
+      }
+    },
+    [accessCode, savedEventIds, savedEventsStorageKey]
+  );
 
   const submitRecFeedback = useCallback(
     async (recId: string, rating: 1 | 5) => {
@@ -289,6 +576,12 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     );
   }
 
+  const savedOnlyEventRecommendations = buildSavedEventRecommendations(
+    savedEventIds,
+    savedEventDetails,
+    eventRecommendations
+  ).filter((event) => !eventRecommendations.some((rec) => rec.id === event.id));
+
   return (
     <>
       <AppLayout
@@ -297,9 +590,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         subtitle={headerSubtitle}
         navItems={[
           { id: "welcome", label: "Welcome", icon: <Handshake /> },
+          { id: "events", label: "Events", icon: <PartyPopper /> },
           { id: "recommendations", label: "Discover", icon: <Sparkles /> },
           { id: "itinerary", label: "Plan", icon: <CalendarDays /> },
-          { id: "map", label: "Map", icon: <Map /> },
+          { id: "map", label: "Map", icon: <MapIcon /> },
           { id: "maintenance", label: "Report issue", icon: <Wrench /> },
         ]}
         activeItem={activeTab}
@@ -323,9 +617,27 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
             accessCode={accessCode}
             recommendationCount={recommendations.length}
             hasItinerary={itineraries.length > 0}
+            eventRecommendations={eventRecommendations}
+            savedOnlyEventRecommendations={savedOnlyEventRecommendations}
+            guestCity={guestCity}
             onContinue={() => setActiveTab("recommendations")}
             onViewItinerary={() => setActiveTab("itinerary")}
+            onViewEvents={() => setActiveTab("events")}
             onNavigate={setActiveTab}
+          />
+        )}
+
+        {activeTab === "events" && (
+          <GuestEventsTab
+            key="events"
+            city={guestCity}
+            recommendations={eventRecommendations}
+            savedOnlyRecommendations={savedOnlyEventRecommendations}
+            savedEventIds={savedEventIds}
+            savedEventDetails={savedEventDetails}
+            onToggleSaveEvent={toggleSavedEvent}
+            onNavigateDiscover={() => setActiveTab("recommendations")}
+            onNavigatePlan={() => setActiveTab("itinerary")}
           />
         )}
 
@@ -334,6 +646,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
             key="recommendations"
             guestGroup={guestGroup}
             recommendations={recommendations}
+            eventRecommendations={eventRecommendations}
+            savedEventIds={savedEventIds}
+            savedEventDetails={savedEventDetails}
+            guestCity={guestCity}
             onNavigate={setActiveTab}
             onOpenDetail={openRecommendationDetail}
             recFeedback={recFeedback}
@@ -346,6 +662,11 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
             key="itinerary"
             guestGroup={guestGroup}
             itineraries={itineraries}
+            eventRecommendations={eventRecommendations}
+            savedEventIds={savedEventIds}
+            savedEventDetails={savedEventDetails}
+            onToggleSavedEvent={toggleSavedEvent}
+            onUpdateSavedEventIntent={updateSavedEventIntent}
             onNavigate={setActiveTab}
             accessCode={accessCode}
           />
@@ -356,6 +677,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
             key="map"
             guestGroup={guestGroup}
             recommendations={recommendations}
+            eventRecommendations={eventRecommendations}
+            savedEventIds={savedEventIds}
+            savedEventDetails={savedEventDetails}
+            guestCity={guestCity}
             hostOfferings={hostOfferings}
             onNavigate={setActiveTab}
             onOpenRecommendationDetail={openRecommendationDetail}
@@ -452,6 +777,25 @@ function activityDisplayTitle(activity: ItineraryActivity): string {
     activity.location_name?.trim() ||
     "Activity"
   );
+}
+
+function savedEventScheduleLabel(saved?: SavedEventMetadata): string | null {
+  if (!saved?.itinerary_activity_start_time) return null;
+  try {
+    const start = new Date(saved.itinerary_activity_start_time);
+    if (Number.isNaN(start.getTime())) return null;
+    const date = start.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+    const time = start.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${date} at ${time}`;
+  } catch {
+    return null;
+  }
 }
 
 function seasonalPickBadge(attraction?: Attraction | null): string | null {
@@ -581,8 +925,12 @@ const WelcomeTab: React.FC<{
   accessCode: string;
   recommendationCount: number;
   hasItinerary: boolean;
+  eventRecommendations: GuestEventRecommendation[];
+  savedOnlyEventRecommendations?: GuestEventRecommendation[];
+  guestCity: string;
   onContinue: () => void;
   onViewItinerary: () => void;
+  onViewEvents: () => void;
   onNavigate: (tab: GuestTab) => void;
 }> = ({
   guestGroup,
@@ -591,8 +939,12 @@ const WelcomeTab: React.FC<{
   accessCode,
   recommendationCount,
   hasItinerary,
+  eventRecommendations,
+  savedOnlyEventRecommendations = [],
+  guestCity,
   onContinue,
   onViewItinerary,
+  onViewEvents,
   onNavigate,
 }) => {
   const hi = hostOfferings?.host_info;
@@ -761,7 +1113,22 @@ const WelcomeTab: React.FC<{
               <CalendarDays className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden />
               {hasItinerary ? "Itinerary from your host" : "No shared itinerary yet"}
             </span>
+            {eventRecommendations.length > 0 ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-300/60 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-900 shadow-sm backdrop-blur-sm dark:text-violet-100">
+                <PartyPopper className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {eventRecommendations.length === 1
+                  ? "1 event picked for you"
+                  : `${eventRecommendations.length} events picked for you`}
+              </span>
+            ) : null}
           </div>
+
+          <GuestEventsPreview
+            recommendations={eventRecommendations}
+            savedOnlyRecommendations={savedOnlyEventRecommendations}
+            city={guestCity}
+            onViewAll={onViewEvents}
+          />
 
           {hostOfferings?.recommendations?.local_tips &&
           hostOfferings.recommendations.local_tips.length > 0 ? (
@@ -898,6 +1265,16 @@ const WelcomeTab: React.FC<{
             <Button type="button" className="w-full sm:w-auto" onClick={onContinue}>
               Discover places
             </Button>
+            {eventRecommendations.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={onViewEvents}
+              >
+                Events for your stay
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -1016,7 +1393,7 @@ const WelcomeTab: React.FC<{
         >
           <CardContent className="p-6 text-center">
             <div className="mb-3 flex justify-center text-primary">
-              <Map className="h-8 w-8" aria-hidden />
+              <MapIcon className="h-8 w-8" aria-hidden />
             </div>
             <h3 className="mb-2 font-semibold text-foreground">Where things are</h3>
             <p className="text-sm text-muted-foreground">
@@ -1033,13 +1410,33 @@ const WelcomeTab: React.FC<{
 const RecommendationsTab: React.FC<{
   guestGroup: GuestGroup;
   recommendations: Recommendation[];
+  eventRecommendations: GuestEventRecommendation[];
+  savedEventIds: string[];
+  savedEventDetails: Record<string, SavedEventMetadata>;
+  guestCity: string;
   onNavigate: (tab: GuestTab) => void;
   onOpenDetail: (rec: Recommendation) => void;
   recFeedback: Record<string, 1 | 5>;
   onFeedback: (recId: string, rating: 1 | 5) => void | Promise<void>;
-}> = ({ guestGroup, recommendations, onNavigate, onOpenDetail, recFeedback, onFeedback }) => {
+}> = ({
+  guestGroup,
+  recommendations,
+  eventRecommendations,
+  savedEventIds,
+  savedEventDetails,
+  guestCity,
+  onNavigate,
+  onOpenDetail,
+  recFeedback,
+  onFeedback,
+}) => {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [busyFb, setBusyFb] = useState<string | null>(null);
+  const savedEvents = buildSavedEventRecommendations(
+    savedEventIds,
+    savedEventDetails,
+    eventRecommendations
+  );
 
   const categoryKeys = useMemo(() => {
     const set = new Set<string>();
@@ -1086,6 +1483,88 @@ const RecommendationsTab: React.FC<{
           </div>
         </div>
       </div>
+
+      {savedEvents.length > 0 ? (
+        <Card className="border-violet-200/70 bg-violet-50/40 dark:border-violet-900/40 dark:bg-violet-950/15">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <PartyPopper className="h-5 w-5 text-violet-700 dark:text-violet-300" aria-hidden />
+              Saved event ideas
+            </CardTitle>
+            <CardDescription>
+              Ideas you saved for your stay. Pair them with places below, search on maps, or manage planning in Plan.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2">
+            {savedEvents.map((event) => {
+              const savedDetails = savedEventDetails[event.id];
+              const scheduleLabel = savedEventScheduleLabel(savedDetails);
+              const meta = [
+                event.cities?.length ? event.cities.join(", ") : guestCity,
+                event.start_date || null,
+                event.distance_km != null ? `~${event.distance_km} km away` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <article
+                  key={`discover-saved-${event.id}`}
+                  className="rounded-xl border border-border/70 bg-background/85 p-4"
+                  data-testid="discover-saved-event-idea"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-900 dark:text-amber-100">
+                      Saved
+                    </span>
+                    {savedDetails?.itinerary_activity_id ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        In itinerary
+                      </span>
+                    ) : savedDetails?.host_status === "planned" ? (
+                      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        Host planned
+                      </span>
+                    ) : null}
+                    {meta ? <span className="text-xs text-muted-foreground">{meta}</span> : null}
+                  </div>
+                  <h3 className="mt-2 font-semibold text-foreground">{event.title}</h3>
+                  <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
+                    {event.plan_hint || event.why_recommended}
+                  </p>
+                  {scheduleLabel ? (
+                    <p className="mt-2 rounded-lg bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-950 dark:text-emerald-100">
+                      Scheduled {scheduleLabel}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <a
+                      href={mapsSearchUrlForSavedEvent(event, guestCity)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex min-h-10 items-center justify-center rounded-2xl border-2 border-primary/35 bg-white/80 px-4 py-2 text-sm font-semibold text-primary transition-all duration-200 hover:bg-primary hover:text-primary-foreground"
+                    >
+                      Open in Maps
+                    </a>
+                    {event.url ? (
+                      <a
+                        href={event.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex min-h-10 items-center justify-center rounded-2xl border-2 border-primary/35 bg-white/80 px-4 py-2 text-sm font-semibold text-primary transition-all duration-200 hover:bg-primary hover:text-primary-foreground"
+                      >
+                        Event details
+                      </a>
+                    ) : null}
+                    <Button type="button" size="sm" variant="secondary" onClick={() => onNavigate("itinerary")}>
+                      Manage in Plan
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {recommendations.length > 0 && (
         <div className="surface-glass sticky top-0 z-20 rounded-2xl px-3 py-3">
@@ -1424,15 +1903,109 @@ function openItineraryActivityMaps(activity: ItineraryActivity) {
   if (url) window.open(url, "_blank", "noopener,noreferrer");
 }
 
+function buildSavedEventRecommendations(
+  savedEventIds: string[],
+  savedEventDetails: Record<string, SavedEventMetadata>,
+  eventRecommendations: GuestEventRecommendation[]
+): GuestEventRecommendation[] {
+  const recommendedById = new globalThis.Map(
+    eventRecommendations.map((event) => [event.id, event])
+  );
+  return savedEventIds
+    .map((id) => {
+      const recommended = recommendedById.get(id);
+      if (recommended) return recommended;
+      const saved = savedEventDetails[id];
+      if (!saved?.event_id) return null;
+      const planned = saved.host_status === "planned";
+      return {
+        id: saved.event_id,
+        source: saved.source === "seasonal" ? "seasonal" : "feed",
+        title: saved.title || "Saved event idea",
+        description: planned
+          ? "Your host marked this saved event as planned."
+          : saved.description || "Saved from your event ideas for later planning.",
+        url: saved.url || null,
+        event_type: saved.event_type || "saved_event",
+        cities: saved.cities || [],
+        regions: saved.regions || [],
+        start_date: saved.start_date || null,
+        end_date: saved.end_date || null,
+        booking_required: saved.booking_required || false,
+        admission_info: saved.admission_info || null,
+        distance_km: saved.distance_km ?? null,
+        relevance_score: planned ? 0.9 : 0.6,
+        priority: planned ? "high" : "medium",
+        scores: {},
+        why_recommended: planned
+          ? "Your host has started planning this event with you."
+          : saved.why_recommended || "You saved this event idea for your stay.",
+        plan_hint: planned
+          ? "Check with your host for timing, tickets, and transport details."
+          : saved.plan_hint || "Keep this as a flexible option and ask your host if you want help booking.",
+      } satisfies GuestEventRecommendation;
+    })
+    .filter((event): event is GuestEventRecommendation => Boolean(event));
+}
+
+function mapsSearchUrlForSavedEvent(event: GuestEventRecommendation, guestCity?: string): string {
+  const q = [
+    event.title,
+    event.cities?.[0],
+    guestCity,
+  ]
+    .filter((x): x is string => Boolean(x?.trim()))
+    .join(" ");
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q || "event near me")}`;
+}
+
 const ItineraryTab: React.FC<{
   guestGroup: GuestGroup;
   itineraries: Itinerary[];
+  eventRecommendations: GuestEventRecommendation[];
+  savedEventIds: string[];
+  savedEventDetails: Record<string, SavedEventMetadata>;
+  onToggleSavedEvent: (rec: GuestEventRecommendation) => void;
+  onUpdateSavedEventIntent: (
+    rec: GuestEventRecommendation,
+    patch: SavedEventIntentPatch
+  ) => Promise<void>;
   onNavigate: (tab: GuestTab) => void;
   accessCode: string;
-}> = ({ guestGroup, itineraries, onNavigate, accessCode }) => {
+}> = ({
+  guestGroup,
+  itineraries,
+  eventRecommendations,
+  savedEventIds,
+  savedEventDetails,
+  onToggleSavedEvent,
+  onUpdateSavedEventIntent,
+  onNavigate,
+  accessCode,
+}) => {
   const groupLabel = guestGroup.group_name?.trim() || "your group";
   const [busyVote, setBusyVote] = useState<string | null>(null);
   const [busyCheck, setBusyCheck] = useState<string | null>(null);
+  const [busyEventIntent, setBusyEventIntent] = useState<string | null>(null);
+  const savedSet = new Set(savedEventIds);
+  const savedEvents = buildSavedEventRecommendations(
+    savedEventIds,
+    savedEventDetails,
+    eventRecommendations
+  );
+  const topEvents = [
+    ...savedEvents,
+    ...eventRecommendations.filter((event) => !savedSet.has(event.id)),
+  ].slice(0, 4);
+  const planDays: PlanDayOption[] = itineraries
+    .flatMap((itinerary) =>
+      (itinerary.day_plans ?? []).map((day) => ({
+        id: day.id,
+        day_number: day.day_number,
+        title: day.theme || null,
+      }))
+    )
+    .sort((a, b) => a.day_number - b.day_number);
 
   return (
     <div className="space-y-4">
@@ -1441,9 +2014,202 @@ const ItineraryTab: React.FC<{
         <p className="mt-1 text-sm text-muted-foreground">
           {itineraries.length > 0
             ? `Shared schedule for ${groupLabel}. Times, tips, and travel hints come from your host.`
-            : `When your host publishes an itinerary for ${groupLabel}, it will show up here.`}
+            : topEvents.length > 0
+              ? `Your host has not shared a day-by-day itinerary yet, so start from these event ideas for ${groupLabel}.`
+              : `When your host publishes an itinerary for ${groupLabel}, it will show up here.`}
         </p>
       </div>
+
+      {topEvents.length > 0 ? (
+        <Card className="border-violet-200/70 bg-violet-50/40 dark:border-violet-900/40 dark:bg-violet-950/15">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <PartyPopper className="h-5 w-5 text-violet-700 dark:text-violet-300" aria-hidden />
+              Event ideas for your plan
+            </CardTitle>
+            <CardDescription>
+              {savedEvents.length > 0
+                ? "Saved ideas are shown first, then the best matches by interests, stay dates, geography, practical fit, and distance."
+                : "Ranked by interests, stay dates, geography, practical fit, and distance from your accommodation."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2">
+            {topEvents.map((event) => {
+              const savedDetails = savedEventDetails[event.id];
+              const scheduleLabel = savedEventScheduleLabel(savedDetails);
+              const meta = [
+                event.cities?.length ? event.cities.join(", ") : null,
+                event.start_date
+                  ? event.end_date
+                    ? `${event.start_date} → ${event.end_date}`
+                    : event.start_date
+                  : null,
+                event.distance_km != null ? `~${event.distance_km} km away` : null,
+                `${Math.round(event.relevance_score * 100)}% fit`,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <article
+                  key={`${event.source}-${event.id}`}
+                  className="rounded-xl border border-border/70 bg-background/85 p-4"
+                  data-testid="plan-event-idea"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    {savedSet.has(event.id) ? (
+                      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-900 dark:text-amber-100">
+                        Saved
+                      </span>
+                    ) : null}
+                    {savedDetails?.itinerary_activity_id ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        In itinerary
+                      </span>
+                    ) : savedDetails?.host_status === "planned" ? (
+                      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        Host planned
+                      </span>
+                    ) : null}
+                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-medium capitalize text-violet-900 dark:text-violet-100">
+                      {event.priority} match
+                    </span>
+                    {event.source === "seasonal" ? (
+                      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        Host pick
+                      </span>
+                    ) : null}
+                  </div>
+                  <h3 className="mt-2 font-semibold text-foreground">{event.title}</h3>
+                  {meta ? <p className="mt-1 text-xs text-muted-foreground">{meta}</p> : null}
+                  <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
+                    {event.why_recommended}
+                  </p>
+                  <p className="mt-2 rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-950 dark:text-amber-100">
+                    {event.plan_hint}
+                  </p>
+                  {savedDetails?.itinerary_activity_id ? (
+                    <p className="mt-2 rounded-lg bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-950 dark:text-emerald-100">
+                      Your host added this event to the itinerary
+                      {savedDetails.preferred_day_number
+                        ? ` for Day ${savedDetails.preferred_day_number}`
+                        : ""}
+                      {scheduleLabel ? `, scheduled ${scheduleLabel}` : ""}.
+                      Check the itinerary days below for the scheduled activity.
+                    </p>
+                  ) : savedDetails?.host_status === "planned" ? (
+                    <p className="mt-2 rounded-lg bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-950 dark:text-emerald-100">
+                      Your host marked this event as planned
+                      {savedDetails.host_action_at
+                        ? ` on ${new Date(savedDetails.host_action_at).toLocaleDateString()}`
+                        : ""}
+                      .
+                      {savedDetails.host_note ? ` ${savedDetails.host_note}` : ""}
+                    </p>
+                  ) : null}
+                  {savedDetails?.itinerary_activity_id ? null : savedDetails?.preferred_day_number ? (
+                    <p className="mt-2 rounded-lg bg-sky-500/10 px-2.5 py-2 text-xs text-sky-950 dark:text-sky-100">
+                      You asked to plan this for Day {savedDetails.preferred_day_number}
+                      {savedDetails.preferred_day_title ? `: ${savedDetails.preferred_day_title}` : ""}.
+                    </p>
+                  ) : savedDetails?.guest_action === "plan_request" ? (
+                    <p className="mt-2 rounded-lg bg-sky-500/10 px-2.5 py-2 text-xs text-sky-950 dark:text-sky-100">
+                      You asked your host to help place this in the plan.
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={savedSet.has(event.id) ? "secondary" : "outline"}
+                      onClick={() => onToggleSavedEvent(event)}
+                    >
+                      {savedSet.has(event.id) ? "Remove from saved" : "Save to plan"}
+                    </Button>
+                    {event.url ? (
+                      <a
+                        href={event.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex min-h-10 items-center justify-center rounded-2xl border-2 border-primary/35 bg-white/80 px-4 py-2 text-sm font-semibold text-primary transition-all duration-200 hover:bg-primary hover:text-primary-foreground"
+                      >
+                        Open event details
+                      </a>
+                    ) : null}
+                    {planDays.length === 0 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={savedDetails?.guest_action === "plan_request" ? "secondary" : "outline"}
+                        disabled={busyEventIntent === `${event.id}:plan_request`}
+                        onClick={() => {
+                          const key = `${event.id}:plan_request`;
+                          setBusyEventIntent(key);
+                          void onUpdateSavedEventIntent(event, {
+                            guest_action: "plan_request",
+                            guest_note: "Guest would like help placing this event in the trip plan.",
+                          }).finally(() => setBusyEventIntent(null));
+                        }}
+                      >
+                        {busyEventIntent === `${event.id}:plan_request`
+                          ? "Sending…"
+                          : savedDetails?.guest_action === "plan_request"
+                            ? "Host asked"
+                            : "Ask host to plan"}
+                      </Button>
+                    ) : null}
+                  </div>
+                  {planDays.length > 0 ? (
+                    <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50/70 p-3 dark:border-sky-900/40 dark:bg-sky-950/20">
+                      <p className="text-xs font-medium text-sky-950 dark:text-sky-100">
+                        Add this idea to a day request
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {planDays.slice(0, 5).map((day) => {
+                          const preferred = savedDetails?.preferred_day_plan_id === day.id;
+                          const key = `${event.id}:${day.id}`;
+                          return (
+                            <Button
+                              key={day.id}
+                              type="button"
+                              size="sm"
+                              variant={preferred ? "secondary" : "outline"}
+                              disabled={busyEventIntent === key}
+                              onClick={() => {
+                                setBusyEventIntent(key);
+                                void onUpdateSavedEventIntent(event, {
+                                  guest_action: "preferred_day",
+                                  guest_note: `Guest would like to include this event on Day ${day.day_number}.`,
+                                  preferred_day_plan_id: day.id,
+                                  preferred_day_number: day.day_number,
+                                  preferred_day_title: day.title || undefined,
+                                }).finally(() => setBusyEventIntent(null));
+                              }}
+                            >
+                              {busyEventIntent === key
+                                ? "Saving…"
+                                : preferred
+                                  ? `Day ${day.day_number} requested`
+                                  : `Day ${day.day_number}`}
+                            </Button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </CardContent>
+          <CardFooter className="flex flex-wrap gap-2 border-t bg-background/40">
+            <Button type="button" onClick={() => onNavigate("events")}>
+              Open all events
+            </Button>
+            <Button type="button" variant="outline" onClick={() => onNavigate("recommendations")}>
+              Pair with Discover
+            </Button>
+          </CardFooter>
+        </Card>
+      ) : null}
 
       <div className="py-2">
         {itineraries.length > 0 ? (
@@ -1526,9 +2292,13 @@ const ItineraryTab: React.FC<{
                                 (dayPlan.activities ?? []).map((activity, actIdx) => {
                                   const travelMin = activity.travel_time_minutes ?? 0;
                                   const travelKm = activity.travel_distance_km ?? 0;
+                                  const isGuestEventActivity =
+                                    activity.activity_type === "event" ||
+                                    activity.host_tip?.toLowerCase().includes("guest");
                                   return (
                                   <div
                                     key={activity.id}
+                                    data-testid="itinerary-activity"
                                     className="rounded-lg border border-border/70 bg-background/80 p-3 text-sm"
                                   >
                                     <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1539,6 +2309,16 @@ const ItineraryTab: React.FC<{
                                         {activityDisplayTitle(activity)}
                                       </span>
                                     </div>
+                                    {isGuestEventActivity ? (
+                                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                                          Guest event request
+                                        </span>
+                                        <span className="text-xs text-muted-foreground">
+                                          Added by your host from your saved event ideas
+                                        </span>
+                                      </div>
+                                    ) : null}
                                     {activity.description?.trim() ? (
                                       <p className="mt-2 text-muted-foreground">
                                         {activity.description}
@@ -1695,17 +2475,30 @@ const ItineraryTab: React.FC<{
 const MapTab: React.FC<{
   guestGroup: GuestGroup;
   recommendations: Recommendation[];
+  eventRecommendations: GuestEventRecommendation[];
+  savedEventIds: string[];
+  savedEventDetails: Record<string, SavedEventMetadata>;
+  guestCity: string;
   hostOfferings: GuestHostOfferingsPayload | null;
   onNavigate: (tab: GuestTab) => void;
   onOpenRecommendationDetail: (rec: Recommendation) => void;
 }> = ({
   guestGroup,
   recommendations,
+  eventRecommendations,
+  savedEventIds,
+  savedEventDetails,
+  guestCity,
   hostOfferings,
   onNavigate,
   onOpenRecommendationDetail,
 }) => {
   const groupLabel = guestGroup.group_name?.trim() || "your group";
+  const savedEvents = buildSavedEventRecommendations(
+    savedEventIds,
+    savedEventDetails,
+    eventRecommendations
+  );
 
   const mapMarkers = useMemo(() => {
     const out: Array<{
@@ -1780,9 +2573,92 @@ const MapTab: React.FC<{
         </div>
       </div>
 
+      {savedEvents.length > 0 ? (
+        <Card className="border-violet-200/70 bg-violet-50/40 dark:border-violet-900/40 dark:bg-violet-950/15">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <PartyPopper className="h-5 w-5 text-violet-700 dark:text-violet-300" aria-hidden />
+              Saved event ideas near the map
+            </CardTitle>
+            <CardDescription>
+              These event ideas may not have exact pins yet, so use maps search or open their details,
+              then manage planning from the Plan tab.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2">
+            {savedEvents.map((event) => {
+              const savedDetails = savedEventDetails[event.id];
+              const scheduleLabel = savedEventScheduleLabel(savedDetails);
+              const meta = [
+                event.cities?.length ? event.cities.join(", ") : guestCity,
+                event.start_date || null,
+                event.distance_km != null ? `~${event.distance_km} km away` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <article
+                  key={`map-saved-${event.id}`}
+                  className="rounded-xl border border-border/70 bg-background/85 p-4"
+                  data-testid="map-saved-event-idea"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-900 dark:text-amber-100">
+                      Saved
+                    </span>
+                    {savedDetails?.itinerary_activity_id ? (
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        In itinerary
+                      </span>
+                    ) : savedDetails?.host_status === "planned" ? (
+                      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-900 dark:text-emerald-100">
+                        Host planned
+                      </span>
+                    ) : null}
+                    {meta ? <span className="text-xs text-muted-foreground">{meta}</span> : null}
+                  </div>
+                  <h3 className="mt-2 font-semibold text-foreground">{event.title}</h3>
+                  <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
+                    {event.plan_hint || event.why_recommended}
+                  </p>
+                  {scheduleLabel ? (
+                    <p className="mt-2 rounded-lg bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-950 dark:text-emerald-100">
+                      Scheduled {scheduleLabel}
+                    </p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <a
+                      href={mapsSearchUrlForSavedEvent(event, guestCity)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex min-h-10 items-center justify-center rounded-2xl border-2 border-primary/35 bg-white/80 px-4 py-2 text-sm font-semibold text-primary transition-all duration-200 hover:bg-primary hover:text-primary-foreground"
+                    >
+                      Open in Maps
+                    </a>
+                    {event.url ? (
+                      <a
+                        href={event.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex min-h-10 items-center justify-center rounded-2xl border-2 border-primary/35 bg-white/80 px-4 py-2 text-sm font-semibold text-primary transition-all duration-200 hover:bg-primary hover:text-primary-foreground"
+                      >
+                        Event details
+                      </a>
+                    ) : null}
+                    <Button type="button" size="sm" variant="secondary" onClick={() => onNavigate("itinerary")}>
+                      Manage in Plan
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {recommendations.length === 0 ? (
         <div className="section-shell py-10 text-center">
-          <Map className="mx-auto mb-3 h-12 w-12 text-muted-foreground" aria-hidden />
+          <MapIcon className="mx-auto mb-3 h-12 w-12 text-muted-foreground" aria-hidden />
           <p className="text-sm text-muted-foreground">
             Once your host adds suggestions, they will appear here with quick links to maps.
           </p>
@@ -1807,7 +2683,7 @@ const MapTab: React.FC<{
               ) : (
                 <div className="flex h-full items-center justify-center bg-gradient-to-br from-cyan-100/50 via-sky-100/40 to-orange-100/40 px-4 dark:from-cyan-950/30 dark:via-sky-950/20 dark:to-orange-950/20">
                   <div className="max-w-md text-center">
-                    <Map className="mx-auto mb-3 h-12 w-12 text-muted-foreground" aria-hidden />
+                    <MapIcon className="mx-auto mb-3 h-12 w-12 text-muted-foreground" aria-hidden />
                     <h3 className="text-lg font-semibold text-foreground">No map pins yet</h3>
                     <p className="mt-2 text-sm text-muted-foreground">
                       Your host&apos;s places need latitude/longitude to appear on the map. Use the

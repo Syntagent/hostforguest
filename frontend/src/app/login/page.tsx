@@ -1,60 +1,87 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
+import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useAuth } from "@/contexts/auth-context";
+
+const REMEMBER_EMAIL_KEY = "hfg_remember_email";
+
+const contactEmail =
+  process.env.NEXT_PUBLIC_CONTACT_EMAIL || "info@syntagent.com";
 
 export default function LoginPage() {
   const router = useRouter();
   const { login, user, loading: authLoading, error: authError, clearError, devLogin } = useAuth();
   const [formData, setFormData] = useState({
-    email: '',
-    password: ''
+    email: "",
+    password: "",
   });
+  const [rememberEmail, setRememberEmail] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  // Already signed in (e.g. valid session in localStorage) — leave login screen
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem(REMEMBER_EMAIL_KEY);
+    if (saved) {
+      setFormData((prev) => ({ ...prev, email: saved }));
+    }
+  }, []);
+
   useEffect(() => {
     if (!authLoading && user) {
       router.replace("/dashboard");
     }
   }, [authLoading, user, router]);
 
-  // Clear any existing auth errors when component mounts
   useEffect(() => {
     clearError();
   }, [clearError]);
 
+  const displayError = localError || authError;
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
+    setFormData((prev) => ({
       ...prev,
-      [name]: value
+      [name]: value,
     }));
+  };
+
+  const persistEmail = () => {
+    if (typeof window === "undefined") return;
+    if (rememberEmail && formData.email.trim()) {
+      localStorage.setItem(REMEMBER_EMAIL_KEY, formData.email.trim());
+    } else {
+      localStorage.removeItem(REMEMBER_EMAIL_KEY);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setLocalError(null);
-    clearError(); // Clear any auth context errors
+    clearError();
 
     try {
-      const success = await login(formData.email, formData.password);
-      
+      persistEmail();
+      const success = await login(formData.email.trim(), formData.password);
+
       if (success) {
-        // Redirect to dashboard
-        router.push('/dashboard');
-      } else {
-        // Error is already set in auth context
+        router.push("/dashboard");
       }
     } catch (error) {
-      console.error('Login error:', error);
-      setLocalError('Login failed. Please try again.');
+      console.error("Login error:", error);
+      setLocalError("Login failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -68,15 +95,15 @@ export default function LoginPage() {
     try {
       const success = await devLogin();
       if (success) {
-        router.push('/dashboard');
+        router.push("/dashboard");
       } else {
         setLocalError(
-          'Dev prijava nije uspjela. Pokreni API (port 8000), provjeri NEXT_PUBLIC_API_URL, pa restartaj backend da se kreira dev korisnik. Zadano: dev@touristguide.local / devlogin123'
+          "Dev login failed. Start the API on port 8000, check NEXT_PUBLIC_API_URL, and ensure the dev user exists (dev@touristguide.local / devlogin123)."
         );
       }
     } catch (error) {
-      console.error('Dev login error:', error);
-      setLocalError('Development login failed. Please try again.');
+      console.error("Dev login error:", error);
+      setLocalError("Development login failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -85,12 +112,20 @@ export default function LoginPage() {
   if (authLoading || user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 via-teal-600 to-green-600">
-        <div className="text-center text-white">
-          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-white border-t-transparent" />
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-center text-white"
+        >
+          <motion.div
+            className="mx-auto mb-4 h-10 w-10 rounded-full border-2 border-white border-t-transparent"
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          />
           <p className="text-sm font-medium">
             {user ? "Opening dashboard…" : "Checking session…"}
           </p>
-        </div>
+        </motion.div>
       </div>
     );
   }
@@ -100,139 +135,123 @@ export default function LoginPage() {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.8 }}
+        transition={{ duration: 0.5 }}
         className="w-full max-w-md"
       >
         <Card className="shadow-2xl border-0 bg-white/95 backdrop-blur-sm">
           <CardHeader className="text-center">
             <div className="mx-auto mb-4 w-16 h-16 bg-gradient-to-br from-blue-500 to-teal-500 rounded-full flex items-center justify-center">
-              <span className="text-2xl text-white">🇭🇷</span>
+              <span className="text-2xl text-white" aria-hidden>
+                🇭🇷
+              </span>
             </div>
-            <CardTitle className="text-2xl font-bold text-gray-900">
-              Host Login
-            </CardTitle>
+            <CardTitle className="text-2xl font-bold text-gray-900">Host sign in</CardTitle>
             <CardDescription className="text-gray-600">
-              Welcome back! Sign in to your Croatian hospitality dashboard
+              Access your Croatian hospitality dashboard
             </CardDescription>
           </CardHeader>
-          
+
           <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-6">
-              {/* Show auth context errors */}
-              {authError && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="p-3 bg-red-50 border border-red-200 rounded-lg"
-                >
-                  <p className="text-red-700 text-sm font-medium">
-                    ❌ {authError}
-                  </p>
-                </motion.div>
-              )}
-              
-              {/* Show local errors */}
-              {localError && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="p-3 bg-red-50 border border-red-200 rounded-lg"
-                >
-                  <p className="text-red-700 text-sm font-medium">
-                    ❌ {localError}
-                  </p>
-                </motion.div>
+            <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+              {displayError && (
+                <Alert variant="destructive">
+                  <AlertDescription>{displayError}</AlertDescription>
+                </Alert>
               )}
 
-              <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                  Email Address
-                </label>
-                <input
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
                   type="email"
                   id="email"
                   name="email"
+                  autoComplete="email"
                   value={formData.email}
                   onChange={handleInputChange}
                   required
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="your.email@example.com"
+                  placeholder="you@example.com"
                 />
               </div>
 
-              <div>
-                <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  id="password"
-                  name="password"
-                  value={formData.password}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="Enter your password"
-                />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">Password</Label>
+                  <a
+                    href={`mailto:${contactEmail}?subject=HostForGuest%20password%20help`}
+                    className="text-xs font-medium text-blue-600 hover:text-blue-500"
+                  >
+                    Forgot password?
+                  </a>
+                </div>
+                <div className="relative">
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    id="password"
+                    name="password"
+                    autoComplete="current-password"
+                    value={formData.password}
+                    onChange={handleInputChange}
+                    required
+                    placeholder="Your password"
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
+
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rememberEmail}
+                  onChange={(e) => setRememberEmail(e.target.checked)}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                Remember me on this device
+              </label>
 
               <Button
                 type="submit"
                 className="w-full bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700"
                 disabled={loading}
               >
-                {loading ? (
-                  <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                    Signing in...
-                  </div>
-                ) : (
-                  'Sign In'
-                )}
+                {loading ? "Signing in…" : "Sign in"}
               </Button>
 
-              {/* Development login button */}
-              {process.env.NODE_ENV === 'development' && (
-                <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              {process.env.NODE_ENV === "development" && (
+                <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
                   <p className="text-sm text-yellow-800 mb-3 text-center">
-                    <strong>Development Mode:</strong> Quick access with test account
+                    <strong>Development:</strong> one-click test account
                   </p>
                   <Button
                     type="button"
-                    onClick={handleDevLogin}
+                    onClick={() => void handleDevLogin()}
                     disabled={loading}
                     className="w-full bg-yellow-500 hover:bg-yellow-600 text-white"
                   >
-                    {loading ? (
-                      <div className="flex items-center gap-2">
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        Logging in...
-                      </div>
-                    ) : (
-                      '🔧 Dev Login (Test Account)'
-                    )}
+                    Dev login
                   </Button>
                 </div>
               )}
             </form>
 
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                Don&apos;t have an account?{' '}
-                <button
-                  onClick={() => router.push('/onboarding')}
-                  className="font-medium text-blue-600 hover:text-blue-500 transition-colors"
-                >
-                  Create your host profile
-                </button>
-              </p>
-            </div>
+            <p className="mt-6 text-center text-sm text-gray-600">
+              New host?{" "}
+              <Link
+                href="/onboarding"
+                className="font-medium text-blue-600 hover:text-blue-500"
+              >
+                Create your profile
+              </Link>
+            </p>
 
-            <div className="mt-4 text-center">
-              <p className="text-xs text-gray-500">
-                🏠 Croatian Tourism Host Platform
-              </p>
-            </div>
+            <p className="mt-4 text-center text-xs text-gray-500">HostForGuest by Syntagent</p>
           </CardContent>
         </Card>
       </motion.div>

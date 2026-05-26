@@ -1,0 +1,12 @@
+tunnel: hostforguest-syntagent-com
+credentials-file: /home/bperak/.cloudflared/hostforguest-syntagent-com.json
+
+ingress:
+  - hostname: hostforguest.syntagent.com
+    path: /api
+    service: http://127.0.0.1:8006
+  - hostname: hostforguest.syntagent.com
+    service: http://127.0.0.1:3007
+  - hostname: www.hostforguest.syntagent.com
+    service: http://127.0.0.1:3007
+  - service: http_status:404

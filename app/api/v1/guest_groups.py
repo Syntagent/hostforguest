@@ -107,6 +107,12 @@ async def validate_access_code(
 
 
 # Host endpoints for managing guest groups
+@router.post(
+    "",
+    response_model=GuestGroupResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
 @router.post("/", response_model=GuestGroupResponse, status_code=status.HTTP_201_CREATED)
 async def create_guest_group(
     guest_group_data: GuestGroupCreate,
@@ -308,8 +314,8 @@ async def update_guest_group(
             )
         
         updated_group = await guest_service.update_guest_group(
-            guest_group_id=guest_group_id,
-            guest_group_data=guest_group_data
+            group_id=guest_group_id,
+            group_data=guest_group_data,
         )
         
         logger.info(f"Updated guest group {guest_group_id} for host {current_host.id}")

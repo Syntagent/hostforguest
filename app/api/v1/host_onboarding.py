@@ -464,7 +464,7 @@ async def get_onboarding_step(
             1: {
                 "step_name": "Welcome & Introduction",
                 "content": {
-                    "title": "Welcome to TouristGuideLocal",
+                    "title": "Welcome to HostForGuest",
                     "description": "Let's help you create an amazing experience for your guests",
                     "features": [
                         "AI-powered profile creation",
@@ -1297,7 +1297,7 @@ async def get_onboarding_step(
             1: {
                 "step_name": "Welcome & Introduction",
                 "content": {
-                    "title": "Welcome to TouristGuideLocal",
+                    "title": "Welcome to HostForGuest",
                     "description": "Let's help you create an amazing experience for your guests",
                     "features": [
                         "AI-powered profile creation",
@@ -2697,6 +2697,29 @@ async def complete_host_onboarding(
     try:
         logger.info(f"Completing onboarding for host: {current_host.email}")
 
+        from app.services.geocoding_service import GeocodingService
+
+        lat = onboarding_data.coordinates.lat if onboarding_data.coordinates else None
+        lng = onboarding_data.coordinates.lng if onboarding_data.coordinates else None
+        if lat is None or lng is None:
+            county = (
+                onboarding_data.region.value
+                if onboarding_data.region
+                else None
+            )
+            geo = GeocodingService.geocode(
+                address=onboarding_data.address,
+                city=onboarding_data.city,
+                county=county,
+            )
+            if geo:
+                lat, lng = geo.latitude, geo.longitude
+                logger.info(
+                    "Onboarding geocode fallback: %s (%s)",
+                    geo.matched_query,
+                    geo.precision,
+                )
+
         # Generate unique access code for guests
         import secrets
         import string
@@ -2709,8 +2732,8 @@ async def complete_host_onboarding(
         host_update = update(Host).where(Host.id == current_host.id).values(
             city=onboarding_data.city,
             address=onboarding_data.address or current_host.address,
-            latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else current_host.latitude,
-            longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else current_host.longitude,
+            latitude=lat if lat is not None else current_host.latitude,
+            longitude=lng if lng is not None else current_host.longitude,
             local_specialties=onboarding_data.interests,
             guest_access_code=access_code,
             onboarding_completed=True,
@@ -2730,8 +2753,8 @@ async def complete_host_onboarding(
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
-                latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else None,
-                longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else None,
+                latitude=lat,
+                longitude=lng,
                 expertise_areas=onboarding_data.interests,
                 typical_guest_profile={
                     "preferred_guests": onboarding_data.preferred_guests,
@@ -2739,7 +2762,7 @@ async def complete_host_onboarding(
                     "knowledge_level": onboarding_data.knowledge_level.value
                 },
                 location_story=onboarding_data.location_story,
-                google_verified=bool(onboarding_data.coordinates),
+                google_verified=bool(onboarding_data.coordinates) or (lat is not None and lng is not None),
                 onboarding_completed=True,
                 onboarding_completed_at=datetime.utcnow().isoformat(),
                 updated_at=datetime.utcnow()
@@ -2752,8 +2775,8 @@ async def complete_host_onboarding(
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
-                latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else None,
-                longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else None,
+                latitude=lat,
+                longitude=lng,
                 expertise_areas=onboarding_data.interests,
                 typical_guest_profile={
                     "preferred_guests": onboarding_data.preferred_guests,
@@ -2761,7 +2784,7 @@ async def complete_host_onboarding(
                     "knowledge_level": onboarding_data.knowledge_level.value
                 },
                 location_story=onboarding_data.location_story,
-                google_verified=bool(onboarding_data.coordinates),
+                google_verified=bool(onboarding_data.coordinates) or (lat is not None and lng is not None),
                 onboarding_completed=True,
                 onboarding_completed_at=datetime.utcnow().isoformat(),
                 ai_generated_content=False,

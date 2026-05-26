@@ -1,11 +1,11 @@
 {
-  "name": "TouristGuideLocal",
-  "short_name": "TouristGuide",
-  "description": "Your personal AI-powered local guide for Croatia",
+  "name": "HostForGuest",
+  "short_name": "HostForGuest",
+  "description": "AI-powered local guide for accommodation hosts and their guests. Built by Syntagent.",
   "start_url": "/guest/join",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#0f172a",
+  "theme_color": "#1a56db",
   "icons": [
     {
       "src": "/icon.svg",

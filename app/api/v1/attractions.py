@@ -335,10 +335,27 @@ async def search_attractions(
     """
     try:
         attraction_service = AttractionService(db)
-        search_results = await attraction_service.advanced_search(search_request)
-        
-        logger.info(f"Attraction search returned {len(search_results.results)} results")
-        return search_results
+        # Unpack search request into individual parameters for the service method
+        city = search_request.city or search_request.query
+        category_tags = [search_request.category] if search_request.category else None
+        results_list = await attraction_service.search_attractions(
+            city=city,
+            region=None,
+            attraction_type=search_request.attraction_type,
+            category_tags=category_tags,
+            seasonal_filter=search_request.season,
+            skip=search_request.skip,
+            limit=search_request.limit,
+        )
+
+        logger.info(f"Attraction search returned {len(results_list)} results")
+        return AttractionSearchResponse(
+            results=results_list,
+            total_count=len(results_list),
+            page=1,
+            per_page=search_request.limit,
+            query=search_request.query,
+        )
         
     except Exception as e:
         logger.error(f"Failed to search attractions: {str(e)}")
@@ -418,6 +435,60 @@ async def get_my_contributions(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve host contributions",
+        )
+
+
+@router.get("/seasonal-events", response_model=List[SeasonalEventResponse])
+async def list_seasonal_events(
+    city: Optional[str] = Query(None, description="Filter by city"),
+    event_type: Optional[str] = Query(None, description="festival, market, seasonal_activity, …"),
+    active_only: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """List host-curated seasonal events (festivals, markets, etc.)."""
+    try:
+        service = AttractionService(db)
+        events = await service.get_seasonal_events(
+            city=city,
+            event_type=event_type,
+            active_only=active_only,
+        )
+        return events
+    except Exception as e:
+        logger.error(f"Failed to list seasonal events: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list seasonal events",
+        )
+
+
+@router.post(
+    "/seasonal-events",
+    response_model=SeasonalEventResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_seasonal_event(
+    event_data: SeasonalEventCreate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a seasonal event entry for guest recommendations."""
+    try:
+        service = AttractionService(db)
+        created = await service.create_seasonal_event(current_host.id, event_data)
+        if not created:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not create seasonal event",
+            )
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create seasonal event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create seasonal event",
         )
 
 

@@ -17,7 +17,7 @@ import {
 } from "@/lib/api";
 import { GoogleMapsProvider } from "@/components/maps/GoogleMapsProvider";
 import { InteractiveMap } from "@/components/maps/InteractiveMap";
-import { CalendarClock, Loader2, MapPin, Plus, Sparkles, Wand2 } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronUp, Loader2, MapPin, Plus, Save, Sparkles, Trash2, Wand2 } from "lucide-react";
 
 interface RoutesTabProps {
   guestGroups: GuestGroup[];
@@ -32,6 +32,11 @@ function formatTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function toNaiveLocalIso(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 export const RoutesTab: React.FC<RoutesTabProps> = ({
@@ -68,6 +73,11 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
   const [showAddDay, setShowAddDay] = useState(false);
   const [showAddAct, setShowAddAct] = useState(false);
   const [pickAttractionId, setPickAttractionId] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editBase, setEditBase] = useState("");
+  const [savingRoute, setSavingRoute] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
   const loadLists = useCallback(async () => {
     setLoading(true);
@@ -93,6 +103,9 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
     const res = await itinerariesApi.getById(row.id, true);
     if (res.success && res.data) {
       setSelected(res.data);
+      setEditTitle(res.data.title);
+      setEditDesc(res.data.description || "");
+      setEditBase(res.data.base_location || "");
       const firstDay = res.data.day_plans?.[0];
       if (firstDay) {
         setSelectedDayId(firstDay.id);
@@ -275,6 +288,53 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
     } else setError(res.error || "Add day failed");
   };
 
+  const handleSaveRoute = async () => {
+    if (!selected) return;
+    setSavingRoute(true);
+    setSaveMsg(null);
+    const res = await itinerariesApi.updateItinerary(selected.id, {
+      title: editTitle.trim() || selected.title,
+      description: editDesc.trim() || null,
+      base_location: editBase.trim() || selected.base_location,
+    });
+    setSavingRoute(false);
+    if (res.success) {
+      setSaveMsg("Route saved.");
+      await loadLists();
+      if (res.data) await openDetail(res.data);
+      onRefresh();
+    } else {
+      setError(res.error || "Failed to save route");
+    }
+  };
+
+  const handleDeletePoint = async (pointId: string) => {
+    if (!selected || !window.confirm("Remove this stop from the route?")) return;
+    const res = await itinerariesApi.deleteRoutePoint(pointId);
+    if (res.success) {
+      await openDetail(selected as unknown as HostItineraryRow);
+      if (selectedDayId) await loadMapForDay(selectedDayId);
+    } else setError(res.error || "Delete failed");
+  };
+
+  const handleReorderPoint = async (activityId: string, direction: "up" | "down") => {
+    if (!selected || !currentDay) return;
+    const ids = sortedActivities.map((a) => a.id);
+    const idx = ids.indexOf(activityId);
+    if (idx < 0) return;
+    const swap = direction === "up" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= ids.length) return;
+    [ids[idx], ids[swap]] = [ids[swap], ids[idx]];
+    const res = await itinerariesApi.reorderRoutePoints(selected.id, {
+      day_plan_id: currentDay.id,
+      ordered_activity_ids: ids,
+    });
+    if (res.success) {
+      await openDetail(selected as unknown as HostItineraryRow);
+      if (selectedDayId) await loadMapForDay(selectedDayId);
+    } else setError(res.error || "Reorder failed");
+  };
+
   const handleAddActivity = async () => {
     if (!selected || !currentDay || !pickAttractionId) return;
     const att = attractions.find((a) => a.id === pickAttractionId);
@@ -294,8 +354,8 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
       activity_type: "attraction",
       location_name: att.name,
       address: att.address || "",
-      scheduled_start_time: start.toISOString(),
-      scheduled_end_time: end.toISOString(),
+      scheduled_start_time: toNaiveLocalIso(start),
+      scheduled_end_time: toNaiveLocalIso(end),
       estimated_duration: 90,
       attraction_id: att.id,
       latitude: att.latitude ?? undefined,
@@ -424,11 +484,44 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
             )}
             {selected && (
               <div className="space-y-4">
+                <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+                  <div>
+                    <Label htmlFor="route-title">Title</Label>
+                    <Input
+                      id="route-title"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="route-base">Base location</Label>
+                    <Input
+                      id="route-base"
+                      value={editBase}
+                      onChange={(e) => setEditBase(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="route-desc">Description</Label>
+                    <Input
+                      id="route-desc"
+                      value={editDesc}
+                      onChange={(e) => setEditDesc(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" onClick={() => void handleSaveRoute()} disabled={savingRoute}>
+                      {savingRoute ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="mr-2 h-4 w-4" />
+                      )}
+                      Save route
+                    </Button>
+                    {saveMsg && <span className="text-sm text-green-700">{saveMsg}</span>}
+                  </div>
+                </div>
                 <div>
-                  <h3 className="text-lg font-semibold">{selected.title}</h3>
-                  {selected.description && (
-                    <p className="mt-1 text-sm text-muted-foreground">{selected.description}</p>
-                  )}
                   <div className="mt-2 flex flex-wrap gap-2">
                     {selected.is_template && (
                       <>
@@ -480,19 +573,60 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
                     {sortedActivities.length === 0 ? (
                       <li className="text-sm text-muted-foreground">No activities this day.</li>
                     ) : (
-                      sortedActivities.map((a) => (
-                        <li key={a.id} className="text-sm">
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {formatTime(a.scheduled_start_time)} –{" "}
-                            {formatTime(a.scheduled_end_time)}
-                          </span>
-                          <div className="font-medium">{a.title}</div>
-                          {a.host_tip && (
-                            <p className="text-muted-foreground">Tip: {a.host_tip}</p>
-                          )}
-                          {a.description && (
-                            <p className="text-xs text-muted-foreground">{a.description}</p>
-                          )}
+                      sortedActivities.map((a, idx) => (
+                        <li key={a.id} className="flex gap-2 text-sm">
+                          <div className="flex flex-col gap-0.5">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0"
+                              disabled={idx === 0}
+                              onClick={() => void handleReorderPoint(a.id, "up")}
+                              aria-label="Move stop up"
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0"
+                              disabled={idx === sortedActivities.length - 1}
+                              onClick={() => void handleReorderPoint(a.id, "down")}
+                              aria-label="Move stop down"
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <span className="font-mono text-xs text-muted-foreground">
+                              {formatTime(a.scheduled_start_time)} –{" "}
+                              {formatTime(a.scheduled_end_time)}
+                            </span>
+                            <div className="font-medium">{a.title}</div>
+                            {(a.latitude != null && a.longitude != null) && (
+                              <p className="text-xs text-muted-foreground">
+                                {a.latitude.toFixed(5)}, {a.longitude.toFixed(5)}
+                              </p>
+                            )}
+                            {a.host_tip && (
+                              <p className="text-muted-foreground">Tip: {a.host_tip}</p>
+                            )}
+                            {a.description && (
+                              <p className="text-xs text-muted-foreground">{a.description}</p>
+                            )}
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            onClick={() => void handleDeletePoint(a.id)}
+                            aria-label="Delete stop"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </li>
                       ))
                     )}

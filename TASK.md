@@ -1,75 +1,86 @@
-# HostForGuest Task Notes
+# HostForGuest — Comprehensive QA & Bug Fix Sprint
 
-## Ready For Distribution
+## Context
+- HostForGuest: Croatian tourist host platform (Next.js frontend + FastAPI backend + PostgreSQL/pgvector)
+- Prod on H1: http://127.0.0.1:8000 (API), port 3055 (frontend proxy)
+- Docker: hostforguest_prod_api, hostforguest_prod_frontend, hostforguest_prod_postgres, hostforguest_prod_channel_sync
 
-- [x] Sanitized hardcoded browser API key from the support app.
-- [x] Added `DEPLOYMENT.md`.
-- [x] Parameterized Docker Compose database credentials.
-- [x] Added support app lockfile.
-- [x] Published a clean-history snapshot to `https://github.com/Syntagent/hostforguest`.
-- [x] Removed obsolete workflow references from active code and public docs.
+## Known Issues (from user)
 
-## Completed (2026-05-21)
+### 1. 🔴 My Place — geolocation not auto-filling
+**File:** `frontend/src/components/onboarding/host-onboarding.tsx`
+**Bug:** When host types an address (e.g. "Oprić 71, Lovran"), the system does NOT automatically geocode it to lat/lng. User has to manually select from Google Places dropdown. If they just type and skip, coordinates stay null.
+**Fix:** 
+- Add server-side geocode fallback: when address is saved without coordinates, backend should call geocoding API (Nominatim/Google) to resolve lat/lng
+- Add `app/api/v1/locations.py` — `/geocode` endpoint that accepts address string, returns {lat, lng, formatted_address}
+- Frontend: after address input blurs, call geocode endpoint and auto-populate coordinates
+- Show "📍 Location verified" / "⚠️ Could not verify" indicator
 
-- [x] **CI smoke script** — `scripts/ci-smoke-backend.sh` now prefers `.venv/bin/python` (falls back to `python3`/`python`) and starts compose Postgres before pytest.
-- [x] **Live API tests** — `tests/test_event_recommendations.py` skipped unless `RUN_LIVE_API_TESTS=1` (avoids false failures when no API on `8006`).
-- [x] **PostgreSQL regression pass** — `scripts/run-postgres-regression.sh` (compose Postgres on `localhost:5434`, `RUN_POSTGRES_TESTS=1`). Fixed `import_models()` ordering, `attraction_host_contributions` DDL, unified test/app engine on Postgres, `NullPool`, integration module single reset. **429 passed**, 14 skipped. Commit `a71d004` (2026-05-21).
-- [x] **Remove SQLite test path** — Deleted `tests/test_event_recommendations_sqlite.py`; `tests/conftest.py` and CI smoke use PostgreSQL only (no in-memory SQLite).
+### 2. 🔴 Dashboard performance — slow loading
+**File:** `frontend/src/components/dashboard/overview-tab.tsx` and widgets
+**Bug:** Dashboard loads slowly, especially with lots of data.
+**Fix:**
+- Add loading skeletons (shimmer) for all dashboard widgets
+- Cache host stats in backend (TTL 60s)
+- Check for N+1 queries in dashboard API endpoints — use `selectinload` for relationships
+- Add `/api/v1/hosts/dashboard/stats` endpoint that returns all dashboard data in ONE call
+- Frontend: use React Query/SWR for caching and background refresh
 
-## Completed (2026-05-22)
+### 3. 🔴 Guest Groups — not saving properly
+**Files:** `app/api/v1/guest_groups.py`, `frontend/src/components/dashboard/guest-groups-tab.tsx`, `frontend/src/components/dashboard/group-modals.tsx`
+**Bug:** Group creation/update does not persist correctly.
+**Fix:**
+- Add comprehensive error handling with user-friendly messages
+- Validate that group data is complete before save (name, dates required)
+- Add save confirmation toast/feedback
+- Test: create group → refresh → verify it persists
+- Add e2e test for group CRUD
 
-- [x] **Production reverse-proxy example** — `deploy/nginx/hostforguest.conf.example`, `deploy/caddy/Caddyfile.example`, **[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)** (path routing, port maps, Cloudflare cross-links, migration apply loop), CI contract test `tests/test_deploy_reverse_proxy_examples.py`.
+### 4. 🔴 Routes/TNT Points — not saving, needs full feature
+**Files:** `frontend/src/components/dashboard/routes-tab.tsx` (725 lines), `app/api/v1/itineraries.py`
+**Bug:** Routes tab has NO save functionality. TNT (tourist navigation track) points don't exist yet.
+**Fix:**
+- Add save/update mutation for routes with all waypoints
+- Build TNT point management: add/edit/delete/reorder points on route
+- Each TNT point needs: name, lat/lng, description, order_index, estimated_duration
+- Backend: `POST/PUT/DELETE /api/v1/routes/{id}/points`
+- Frontend: drag-to-reorder points, inline editing
+- Map integration: click on map to add TNT point, visualize route path
 
-## Completed (2026-05-22, continued)
+### 5. 🟡 channel_sync — unhealthy
+**Container:** hostforguest_prod_channel_sync (unhealthy)
+**Bug:** Health check fails because no channel accounts configured (0 accounts, 0 results)
+**Fix:**
+- Make health check succeed even with 0 accounts (healthy = running, not healthy = has data)
+- OR seed a test channel account for demo purposes
+- Fix health endpoint in channel_sync worker
 
-- [x] **`scripts/apply-migrations.sh`** — Bash migration runner (parity with `apply_migrations.ps1`); dry-run works without `psql`; `tests/test_apply_migrations_script.py`.
+### 6. 🟡 General QA & Polish
+- Test ALL host dashboard tabs: Overview, Stay, Routes, Map, Discover, Groups, Insights, Cleaning, Maintenance, Channels, Adaptation
+- Test guest flow: login → dashboard → map → preferences
+- Verify all CRUD operations work end-to-end
+- Fix any console errors in browser
+- Mobile responsive check for dashboard
 
-## Completed (2026-05-23)
+## Technical Constraints
+- Next.js App Router, FastAPI, PostgreSQL/pgvector
+- Google Maps/Places API for geolocation
+- Use Nominatim (free) as geocode fallback
+- All mutations must have proper error handling + user feedback
+- After fixes, rebuild docker: `docker compose -f docker-compose.vps-prod.yml up -d --build`
 
-- [x] **Guest events Playwright CI** — `scripts/seed_e2e_guest.py` + `scripts/run-e2e-ci.sh` + `tests/e2e/ci-guest-events.spec.ts` (local stack on **8000/3055**); GitHub Actions job `e2e-guest-events`; contract test `tests/test_e2e_ci_harness.py`. Ben/production specs under `tests/e2e/ben_*.spec.ts` remain for manual runs against deployed env.
+## Deliverables
+1. Auto-geocoding for My Place addresses
+2. Dashboard performance optimizations (skeletons + caching)
+3. Guest group save fix with e2e test
+4. Routes save + TNT point management (full feature)
+5. channel_sync health fix
+6. Comprehensive QA report
 
-## Completed (2026-05-24)
-
-- [x] **Host dashboard Playwright CI** — `tests/e2e/ci-host-auth.ts` + `tests/e2e/ci-host-dashboard.spec.ts` (dev API session + overview/guests/account tabs); wired into `playwright.ci.config.ts` and `run-e2e-ci.sh`.
-
-## Completed (2026-05-25)
-
-- [x] **CI host create-guest-group E2E** — `ci-host-dashboard.spec.ts` opens the Guests tab, submits the create-group modal, and asserts the new group appears (no cleanup). Contract test `test_ci_host_dashboard_spec_covers_create_group_flow`.
-- [x] **Rename GitHub Actions E2E job** — `e2e-guest-events` → `e2e-smoke` (guest events + host dashboard).
-
-## Completed (2026-05-26)
-
-- [x] **Remove stale next-pwa artifacts from `frontend/public/`** — Deleted committed `sw.js`, `swe-worker-*.js`, and `workbox-*.js` (PWA is opt-in via `NEXT_PWA=true` in `next.config.ts`). Added `.gitignore` rules and contract tests in `tests/test_e2e_ci_harness.py` (`test_github_ci_workflow_defines_e2e_smoke_job`, `test_frontend_public_has_no_committed_next_pwa_artifacts`).
-- [x] **CI host Channels + Maintenance tab smoke** — `ci-host-dashboard.spec.ts` asserts Booking.com panel and Maintenance headings/actions; contract test `test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs`.
-- [x] **Exclude `.cursor/plans/` from Git** — Added to `.gitignore`; removed tracked plan files from the index (kept locally).
-
-- [x] **CI host Stay, Routes, Insights tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs`.
-- [x] **CI host Adaptation, Map, Discover, Cleaning tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_remaining_host_tabs`.
-
-- [x] **CI host Attractions create-modal smoke** — Opens Add New Attraction modal and cancels (no DB write); contract test `test_ci_host_dashboard_spec_covers_attractions_create_modal`.
-- [x] **CI host full attraction create** — Submits create form with address+city (server Nominatim geocode, no Google Maps client key); contract test `test_ci_host_dashboard_spec_covers_attractions_create_submit`. Frontend allows create without client lat/lng when address+city are set.
-
-## Top impact candidates (for next session)
-
-1. Optional: add `GOOGLE_MAPS_API_KEY` to GitHub Actions secrets for faster server-side geocoding in CI (Nominatim fallback is sufficient today).
-
-## Validation Commands
-
-```bash
-docker compose config --quiet
-python -m compileall -q app
-bash scripts/ci-smoke-backend.sh
-bash scripts/run-postgres-regression.sh    # full pytest on compose Postgres (excludes tests/e2e)
-npm run test:e2e:ci                      # Playwright guest events smoke (8000 + 3055)
-npm run build --prefix frontend
-npm run build --prefix support_app/day_planner
-```
-
-## Deployment Checklist
-
-- [ ] Create `.env` from `env.example`.
-- [ ] Set strong `SECRET_KEY` and `POSTGRES_PASSWORD`.
-- [ ] Set `POSTGRES_HOST_AUTH_METHOD=md5` or stronger outside local development.
-- [ ] Set `NEXT_PUBLIC_API_URL` to the public API URL.
-- [ ] Set `CORS_ORIGINS` to the frontend origin.
-- [ ] Keep `BOOKING_COM_MOCK=true` until real channel credentials are ready.
+## Success Criteria
+- User types address → coordinates auto-populate
+- Dashboard loads in <2s with skeletons
+- Groups persist after page refresh
+- Routes can be saved with TNT points
+- All containers healthy
+- At least 3 new e2e tests passing

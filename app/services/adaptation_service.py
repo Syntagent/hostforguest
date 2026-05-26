@@ -43,7 +43,7 @@ async def fetch_image_bytes_for_adaptation_vision(urls: List[str]) -> List[Tuple
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=_ADAPT_VISION_FETCH_TIMEOUT,
-        headers={"User-Agent": "TouristGuideLocal-AdaptationVision/1.0"},
+        headers={"User-Agent": "HostForGuest-AdaptationVision/1.0"},
     ) as client:
         for url in urls[:_ADAPT_VISION_MAX_IMAGES]:
             if not url or not (url.startswith("http://") or url.startswith("https://")):

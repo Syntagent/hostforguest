@@ -1,5 +1,5 @@
 """
-Main FastAPI application for TouristGuideLocal.
+Main FastAPI application for HostForGuest.
 """
 
 import os
@@ -50,9 +50,28 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title=settings.app_name,
+    title=f"{settings.app_name} API",
     version=settings.app_version,
-    description="B2B SaaS platform for Croatian tourist hosts - AI-powered local guide services",
+    description=(
+        "AI-powered local guide platform for accommodation hosts and their guests. "
+        "Built by Syntagent.\n\n"
+        "## AI Services & API Keys\n"
+        "This platform uses AI services (OpenAI, Google Gemini) for personalized "
+        "recommendations, itinerary generation, vector search, and content creation.\n\n"
+        "**For Hosts — two options:**\n"
+        "1. **Use your own API keys** — Go to Host Settings > AI Configuration and add "
+        "your OpenAI / Google AI keys. Your keys, your usage, full control over costs.\n"
+        "2. **Use Syntagent-managed keys** — Contact us for a subscription plan. "
+        "No API key setup needed, we handle the infrastructure.\n\n"
+        "AI features (itinerary generation, guest recommendations, vector search) "
+        "require at least one active API key to function.\n\n"
+        "**Grace Period:** New hosts get 3 days of free AI access with Syntagent-managed "
+        "keys — no setup needed. After the grace period, add your own keys or subscribe."
+        "\n\n"
+        "Note: Guests can always browse recommendations and local content "
+        "without an API key — only AI-generated features (itineraries, smart search) "
+        "require one."
+    ),
     openapi_url=f"{settings.api_v1_str}/openapi.json",
     docs_url=f"{settings.api_v1_str}/docs",
     redoc_url=f"{settings.api_v1_str}/redoc",
@@ -76,7 +95,10 @@ app.add_middleware(RateLimitingMiddleware, requests_per_minute=60, requests_per_
 async def root():
     return {
         "message": f"Welcome to {settings.app_name}",
-        "description": "B2B SaaS platform for Croatian tourist hosts",
+        "description": (
+            "AI-powered local guide platform for accommodation hosts and their guests. "
+            "Built by Syntagent."
+        ),
         "version": settings.app_version,
         "status": "healthy",
         "environment": settings.environment,

@@ -13,6 +13,8 @@ services:
     profiles:
       - docker-api
     build: .
+    env_file:
+      - .env
     # Named uniquely to avoid Docker Desktop ghost conflicts on "tourist_guide_api"
     container_name: tourist_guide_app_api
     ports:
@@ -77,6 +79,18 @@ services:
     build: .
     container_name: tourist_guide_channel_sync
     command: ["python", "-m", "app.tasks.channel_sync_runner"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,time; p=os.environ.get('CHANNEL_SYNC_HEARTBEAT_PATH','/tmp/channel_sync_heartbeat'); raise SystemExit(0 if os.path.isfile(p) and time.time()-os.path.getmtime(p)<900 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     environment:
       ENVIRONMENT: "${ENVIRONMENT:-development}"
       DEBUG: "${DEBUG:-true}"
@@ -87,6 +101,7 @@ services:
       POSTGRES_DB: tourist_guide_db
       POSTGRES_PORT: "5432"
       CHANNEL_SYNC_INTERVAL_SEC: "${CHANNEL_SYNC_INTERVAL_SEC:-300}"
+      CHANNEL_SYNC_HEARTBEAT_PATH: "/tmp/channel_sync_heartbeat"
       BOOKING_COM_MOCK: "${BOOKING_COM_MOCK:-true}"
       SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-here-change-in-production}"
     depends_on:
@@ -97,7 +112,7 @@ services:
       - full
 
   postgres:
-    image: postgis/postgis:16-3.4
+    build: ./postgres
     container_name: tourist_guide_postgres
     environment:
       POSTGRES_DB: tourist_guide_db

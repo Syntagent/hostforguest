@@ -80,7 +80,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               ) : (
                 <div className="min-w-0">
                   <p className="text-[11px] uppercase tracking-[0.14em] text-white/80">
-                    TouristGuideLocal
+                    HostForGuest
                   </p>
                   <p className="mt-1 text-sm font-semibold leading-tight">Host & Guest Experience</p>
                 </div>
@@ -94,6 +94,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                   <button
                     key={item.id}
                     type="button"
+                    aria-label={item.label}
+                    aria-current={isActive ? "page" : undefined}
                     onClick={() => onSelectItem(item.id)}
                     className={cn(
                       "flex w-full items-center rounded-2xl px-4 py-3 text-left text-sm font-medium transition-all",
@@ -128,16 +130,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </main>
       </div>
 
-      <nav className="surface-glass fixed inset-x-3 bottom-3 z-50 flex items-center justify-between gap-1 p-1.5 md:hidden">
+      <nav className="surface-glass fixed inset-x-3 bottom-3 z-50 flex items-center gap-1 overflow-x-auto p-1.5 md:hidden">
         {navItems.map((item) => {
           const isActive = item.id === activeItem;
           return (
             <button
               key={item.id}
               type="button"
+              aria-label={item.label}
               onClick={() => onSelectItem(item.id)}
               className={cn(
-                "flex min-w-0 flex-1 flex-col items-center rounded-xl px-2 py-2.5 text-[11px] font-medium transition-colors",
+                "flex min-w-[4.25rem] shrink-0 flex-col items-center rounded-xl px-2 py-2.5 text-[11px] font-medium transition-colors",
                 isActive ? "bg-primary text-primary-foreground" : "text-foreground/70 hover:bg-primary/10"
               )}
               aria-current={isActive ? "page" : undefined}

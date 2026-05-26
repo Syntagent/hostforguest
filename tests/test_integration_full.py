@@ -469,7 +469,7 @@ class TestTouristGuideLocalIntegration:
         response = client.get("/")
         assert response.status_code == 200
         root_data = response.json()
-        assert "TouristGuideLocal" in root_data["message"]
+        assert "HostForGuest" in root_data["message"]
         print("✅ API root endpoint working")
         
         # Test error handling with invalid data

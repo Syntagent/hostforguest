@@ -83,7 +83,7 @@ async def send_pre_arrival_email(
             )
         
         # Get host
-        host = await host_service.get_by_id(guest_group.host_id)
+        host = await host_service.get_host_by_id(guest_group.host_id)
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -141,7 +141,7 @@ async def generate_welcome_kit(
             )
         
         # Get host
-        host = await host_service.get_by_id(guest_group.host_id)
+        host = await host_service.get_host_by_id(guest_group.host_id)
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -199,7 +199,7 @@ async def send_welcome_kit(
             )
         
         # Get host
-        host = await host_service.get_by_id(guest_group.host_id)
+        host = await host_service.get_host_by_id(guest_group.host_id)
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -262,7 +262,7 @@ async def send_follow_up(
             )
         
         # Get host
-        host = await host_service.get_by_id(guest_group.host_id)
+        host = await host_service.get_host_by_id(guest_group.host_id)
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

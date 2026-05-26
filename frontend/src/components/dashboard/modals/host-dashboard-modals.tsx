@@ -36,14 +36,14 @@ interface HostDashboardModalsProps {
   setCreateGroupData: React.Dispatch<React.SetStateAction<CreateGroupFormData>>;
   showCreateAttractionModal: boolean;
   setShowCreateAttractionModal: (open: boolean) => void;
-  handleCreateAttraction: () => Promise<void> | void;
+  handleCreateAttraction: (payload?: Record<string, unknown>) => Promise<void> | void;
   createAttractionData: Record<string, unknown>;
   setCreateAttractionData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
   selectedPlace: unknown;
   showEditAttractionModal: boolean;
   selectedAttraction: Attraction | null;
   setShowEditAttractionModal: (open: boolean) => void;
-  handleEditAttraction: () => Promise<void> | void;
+  handleEditAttraction: (payload?: Record<string, unknown>) => Promise<void> | void;
   showDeleteAttractionModal: boolean;
   setShowDeleteAttractionModal: (open: boolean) => void;
   handleDeleteAttraction: () => Promise<void> | void;
