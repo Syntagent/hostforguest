@@ -40,6 +40,24 @@ test.describe("CI host dashboard", () => {
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
   });
 
+  test("attractions tab opens create modal", async ({ page, request }) => {
+    await ensureHostDashboard(page, request);
+    await openHostTab(page, "Attractions");
+
+    await expect(
+      page.getByRole("heading", { name: "Your Croatian Attractions" })
+    ).toBeVisible({ timeout: 20000 });
+
+    await page.getByRole("button", { name: "Add New Attraction" }).click();
+    await expect(page.getByRole("heading", { name: "Create New Attraction" })).toBeVisible({
+      timeout: 20000,
+    });
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Create New Attraction" })).toBeHidden({
+      timeout: 15000,
+    });
+  });
+
   test("stay, routes, and insights tabs load", async ({ page, request }) => {
     await ensureHostDashboard(page, request);
 

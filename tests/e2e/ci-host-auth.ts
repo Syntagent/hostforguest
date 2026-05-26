@@ -30,25 +30,50 @@ async function isHostShellVisible(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-/** Sign in via API, reload so AuthProvider picks up the session, then open dashboard. */
-export async function loginAsDevHost(page: Page, request: APIRequestContext) {
-  const token = await fetchDevSessionToken(request);
-  await page.goto("/login", { waitUntil: "domcontentloaded" });
-  await page.evaluate((sessionToken) => {
-    localStorage.setItem("session_token", sessionToken);
-  }, token);
-  // AuthProvider only checks localStorage on mount — reload after seeding token.
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+async function waitForHostShell(page: Page, attempts = 60) {
   await waitForDashboardShell(page);
-  for (let attempt = 0; attempt < 45; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await isHostShellVisible(page)) {
       hostSessionReady = true;
       return;
     }
     await page.waitForTimeout(1000);
   }
-  throw new Error("Host dashboard shell did not appear after dev login");
+}
+
+async function loginViaUiForm(page: Page) {
+  await page.goto("/login", { waitUntil: "domcontentloaded" });
+  await page.locator("#email").fill(DEV_EMAIL);
+  await page.locator("#password").fill(DEV_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await waitForHostShell(page);
+}
+
+/** Sign in via API token seed (fast) with UI form fallback when AuthProvider races. */
+export async function loginAsDevHost(page: Page, request: APIRequestContext) {
+  hostSessionReady = false;
+
+  try {
+    const token = await fetchDevSessionToken(request);
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await page.evaluate((sessionToken) => {
+      localStorage.setItem("session_token", sessionToken);
+    }, token);
+    // AuthProvider only checks localStorage on mount — reload after seeding token.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+    await waitForHostShell(page, 20);
+    if (hostSessionReady) {
+      return;
+    }
+  } catch {
+    // Fall through to UI login.
+  }
+
+  await loginViaUiForm(page);
+  if (!hostSessionReady) {
+    throw new Error("Host dashboard shell did not appear after dev login");
+  }
 }
 
 async function waitForDashboardShell(page: Page) {
@@ -60,6 +85,10 @@ async function waitForDashboardShell(page: Page) {
 
 export async function ensureHostDashboard(page: Page, request: APIRequestContext) {
   await waitForDashboardShell(page);
+
+  if (hostSessionReady && !(await isHostShellVisible(page))) {
+    hostSessionReady = false;
+  }
 
   if (hostSessionReady && (await isHostShellVisible(page))) {
     return;

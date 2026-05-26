@@ -80,6 +80,14 @@ def test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs() -> None:
     assert "Routes & itineraries" in text
 
 
+def test_ci_host_dashboard_spec_covers_attractions_create_modal() -> None:
+    text = PW_HOST_SPEC.read_text(encoding="utf-8")
+    assert "attractions tab opens create modal" in text
+    assert 'openHostTab(page, "Attractions")' in text
+    assert "Add New Attraction" in text
+    assert "Create New Attraction" in text
+
+
 def test_ci_host_dashboard_spec_covers_remaining_host_tabs() -> None:
     text = PW_HOST_SPEC.read_text(encoding="utf-8")
     assert "adaptation, map, discover, and cleaning tabs load" in text

@@ -46,9 +46,11 @@
 - [x] **CI host Stay, Routes, Insights tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs`.
 - [x] **CI host Adaptation, Map, Discover, Cleaning tab smoke** — `ci-host-dashboard.spec.ts` + contract test `test_ci_host_dashboard_spec_covers_remaining_host_tabs`.
 
+- [x] **CI host Attractions create-modal smoke** — Opens Add New Attraction modal and cancels (no DB write); contract test `test_ci_host_dashboard_spec_covers_attractions_create_modal`.
+
 ## Top impact candidates (for next session)
 
-1. Add Attractions tab CRUD smoke to CI host E2E (lighter than `ben_host_dashboard` create-attraction flow).
+1. Optional: CI host full attraction create (submit form) if regression signal is needed beyond the modal smoke.
 
 ## Validation Commands
 
