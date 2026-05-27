@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { KeyRound, Loader2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -262,10 +262,10 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
   const progressPercent = Math.round((step / 5) * 100);
 
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center px-4 pb-10 pt-6 sm:px-6 sm:pb-12 sm:pt-10">
+    <div className="relative flex min-h-screen w-full max-w-full flex-col items-center overflow-x-hidden px-3 pb-24 pt-3 sm:justify-center sm:px-6 sm:pb-12 sm:pt-10">
       <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center opacity-30 [mask-image:linear-gradient(180deg,white,rgba(255,255,255,0.35))]" aria-hidden />
 
-      <p className="relative z-10 mb-4 text-center text-xs text-blue-100">
+      <p className="relative z-10 mb-2 text-center text-xs text-blue-100 sm:mb-4">
         <Link
           href="/guest/join"
           className="underline decoration-white/40 underline-offset-2 transition-colors hover:text-white"
@@ -275,13 +275,13 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
       </p>
 
       <div className="relative z-10 w-full max-w-2xl">
-        <article className="rounded-3xl border border-white/25 bg-white/[0.14] text-white shadow-[0_25px_50px_-12px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-          <div className="flex flex-col space-y-4 p-6 text-center md:p-7">
-            <h3 className="text-2xl font-bold leading-tight tracking-tight sm:text-3xl">
+        <article className="overflow-hidden rounded-2xl border border-white/25 bg-white/[0.14] text-white shadow-[0_25px_50px_-12px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:rounded-3xl">
+          <div className="flex flex-col space-y-2 p-4 text-center sm:space-y-4 sm:p-6 md:p-7">
+            <h3 className="text-xl font-bold leading-tight tracking-tight sm:text-3xl">
               Set up your stay
             </h3>
             {guestGroup && (
-              <p className="text-pretty text-sm text-blue-100 sm:text-base">
+              <p className="text-pretty text-xs text-blue-100 sm:text-base">
                 <span className="font-medium text-white">
                   {guestGroup.group_name || "Your group"}
                 </span>
@@ -297,7 +297,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               aria-valuemax={100}
               aria-label={`Step ${step} of 5`}
             >
-              <div className="mb-2 flex justify-center gap-1.5">
+              <div className="mb-1.5 flex justify-center gap-1.5 sm:mb-2">
                 {[1, 2, 3, 4, 5].map((n) => (
                   <div
                     key={n}
@@ -312,10 +312,10 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               </p>
             </div>
           </div>
-          <div className="px-4 pb-6 pt-0 sm:px-6 md:px-7 md:pb-7">
+          <div className="px-3 pb-3 pt-0 sm:px-6 sm:pb-6 md:px-7 md:pb-7">
               {step === 1 && (
-                <div key="s1" className="space-y-4">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div key="s1" className="space-y-3 sm:space-y-4">
+                  <div className="grid grid-cols-2 gap-2 sm:gap-3">
                     <div>
                       <Label htmlFor="g-first" className="text-white">
                         First name *
@@ -326,7 +326,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                         autoComplete="given-name"
                         value={firstName}
                         onChange={(e) => setFirstName(e.target.value)}
-                        className="mt-1.5 min-h-11 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80"
+                        className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
                         placeholder="Ivan"
                       />
                     </div>
@@ -340,7 +340,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                         autoComplete="family-name"
                         value={lastName}
                         onChange={(e) => setLastName(e.target.value)}
-                        className="mt-1.5 min-h-11 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80"
+                        className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
                         placeholder="Horvat"
                       />
                     </div>
@@ -357,7 +357,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       inputMode="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="mt-1.5 min-h-11 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80"
+                    className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
                       placeholder="you@example.com"
                     />
                   </div>
@@ -373,7 +373,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       inputMode="tel"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      className="mt-1.5 min-h-11 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80"
+                      className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
                       placeholder="+385 …"
                     />
                   </div>
@@ -385,7 +385,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       id="g-lang"
                       value={language}
                       onChange={(e) => setLanguage(e.target.value)}
-                      className="mt-1.5 min-h-11 w-full rounded-xl border border-white/30 bg-white/95 px-3 py-2 text-sm text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-white/50"
+                      className="mt-1 min-h-10 w-full rounded-xl border border-white/30 bg-white/95 px-3 py-2 text-sm text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-white/50 sm:mt-1.5 sm:min-h-11"
                     >
                       <option value="en">English</option>
                       <option value="hr">Hrvatski</option>
@@ -393,7 +393,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       <option value="it">Italiano</option>
                     </select>
                   </div>
-                  <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-white/5 p-3 text-sm leading-snug text-white">
+                  <label className="flex cursor-pointer items-start gap-2 rounded-xl bg-white/5 p-2.5 text-xs leading-snug text-white sm:gap-3 sm:p-3 sm:text-sm">
                     <input
                       type="checkbox"
                       checked={termsAccepted}
@@ -409,15 +409,15 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               )}
 
               {step === 2 && (
-                <div key="s2" className="space-y-4">
-                  <Label className="text-base font-medium text-white">
+                <div key="s2" className="space-y-3 sm:space-y-4">
+                  <Label className="text-sm font-medium text-white sm:text-base">
                     Who is traveling? (age groups)
                   </Label>
-                  <p className="text-sm text-blue-100">
+                  <p className="text-xs text-blue-100 sm:text-sm">
                     Select all that apply — we use this to tune walking distances and activity
                     suggestions for everyone in your group.
                   </p>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-2 sm:gap-3">
                     {AGE_GROUP_KEYS.map((a) => {
                       const selected = ageGroups.includes(a);
                       return (
@@ -427,7 +427,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                           variant={selected ? "primary" : "outline"}
                           aria-pressed={selected}
                           onClick={() => toggleAgeGroup(a)}
-                          className="h-auto min-h-14 py-3"
+                          className="h-auto min-h-11 rounded-xl py-2 text-sm sm:min-h-14 sm:py-3"
                         >
                           {AGE_LABELS[a]}
                         </Button>
@@ -438,11 +438,11 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               )}
 
               {step === 3 && (
-                <div key="s3" className="space-y-4">
-                  <Label className="text-base font-medium text-white">
+                <div key="s3" className="space-y-3 sm:space-y-4">
+                  <Label className="text-sm font-medium text-white sm:text-base">
                     What are you into?
                   </Label>
-                  <p className="text-sm text-blue-100">Pick anything that sounds fun — no wrong answers.</p>
+                  <p className="text-xs text-blue-100 sm:text-sm">Pick anything that sounds fun — no wrong answers.</p>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {Object.entries(INTEREST_OPTIONS).map(([key, v]) => (
                       <Button
@@ -450,9 +450,9 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                         type="button"
                         variant={interests.includes(key) ? "primary" : "outline"}
                         onClick={() => toggleInterest(key)}
-                        className="flex h-auto min-h-[4.25rem] flex-col gap-1 py-2.5"
+                        className="flex h-auto min-h-14 flex-col gap-0.5 rounded-xl py-2 sm:min-h-[4.25rem] sm:gap-1 sm:py-2.5"
                       >
-                        <span className="text-lg" aria-hidden>
+                        <span className="text-base sm:text-lg" aria-hidden>
                           {v.icon}
                         </span>
                         <span className="text-center text-[11px] font-medium leading-tight sm:text-xs">
@@ -467,7 +467,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               {step === 4 && (
                 <div
                   key="s4"
-                  className="max-h-[min(60vh,28rem)] space-y-6 overflow-y-auto pr-1"
+                  className="max-h-[min(58vh,28rem)] space-y-4 overflow-y-auto pr-1 sm:space-y-6"
                 >
                   <div>
                     <Label className="text-white">Walking & mobility</Label>
@@ -486,7 +486,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                           key={v}
                           type="button"
                           variant={mobilityLevel === v ? "primary" : "outline"}
-                          className="h-auto min-h-12 w-full justify-start whitespace-normal text-left text-sm"
+                          className="h-auto min-h-10 w-full justify-start whitespace-normal rounded-xl text-left text-sm sm:min-h-12"
                           onClick={() => setMobilityLevel(v)}
                         >
                           {label}
@@ -496,13 +496,13 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                   </div>
                   <div>
                     <Label className="text-white">Budget for outings</Label>
-                    <div className="mt-2 grid grid-cols-3 gap-2">
+                    <div className="mt-2 grid grid-cols-3 gap-1.5 sm:gap-2">
                       {(["low", "medium", "high"] as const).map((b) => (
                         <Button
                           key={b}
                           type="button"
                           variant={budgetLevel === b ? "primary" : "outline"}
-                          className="min-h-11 capitalize"
+                          className="min-h-10 rounded-xl px-2 capitalize sm:min-h-11"
                           onClick={() => setBudgetLevel(b)}
                         >
                           {b}
@@ -512,7 +512,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                   </div>
                   <div>
                     <Label className="text-white">Dietary needs</Label>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
                       {DIETARY_OPTIONS.map((d) => (
                         <Button
                           key={d}
@@ -520,7 +520,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                           size="sm"
                           variant={dietary.includes(d) ? "primary" : "outline"}
                           onClick={() => toggleDietary(d)}
-                          className="rounded-full"
+                          className="shrink-0 rounded-full"
                         >
                           {d}
                         </Button>
@@ -535,8 +535,8 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       id="g-notes"
                       value={specialRequests}
                       onChange={(e) => setSpecialRequests(e.target.value)}
-                      rows={3}
-                      className="mt-1.5 w-full resize-none rounded-xl border border-white/30 bg-white/20 px-3 py-2.5 text-sm text-white placeholder:text-blue-200/80 focus:outline-none focus:ring-2 focus:ring-white/40"
+                      rows={2}
+                      className="mt-1.5 w-full resize-none rounded-xl border border-white/30 bg-white/20 px-3 py-2 text-sm text-white placeholder:text-blue-200/80 focus:outline-none focus:ring-2 focus:ring-white/40"
                       placeholder="Allergies, accessibility, kids, celebration…"
                     />
                   </div>
@@ -546,7 +546,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               {step === 5 && (
                 <div
                   key="s5"
-                  className="space-y-3 rounded-2xl bg-white/10 p-4 text-sm text-blue-100"
+                  className="space-y-2 rounded-2xl bg-white/10 p-3 text-sm text-blue-100 sm:space-y-3 sm:p-4"
                 >
                   <p className="border-b border-white/10 pb-2 text-xs font-medium uppercase tracking-wide text-blue-200">
                     Summary
@@ -592,20 +592,21 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               </Alert>
             ) : null}
 
-            <div className="mt-8 flex flex-col-reverse gap-3 border-t border-white/10 pt-6 sm:flex-row sm:items-center sm:justify-between">
+            <div className="sticky bottom-0 -mx-3 mt-4 flex flex-row gap-2 border-t border-white/10 bg-slate-950/35 px-3 py-3 backdrop-blur-md sm:static sm:mx-0 sm:mt-8 sm:gap-3 sm:bg-transparent sm:px-0 sm:pt-6 sm:backdrop-blur-0">
               <Button
                 type="button"
                 variant="outline"
-                className="w-full !border-white/55 !bg-white/10 text-white shadow-none backdrop-blur-sm hover:!bg-white/20 hover:!text-white focus-visible:ring-white/40 disabled:!border-white/20 disabled:!bg-white/5 disabled:!text-white/45 sm:w-auto"
+                className="min-h-10 flex-1 !border-white/55 !bg-white/10 px-3 text-white shadow-none backdrop-blur-sm hover:!bg-white/20 hover:!text-white focus-visible:ring-white/40 disabled:!border-white/20 disabled:!bg-white/5 disabled:!text-white/45 sm:w-auto sm:flex-none"
                 disabled={step === 1}
                 onClick={prev}
               >
-                Back
+                <ChevronLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Back</span>
               </Button>
               {step < 5 ? (
                 <Button
                   type="button"
-                  className="w-full sm:w-auto"
+                  className="min-h-10 flex-[2] px-3 sm:w-auto sm:flex-none"
                   onClick={() => {
                     if (step === 1) {
                       if (!firstName.trim() || !lastName.trim() || !email.trim()) {
@@ -633,11 +634,12 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                   }}
                 >
                   Continue
+                  <ChevronRight className="h-4 w-4" />
                 </Button>
               ) : (
                 <Button
                   type="button"
-                  className="w-full sm:w-auto"
+                  className="min-h-10 flex-[2] px-3 sm:w-auto sm:flex-none"
                   disabled={loading}
                   onClick={handleSubmit}
                 >
@@ -647,7 +649,10 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       Saving…
                     </span>
                   ) : (
-                    "Save & open my guide"
+                    <>
+                      <Check className="h-4 w-4" />
+                      Open guide
+                    </>
                   )}
                 </Button>
               )}

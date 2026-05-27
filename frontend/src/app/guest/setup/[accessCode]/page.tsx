@@ -21,7 +21,7 @@ export default async function GuestSetupPage({ params }: GuestSetupPageProps) {
   const { accessCode } = await params;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-600 via-teal-600 to-green-600">
+    <div className="min-h-screen overflow-x-hidden bg-gradient-to-br from-blue-600 via-teal-600 to-green-600">
       <Suspense fallback={<SetupFallback />}>
         <GuestOnboardingWizard accessCode={accessCode} />
       </Suspense>

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { GoogleMapsProvider } from "@/components/maps/GoogleMapsProvider";
 import { HostMapView, type HostMapViewHandle } from "@/components/maps/HostMapView";
 import type { Attraction } from "@/lib/api";
@@ -10,7 +10,6 @@ import {
   BarChart3,
   Camera,
   Compass,
-  Crosshair,
   Landmark,
   MapPin,
   Pencil,
@@ -19,7 +18,6 @@ import {
   Clock,
   Globe,
   Phone,
-  ExternalLink,
   Utensils,
   Coffee,
   ShoppingBag,
@@ -86,19 +84,19 @@ export const AttractionsTab: React.FC<{
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Your Croatian Attractions</h2>
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-gray-900 sm:text-2xl">Croatian Attractions</h2>
           <p className="text-sm text-muted-foreground">
             Curated places and a live map in one integrated workspace.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="flex items-center rounded-md border p-1 bg-muted/20">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="grid grid-cols-2 rounded-2xl border bg-muted/20 p-1">
             <Button 
               variant={viewMode === "list" ? "secondary" : "ghost"} 
               size="sm"
               onClick={() => viewMode !== "list" && onToggleViewMode()}
-              className="h-8"
+              className="h-8 rounded-xl"
             >
               List View
             </Button>
@@ -106,13 +104,13 @@ export const AttractionsTab: React.FC<{
               variant={viewMode === "map" ? "secondary" : "ghost"} 
               size="sm"
               onClick={() => viewMode !== "map" && onToggleViewMode()}
-              className="h-8"
+              className="h-8 rounded-xl"
             >
               <Compass className="mr-2 h-4 w-4" />
               Map View
             </Button>
           </div>
-          <Button gradient onClick={onCreateAttraction}>
+          <Button gradient onClick={onCreateAttraction} className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />
             Add New Attraction
           </Button>
@@ -139,7 +137,7 @@ export const AttractionsTab: React.FC<{
       ) : (
         <div className="space-y-4">
           {viewMode === "map" ? (
-            <Card className="overflow-hidden relative h-[700px] border shadow-sm flex flex-col">
+            <Card className="relative flex h-[58vh] min-h-[22rem] max-h-[calc(100dvh-10rem)] flex-col overflow-hidden border shadow-sm sm:h-[700px] sm:max-h-none">
               <div className="h-full w-full bg-slate-50 relative flex-1">
                 <GoogleMapsProvider apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""}>
                   <HostMapView
