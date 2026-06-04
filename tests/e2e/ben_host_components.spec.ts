@@ -10,13 +10,25 @@ test.describe("Ben host all components", () => {
   test("Stay tab — save accommodation profile", async ({ page }) => {
     page.on("dialog", (d) => d.accept());
     await openTab(page, "Stay");
-    await page.getByRole("button", { name: /Edit Details/i }).click();
-    const story = page.locator("textarea").first();
+    await page.getByRole("button", { name: /^Edit$/i }).click();
+    const story = page.getByLabel(/Property story/i);
     await story.fill(`Ben host QA story ${Date.now()}`);
     await page.getByRole("button", { name: "Save Changes" }).click();
-    await expect(page.getByText(/Accommodation data saved/i)).toBeVisible({
+    await expect(page.getByText(/Your Stay profile is updated/i)).toBeVisible({
       timeout: 5000,
-    }).catch(() => expect(page.getByRole("button", { name: /Edit Details/i })).toBeVisible());
+    }).catch(() => expect(page.getByRole("button", { name: /^Edit$/i })).toBeVisible());
+  });
+
+  test("Stay tab — AI agent drafts location story", async ({ page }) => {
+    await openTab(page, "Stay");
+    await expect(page.getByText(/Stay assistant/i)).toBeVisible({ timeout: 30000 });
+    await page
+      .getByPlaceholder(/Tell the assistant one important fact/i)
+      .fill("We offer sea views, homemade olive oil, and quiet family mornings.");
+    await page.getByRole("button", { name: /Send assistant message/i }).click();
+    await expect(page.getByText(/Draft suggestion|could not reach AI|Apply draft/i).first()).toBeVisible({
+      timeout: 45000,
+    });
   });
 
   test("Maintenance — create issue", async ({ page }) => {

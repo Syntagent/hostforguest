@@ -1,0 +1,146 @@
+# National event source registry for HostForGuest local_events pipeline.
+# enabled: false until scraper tests pass (P1 cities).
+
+- slug: tz-lovran
+  name: Lovran Tourism Office
+  url: https://visitlovran.com
+  listing_url: https://visitlovran.com/dogadanja/
+  region: Kvarner
+  city: Lovran
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_lovran
+  legal_notes: Public tourism office calendar; respect robots.txt
+
+- slug: opatija-tourism
+  name: Opatija Tourism
+  url: https://www.opatija-tourism.hr
+  listing_url: https://www.opatija-tourism.hr/kalendar-dogadjanja
+  region: Kvarner
+  city: Opatija
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: opatija_tourism
+  legal_notes: Public event listings
+
+- slug: kvarner-hr
+  name: Kvarner Tourism
+  url: https://www.kvarner.hr
+  listing_url: https://www.kvarner.hr/hr/dogadanja
+  region: Kvarner
+  city: null
+  frequency_minutes: 1440
+  enabled: false
+  insecure_ssl: true
+  scraper_class: kvarner_hr
+  legal_notes: Disabled until listing URL and TLS are stable (cert hostname mismatch)
+
+- slug: tz-moscenicka-draga
+  name: Mošćenička Draga Tourism
+  url: https://www.moscenicka-draga.hr
+  listing_url: https://www.moscenicka-draga.hr/dogadanja/
+  region: Kvarner
+  city: Mošćenička Draga
+  frequency_minutes: 1440
+  enabled: false
+  scraper_class: tz_moscenicka_draga
+  legal_notes: Site often unreachable from scraper network; enable when URL responds reliably
+
+- slug: istra-hr
+  name: Istria Tourism
+  url: https://www.istra.hr
+  listing_url: https://www.istra.hr/hr/dogadanja
+  region: Istria
+  city: null
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: istra_hr
+  legal_notes: Regional manifestacije
+
+- slug: croatia-hr
+  name: Croatia Tourism Board
+  url: https://croatia.hr
+  listing_url: https://croatia.hr/hr-hr/dogadanja
+  region: null
+  city: null
+  frequency_minutes: 2880
+  enabled: true
+  scraper_class: croatia_hr
+  legal_notes: National tourism board events
+
+- slug: visit-rijeka
+  name: Visit Rijeka
+  url: https://www.visitrijeka.hr
+  listing_url: https://visitrijeka.hr/dogadanja/
+  region: Kvarner
+  city: Rijeka
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: visit_rijeka
+  legal_notes: City tourism events
+
+- slug: tz-zagreb
+  name: Zagreb Tourist Board
+  url: https://www.infozagreb.hr
+  listing_url: https://www.infozagreb.hr/en/events
+  region: Zagreb
+  city: Zagreb
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_zagreb
+  legal_notes: Capital city events
+
+- slug: tz-split
+  name: Split Tourist Board
+  url: https://www.visitsplit.com
+  listing_url: https://www.visitsplit.com/en/434/events
+  region: Dalmatia
+  city: Split
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_split
+  legal_notes: Split events calendar
+
+- slug: tz-dubrovnik
+  name: Dubrovnik Tourist Board
+  url: https://www.tzdubrovnik.hr
+  listing_url: https://www.tzdubrovnik.hr/dogadanja
+  region: Dalmatia
+  city: Dubrovnik
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_dubrovnik
+  legal_notes: Dubrovnik events
+
+- slug: tz-zadar
+  name: Zadar Tourist Board
+  url: https://zadar.travel
+  listing_url: https://zadar.travel/dogadanja
+  region: Dalmatia
+  city: Zadar
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_zadar
+  legal_notes: Zadar events
+
+- slug: tz-pula
+  name: Pula Tourist Board
+  url: https://www.pulainfo.hr
+  listing_url: https://www.pulainfo.hr/dogadanja
+  region: Istria
+  city: Pula
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_pula
+  legal_notes: Pula events
+
+- slug: tz-osijek
+  name: Osijek Tourist Board
+  url: https://www.tzosijek.hr
+  listing_url: https://www.tzosijek.hr/dogadanja
+  region: Slavonia
+  city: Osijek
+  frequency_minutes: 1440
+  enabled: true
+  scraper_class: tz_osijek
+  legal_notes: Osijek events

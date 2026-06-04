@@ -156,10 +156,11 @@ class RecommendationScoring:
         """Calculate location convenience score."""
         score = 0.5
         
+        host_area = getattr(host, "county", None) or getattr(host, "region", None)
         if host.city and attraction.city:
             if host.city.lower() == attraction.city.lower():
                 score = 1.0
-            elif attraction.region and host.region == attraction.region:
+            elif attraction.region and host_area and host_area == attraction.region:
                 score = 0.7
         
         return min(1.0, max(0.0, score))

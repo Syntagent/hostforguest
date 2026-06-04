@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { guestGroupsApi, GuestGroup } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { guestGroupsApi, GuestGroup, type GuestPreferenceRecord } from "@/lib/api";
 
 const INTEREST_OPTIONS: Record<string, { icon: string; label: string }> = {
   history: { icon: "🏛️", label: "History & culture" },
@@ -82,6 +83,50 @@ const STEP_TITLES = [
   "Review",
 ];
 
+type StepOneField = "firstName" | "lastName" | "email" | "terms";
+type StepOneErrors = Partial<Record<StepOneField, string>>;
+
+function splitGuestName(name?: string | null): { firstName: string; lastName: string } {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+function parseAgeGroups(value?: string | null): AgeGroupKey[] {
+  const parsed = (value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item): item is AgeGroupKey => AGE_GROUP_KEYS.includes(item as AgeGroupKey));
+  return parsed.length ? sortAgeGroups(parsed) : ["adult"];
+}
+
+function parseMobilityNotes(value?: string | null) {
+  const parsed = {
+    email: "",
+    phone: "",
+    mobility: "high",
+    budget: "medium",
+    notes: "",
+  };
+  const lines = (value || "").split(/\r?\n/);
+  const noteStart = lines.findIndex((line) => line.trim() === "---");
+  for (const line of noteStart >= 0 ? lines.slice(0, noteStart) : lines) {
+    const [rawKey, ...rest] = line.split(":");
+    const key = rawKey.trim().toLowerCase();
+    const text = rest.join(":").trim();
+    if (key === "email") parsed.email = text;
+    if (key === "phone") parsed.phone = text;
+    if (key === "mobility" && ["high", "medium", "low"].includes(text)) parsed.mobility = text;
+    if (key === "budget" && ["low", "medium", "high"].includes(text)) parsed.budget = text;
+  }
+  if (noteStart >= 0) {
+    parsed.notes = lines.slice(noteStart + 1).join("\n").trim();
+  }
+  return parsed;
+}
+
 export interface GuestOnboardingWizardProps {
   accessCode: string;
 }
@@ -99,6 +144,8 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
   const [loadGroup, setLoadGroup] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [guestGroup, setGuestGroup] = useState<GuestGroup | null>(null);
+  const [existingPreference, setExistingPreference] = useState<GuestPreferenceRecord | null>(null);
+  const [stepOneErrors, setStepOneErrors] = useState<StepOneErrors>({});
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -113,9 +160,14 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
   const [budgetLevel, setBudgetLevel] = useState("medium");
   const [dietary, setDietary] = useState<string[]>([]);
   const [specialRequests, setSpecialRequests] = useState("");
+  const firstNameRef = React.useRef<HTMLInputElement>(null);
+  const lastNameRef = React.useRef<HTMLInputElement>(null);
+  const emailRef = React.useRef<HTMLInputElement>(null);
+  const termsRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
   }, [step]);
 
   useEffect(() => {
@@ -126,6 +178,33 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
         if (cancelled) return;
         if (res.success && res.data) {
           setGuestGroup(res.data);
+          const prefs = await guestGroupsApi.getGuestPreferences(accessCode);
+          if (cancelled) return;
+          const latestPreference =
+            prefs.success && Array.isArray(prefs.data) && prefs.data.length > 0
+              ? [...prefs.data].sort((a, b) => {
+                  const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+                  const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+                  return bTime - aTime;
+                })[0]
+              : null;
+          setExistingPreference(latestPreference);
+          if (latestPreference) {
+            const name = splitGuestName(latestPreference.guest_name);
+            const notes = parseMobilityNotes(latestPreference.mobility_notes);
+            setFirstName(name.firstName);
+            setLastName(name.lastName);
+            setEmail(notes.email);
+            setPhone(notes.phone);
+            setLanguage(latestPreference.language_preference || "en");
+            setAgeGroups(parseAgeGroups(latestPreference.age_category));
+            setInterests(latestPreference.personal_interests || []);
+            setDietary(latestPreference.dietary_needs || []);
+            setMobilityLevel(notes.mobility || "high");
+            setBudgetLevel(notes.budget || "medium");
+            setSpecialRequests(notes.notes);
+            setTermsAccepted(true);
+          }
         } else {
           setError(res.error || "Invalid or expired access code");
         }
@@ -176,6 +255,42 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
       .map((k) => INTEREST_OPTIONS[k]?.label || k)
       .join(", ") || "—";
 
+  const clearStepOneError = (field: StepOneField) => {
+    setStepOneErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+    if (error && guestGroup) setError(null);
+  };
+
+  const validateStepOne = () => {
+    const nextErrors: StepOneErrors = {};
+    if (!firstName.trim()) nextErrors.firstName = "First name is required.";
+    if (!lastName.trim()) nextErrors.lastName = "Last name is required.";
+    if (!email.trim()) {
+      nextErrors.email = "Email is required.";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      nextErrors.email = "Enter a valid email address.";
+    }
+    if (!termsAccepted) nextErrors.terms = "Please accept personalization terms.";
+    setStepOneErrors(nextErrors);
+
+    const firstInvalid = Object.keys(nextErrors)[0] as StepOneField | undefined;
+    const refByField: Record<StepOneField, React.RefObject<HTMLInputElement | null>> = {
+      firstName: firstNameRef,
+      lastName: lastNameRef,
+      email: emailRef,
+      terms: termsRef,
+    };
+    if (firstInvalid) {
+      refByField[firstInvalid].current?.focus();
+      return false;
+    }
+    return true;
+  };
+
   const handleSubmit = async () => {
     setLoading(true);
     setError(null);
@@ -186,7 +301,7 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
       );
       const food_interests = interests.includes("food") ? ["food"] : [];
 
-      const res = await guestGroupsApi.addGuestPreference(accessCode, {
+      const preferencePayload = {
         guest_name,
         age_category: ageGroupsToApiString(ageGroups),
         personal_interests: interests,
@@ -195,7 +310,11 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
         language_preference: language,
         cultural_interests: cultural,
         food_interests,
-      });
+      };
+
+      const res = existingPreference?.id
+        ? await guestGroupsApi.updateGuestPreference(accessCode, existingPreference.id, preferencePayload)
+        : await guestGroupsApi.addGuestPreference(accessCode, preferencePayload);
 
       if (!res.success) {
         throw new Error(res.error || "Could not save your profile");
@@ -281,13 +400,20 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
               Set up your stay
             </h3>
             {guestGroup && (
-              <p className="text-pretty text-xs text-blue-100 sm:text-base">
-                <span className="font-medium text-white">
-                  {guestGroup.group_name || "Your group"}
-                </span>
-                {" — "}
-                A few quick questions help your host tailor tips and places for you.
-              </p>
+              <div className="space-y-2">
+                <p className="text-pretty text-xs text-blue-100 sm:text-base">
+                  <span className="font-medium text-white">
+                    {guestGroup.group_name || "Your group"}
+                  </span>
+                  {" — "}
+                  A few quick questions help your host tailor tips and places for you.
+                </p>
+                {existingPreference ? (
+                  <p className="mx-auto inline-flex rounded-full border border-white/25 bg-white/15 px-3 py-1 text-xs font-medium text-white">
+                    You&apos;re updating your preferences
+                  </p>
+                ) : null}
+              </div>
             )}
             <div
               className="mx-auto w-full max-w-xs pt-1"
@@ -322,13 +448,27 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       </Label>
                       <Input
                         id="g-first"
+                        ref={firstNameRef}
                         name="given-name"
                         autoComplete="given-name"
                         value={firstName}
-                        onChange={(e) => setFirstName(e.target.value)}
-                        className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
+                        onChange={(e) => {
+                          setFirstName(e.target.value);
+                          clearStepOneError("firstName");
+                        }}
+                        aria-invalid={stepOneErrors.firstName ? "true" : "false"}
+                        aria-describedby={stepOneErrors.firstName ? "g-first-error" : undefined}
+                        className={cn(
+                          "mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11",
+                          stepOneErrors.firstName && "border-red-300 bg-red-500/15 focus-visible:ring-red-200"
+                        )}
                         placeholder="Ivan"
                       />
+                      {stepOneErrors.firstName ? (
+                        <p id="g-first-error" className="mt-1 text-xs text-red-100">
+                          {stepOneErrors.firstName}
+                        </p>
+                      ) : null}
                     </div>
                     <div>
                       <Label htmlFor="g-last" className="text-white">
@@ -336,13 +476,27 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                       </Label>
                       <Input
                         id="g-last"
+                        ref={lastNameRef}
                         name="family-name"
                         autoComplete="family-name"
                         value={lastName}
-                        onChange={(e) => setLastName(e.target.value)}
-                        className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
+                        onChange={(e) => {
+                          setLastName(e.target.value);
+                          clearStepOneError("lastName");
+                        }}
+                        aria-invalid={stepOneErrors.lastName ? "true" : "false"}
+                        aria-describedby={stepOneErrors.lastName ? "g-last-error" : undefined}
+                        className={cn(
+                          "mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11",
+                          stepOneErrors.lastName && "border-red-300 bg-red-500/15 focus-visible:ring-red-200"
+                        )}
                         placeholder="Horvat"
                       />
+                      {stepOneErrors.lastName ? (
+                        <p id="g-last-error" className="mt-1 text-xs text-red-100">
+                          {stepOneErrors.lastName}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                   <div>
@@ -351,15 +505,29 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                     </Label>
                     <Input
                       id="g-email"
+                      ref={emailRef}
                       type="email"
                       name="email"
                       autoComplete="email"
                       inputMode="email"
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                    className="mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11"
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        clearStepOneError("email");
+                      }}
+                      aria-invalid={stepOneErrors.email ? "true" : "false"}
+                      aria-describedby={stepOneErrors.email ? "g-email-error" : undefined}
+                      className={cn(
+                        "mt-1 min-h-10 rounded-xl border-white/30 bg-white/20 text-white placeholder:text-blue-200/80 sm:mt-1.5 sm:min-h-11",
+                        stepOneErrors.email && "border-red-300 bg-red-500/15 focus-visible:ring-red-200"
+                      )}
                       placeholder="you@example.com"
                     />
+                    {stepOneErrors.email ? (
+                      <p id="g-email-error" className="mt-1 text-xs text-red-100">
+                        {stepOneErrors.email}
+                      </p>
+                    ) : null}
                   </div>
                   <div>
                     <Label htmlFor="g-phone" className="text-white">
@@ -395,16 +563,30 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                   </div>
                   <label className="flex cursor-pointer items-start gap-2 rounded-xl bg-white/5 p-2.5 text-xs leading-snug text-white sm:gap-3 sm:p-3 sm:text-sm">
                     <input
+                      ref={termsRef}
                       type="checkbox"
                       checked={termsAccepted}
-                      onChange={(e) => setTermsAccepted(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/40 text-blue-600 focus:ring-white/50"
+                      onChange={(e) => {
+                        setTermsAccepted(e.target.checked);
+                        clearStepOneError("terms");
+                      }}
+                      aria-invalid={stepOneErrors.terms ? "true" : "false"}
+                      aria-describedby={stepOneErrors.terms ? "g-terms-error" : undefined}
+                      className={cn(
+                        "mt-0.5 h-4 w-4 shrink-0 rounded border-white/40 text-blue-600 focus:ring-white/50",
+                        stepOneErrors.terms && "ring-2 ring-red-200"
+                      )}
                     />
                     <span>
                       I agree my host may use these details to personalize my stay
                       (as agreed with your host).
                     </span>
                   </label>
+                  {stepOneErrors.terms ? (
+                    <p id="g-terms-error" className="-mt-2 text-xs text-red-100">
+                      {stepOneErrors.terms}
+                    </p>
+                  ) : null}
                 </div>
               )}
 
@@ -502,10 +684,10 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                           key={b}
                           type="button"
                           variant={budgetLevel === b ? "primary" : "outline"}
-                          className="min-h-10 rounded-xl px-2 capitalize sm:min-h-11"
+                          className="min-h-10 rounded-xl px-2 text-xs sm:min-h-11 sm:text-sm"
                           onClick={() => setBudgetLevel(b)}
                         >
-                          {b}
+                          {BUDGET_LABELS[b]}
                         </Button>
                       ))}
                     </div>
@@ -609,16 +791,8 @@ export const GuestOnboardingWizard: React.FC<GuestOnboardingWizardProps> = ({
                   className="min-h-10 flex-[2] px-3 sm:w-auto sm:flex-none"
                   onClick={() => {
                     if (step === 1) {
-                      if (!firstName.trim() || !lastName.trim() || !email.trim()) {
-                        setError("Please add your first name, last name, and email.");
-                        return;
-                      }
-                      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-                        setError("Please enter a valid email address.");
-                        return;
-                      }
-                      if (!termsAccepted) {
-                        setError("Please tick the box to continue.");
+                      if (!validateStepOne()) {
+                        setError("Please fix the highlighted fields to continue.");
                         return;
                       }
                       setError(null);

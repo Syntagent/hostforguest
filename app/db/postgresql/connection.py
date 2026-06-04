@@ -59,10 +59,13 @@ def import_models():
         import app.models.recommendation  # noqa: F401
         import app.models.itinerary  # noqa: F401
         import app.models.content_source  # noqa: F401
+        import app.models.local_event  # noqa: F401
+        import app.models.event_source_proposal  # noqa: F401
         from app.models.settings import HostSettings, SystemSettings, APIKeyTemplate  # noqa: F401
         from app.models import channel_integration  # noqa: F401
         from app.models import maintenance  # noqa: F401
         from app.models import adaptation  # noqa: F401
+        from app.models import host_compliance  # noqa: F401
         import app.models.subscription  # noqa: F401
         logger.info("Models imported successfully")
     except ImportError as e:

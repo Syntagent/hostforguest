@@ -7,7 +7,6 @@ preference overlap on relational attraction fields, and traditional filtering.
 
 import logging
 from typing import List, Dict, Any, Optional, Set, Tuple
-from datetime import datetime
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +19,29 @@ from app.models.host import Host
 from app.services.vector_service import VectorService
 
 logger = logging.getLogger(__name__)
+
+_SEASON_MONTHS: dict[str, set[int]] = {
+    "spring": {3, 4, 5},
+    "summer": {6, 7, 8},
+    "autumn": {9, 10, 11},
+    "winter": {12, 1, 2},
+}
+
+
+def _attraction_matches_request_season(attraction: Attraction, season: str) -> bool:
+    """True when attraction is suitable for the requested season (not wall-clock month)."""
+    if attraction.seasonal_availability == "year_round":
+        return True
+    season_key = (season or "").strip().lower()
+    if not season_key:
+        return True
+    if (attraction.seasonal_availability or "").lower() == season_key:
+        return True
+    months = _SEASON_MONTHS.get(season_key)
+    if not months:
+        return True
+    best = set(attraction.best_months or [])
+    return bool(best & months)
 
 
 class RecommendationCandidates:
@@ -132,11 +154,10 @@ class RecommendationCandidates:
                 if request.current_location and host.city:
                     if attraction.city and attraction.city.lower() != host.city.lower():
                         continue
-                if request.season:
-                    current_month = datetime.now().month
-                    if (attraction.seasonal_availability != "year_round" and
-                        current_month not in (attraction.best_months or [])):
-                        continue
+                if request.season and not _attraction_matches_request_season(
+                    attraction, request.season
+                ):
+                    continue
                 filtered.append(attraction)
             
             return filtered[:50]
@@ -278,14 +299,11 @@ class RecommendationCandidates:
             result = await self.db.execute(stmt)
             rows = list(result.scalars().all())
             if request.season:
-                current_month = datetime.now().month
-
-                def _season_ok(a: Attraction) -> bool:
-                    if a.seasonal_availability == "year_round":
-                        return True
-                    return current_month in (a.best_months or [])
-
-                rows = [a for a in rows if _season_ok(a)][:50]
+                rows = [
+                    a
+                    for a in rows
+                    if _attraction_matches_request_season(a, request.season)
+                ][:50]
             else:
                 rows = rows[:50]
             return rows

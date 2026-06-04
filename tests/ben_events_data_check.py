@@ -59,7 +59,8 @@ def host_h() -> dict[str, str]:
 
 
 def main() -> int:
-    c = httpx.Client(base_url=BASE, timeout=120.0, follow_redirects=True)
+    timeout = httpx.Timeout(30.0, read=float(os.getenv("BEN_EVENTS_HTTP_READ_TIMEOUT", "600")))
+    c = httpx.Client(base_url=BASE, timeout=timeout, follow_redirects=True)
     tag = uuid.uuid4().hex[:6]
 
     r = c.get("/v1/realtime/health")
@@ -71,7 +72,8 @@ def main() -> int:
         body = r.json()
         record("Realtime", "init has seed", 200, "200", str(body.get("seed", {}))[:80])
 
-    r = c.post(f"/v1/realtime/events/bootstrap?city={CITY}")
+    sync_mode = os.getenv("EVENTS_SYNC_MODE", "regional")
+    r = c.post(f"/v1/realtime/events/bootstrap?city={CITY}&sync_mode={sync_mode}")
     record("Realtime", "events/bootstrap", r.status_code, "200")
     if r.status_code == 200:
         n = (r.json() or {}).get("events_available", 0)

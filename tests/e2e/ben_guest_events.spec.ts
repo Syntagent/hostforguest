@@ -23,7 +23,7 @@ test.describe("Ben guest events", () => {
       .isVisible()
       .catch(() => false);
     const empty = await page
-      .getByText(/No events listed|Open Discover/i)
+      .getByText(/No event ideas right now|Open Discover/i)
       .first()
       .isVisible()
       .catch(() => false);

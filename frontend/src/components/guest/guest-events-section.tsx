@@ -1,11 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { CalendarDays, ExternalLink, Lightbulb, MapPin, PartyPopper, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { GuestEventRecommendation, GuestHostOfferingsPayload } from "@/lib/api";
+import { formatGuestDistanceLabel } from "@/lib/guest-distance";
+import { guestCopy, type GuestLocale } from "@/lib/guest-i18n";
 
 export interface GuestSeasonalEvent {
   id: string;
@@ -30,10 +32,10 @@ export function resolveGuestCity(
   fallback = "Lovran"
 ): string {
   const candidates = [
+    hostOfferings?.stay_info?.city,
     hostOfferings?.host_info?.broader_city,
     hostOfferings?.location_info?.city,
     hostOfferings?.host_info?.city,
-    hostOfferings?.stay_info?.city,
   ]
     .map((c) => c?.trim())
     .filter((c): c is string => Boolean(c));
@@ -88,6 +90,22 @@ function priorityStyles(priority: string) {
   return "border-border/70 bg-muted/40 text-muted-foreground";
 }
 
+function timingStatusLabel(status: string | undefined, locale: GuestLocale): string | null {
+  if (status === "during_stay") return guestCopy(locale, "timingDuringStay");
+  if (status === "near_stay") return guestCopy(locale, "timingNearStay");
+  return null;
+}
+
+function timingStatusStyles(status: string | undefined): string {
+  if (status === "during_stay") {
+    return "border-violet-400/40 bg-violet-500/15 text-violet-900 dark:text-violet-100";
+  }
+  if (status === "near_stay") {
+    return "border-sky-400/50 bg-sky-500/15 text-sky-950 dark:text-sky-100";
+  }
+  return "border-border/60 bg-muted/50 text-muted-foreground";
+}
+
 export const GuestEventRecommendationCard: React.FC<{
   rec: GuestEventRecommendation;
   className?: string;
@@ -101,13 +119,16 @@ export const GuestEventRecommendationCard: React.FC<{
     itinerary_activity_start_time?: string;
   };
   onToggleSave?: (rec: GuestEventRecommendation) => void;
-}> = ({ rec, className, saved, savedDetails, onToggleSave }) => {
-  const scheduleLabel = savedEventScheduleLabel(savedDetails);
-  const dates = formatEventDate(rec.start_date, rec.end_date);
+  locale?: GuestLocale;
+}> = ({ rec, className, saved, savedDetails, onToggleSave, locale = "en" }) => {
+  const scheduleLabel =
+    savedEventScheduleLabel(savedDetails) || rec.schedule_label || formatEventDate(rec.start_date, rec.end_date);
+  const dates = scheduleLabel;
+  const timingLabel = timingStatusLabel(rec.timing_status, locale);
   const meta = [
-    rec.cities?.length ? rec.cities.join(", ") : null,
+    rec.venue_name || (rec.cities?.length ? rec.cities.join(", ") : null),
     dates,
-    rec.distance_km != null ? `~${rec.distance_km} km` : null,
+    formatGuestDistanceLabel(rec.distance_km, locale),
     rec.source === "seasonal" ? "Host pick" : null,
   ]
     .filter(Boolean)
@@ -130,6 +151,29 @@ export const GuestEventRecommendationCard: React.FC<{
         >
           {rec.priority} match
         </span>
+        {timingLabel ? (
+          <span
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-xs font-medium",
+              timingStatusStyles(rec.timing_status)
+            )}
+            data-testid="guest-event-timing-tag"
+          >
+            {timingLabel}
+          </span>
+        ) : null}
+        {dates ? (
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-xs font-medium",
+              rec.date_certainty === "unknown"
+                ? "bg-amber-500/15 text-amber-950 dark:text-amber-100"
+                : "bg-violet-500/15 text-violet-900 dark:text-violet-100"
+            )}
+          >
+            {dates}
+          </span>
+        ) : null}
         {rec.event_type ? (
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-muted-foreground">
             {rec.event_type.replace(/_/g, " ")}
@@ -259,6 +303,11 @@ export const GuestEventsPreview: React.FC<{
 export const GuestEventsTab: React.FC<{
   city: string;
   recommendations: GuestEventRecommendation[];
+  stayWindow?: {
+    check_in?: string | null;
+    check_out?: string | null;
+    inferred?: boolean;
+  } | null;
   savedOnlyRecommendations?: GuestEventRecommendation[];
   savedEventIds: string[];
   savedEventDetails: Record<
@@ -275,9 +324,12 @@ export const GuestEventsTab: React.FC<{
   onToggleSaveEvent: (rec: GuestEventRecommendation) => void;
   onNavigateDiscover: () => void;
   onNavigatePlan?: () => void;
+  locale?: GuestLocale;
 }> = ({
   city,
+  locale = "en",
   recommendations,
+  stayWindow,
   savedOnlyRecommendations = [],
   savedEventIds,
   savedEventDetails,
@@ -285,19 +337,63 @@ export const GuestEventsTab: React.FC<{
   onNavigateDiscover,
   onNavigatePlan,
 }) => {
+  const [stayFilter, setStayFilter] = useState<"all" | "during_stay">("during_stay");
   const hasAny = recommendations.length > 0 || savedOnlyRecommendations.length > 0;
   const savedSet = new Set(savedEventIds);
-  const hostPicks = recommendations.filter((r) => r.source === "seasonal");
-  const feedPicks = recommendations.filter((r) => r.source === "feed");
+
+  const filteredRecommendations = useMemo(() => {
+    if (stayFilter !== "during_stay") return recommendations;
+    return recommendations.filter((r) => {
+      if (r.timing_status === "during_stay" || r.timing_status === "near_stay") return true;
+      if (r.scores?.timing != null && r.scores.timing >= 0.85) return true;
+      if (!r.start_date && r.date_certainty === "unknown") return false;
+      if (!r.start_date) return false;
+      return r.scores?.timing != null && r.scores.timing >= 0.5;
+    });
+  }, [recommendations, stayFilter]);
+
+  const hostPicks = filteredRecommendations.filter((r) => r.source === "seasonal");
+  const feedPicks = filteredRecommendations.filter((r) => r.source === "feed");
+  const inferredDatesLabel =
+    stayWindow?.inferred && stayWindow.check_in && stayWindow.check_out
+      ? formatEventDate(stayWindow.check_in, stayWindow.check_out)
+      : null;
 
   return (
     <div className="space-y-4" data-testid="guest-events-tab">
       <div className="section-shell px-4 py-5 md:px-6">
-        <h2 className="text-2xl font-semibold text-foreground">Events for your stay</h2>
+        <h2 className="text-2xl font-semibold text-foreground">{guestCopy(locale, "eventsForStay")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Personalized festivals and happenings around {city} — matched to your interests, dates,
           and distance from your accommodation.
         </p>
+        {inferredDatesLabel ? (
+          <p
+            className="mt-2 rounded-lg border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100"
+            data-testid="guest-events-inferred-dates"
+          >
+            Stay dates not set yet — showing events for an estimated window ({inferredDatesLabel}).
+            Ask your host to confirm exact dates for sharper picks.
+          </p>
+        ) : null}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={stayFilter === "during_stay" ? "default" : "outline"}
+            onClick={() => setStayFilter("during_stay")}
+          >
+            During your stay
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={stayFilter === "all" ? "default" : "outline"}
+            onClick={() => setStayFilter("all")}
+          >
+            All nearby
+          </Button>
+        </div>
       </div>
 
       {savedOnlyRecommendations.length > 0 ? (
@@ -320,6 +416,7 @@ export const GuestEventsTab: React.FC<{
               <div key={`events-saved-only-${rec.id}`} data-testid="events-saved-event-idea">
                 <GuestEventRecommendationCard
                   rec={rec}
+                  locale={locale}
                   saved
                   savedDetails={savedEventDetails[rec.id]}
                   onToggleSave={onToggleSaveEvent}
@@ -355,6 +452,7 @@ export const GuestEventsTab: React.FC<{
               <GuestEventRecommendationCard
                 key={rec.id}
                 rec={rec}
+                locale={locale}
                 saved={savedSet.has(rec.id)}
                 savedDetails={savedEventDetails[rec.id]}
                 onToggleSave={onToggleSaveEvent}
@@ -378,6 +476,7 @@ export const GuestEventsTab: React.FC<{
               <GuestEventRecommendationCard
                 key={rec.id}
                 rec={rec}
+                locale={locale}
                 saved={savedSet.has(rec.id)}
                 savedDetails={savedEventDetails[rec.id]}
                 onToggleSave={onToggleSaveEvent}

@@ -32,6 +32,8 @@ from app.api.v1 import (
     performance,
     channel_integrations,
     channel_webhooks,
+    accommodation_voice,
+    compliance,
 )
 
 api_router = APIRouter()
@@ -46,6 +48,8 @@ api_router.include_router(recommendations.router, prefix="/recommendations", tag
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 api_router.include_router(itineraries.router, prefix="/itineraries", tags=["itineraries"])
 api_router.include_router(host_onboarding.router, prefix="/onboarding", tags=["host-onboarding"])
+api_router.include_router(accommodation_voice.router)
+api_router.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 
 # Real-time data endpoints
 api_router.include_router(realtime_data.router, prefix="/realtime", tags=["real-time-data"])

@@ -13,7 +13,7 @@ test.describe("CI guest events", () => {
     await openGuestTab(page, "Events");
 
     await expect(page.getByTestId("guest-events-tab")).toBeVisible({ timeout: 20000 });
-    await expect(page.getByRole("heading", { name: /Events for your stay/i })).toBeVisible({
+    await expect(page.getByRole("heading", { name: /Events for your stay|Događaji za vaš boravak/i })).toBeVisible({
       timeout: 15000,
     });
 
@@ -32,7 +32,11 @@ test.describe("CI guest events", () => {
   });
 
   test("guest can save a synthetic event to plan", async ({ page, request }) => {
-    const apiBase = process.env.PLAYWRIGHT_API_URL || "http://127.0.0.1:8000";
+    const apiBase = (
+      process.env.PLAYWRIGHT_API_URL ||
+      process.env.PLAYWRIGHT_BASE_URL ||
+      "http://127.0.0.1:8000"
+    ).replace(/\/$/, "");
     const accessCode = process.env.E2E_GUEST_ACCESS_CODE;
     expect(accessCode).toBeTruthy();
 
@@ -62,6 +66,10 @@ test.describe("CI guest events", () => {
 
     await openGuestApp(page);
     await waitForGuestShell(page);
+    await page.waitForResponse(
+      (r) => r.url().includes("/saved-events") && r.status() === 200,
+      { timeout: 30000 }
+    );
     await openGuestTab(page, "Events");
 
     const savedIdea = page.getByTestId("events-saved-event-idea").filter({ hasText: event.title });

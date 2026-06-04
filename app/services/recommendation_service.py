@@ -117,7 +117,11 @@ class RecommendationService:
             candidates = await self.candidates_service.get_candidate_attractions_advanced(
                 request, guest_group, host
             )
-            
+            candidates = [
+                c for c in candidates
+                if self._is_guest_visible_attraction(c)
+            ]
+
             # Score and rank recommendations
             scored_recommendations = await self._score_recommendations(
                 request, guest_group, host, candidates
@@ -776,23 +780,81 @@ class RecommendationService:
             logger.error("get_recommendation_history failed: %s", e)
             return []
 
-    @staticmethod
-    def _personalization_factor_strings(raw: Any) -> List[str]:
+    _INTERNAL_FACTOR_KEYS = frozenset(
+        {
+            "algorithm_weights",
+            "request_type",
+            "season",
+            "weather_context",
+            "group_size",
+            "duration_hours",
+            "budget_range",
+        }
+    )
+
+    _FACTOR_LABELS = {
+        "preferred_categories": "Good for you",
+        "interests": "Matches your interests",
+    }
+
+    @classmethod
+    def _personalization_factor_strings(cls, raw: Any) -> List[str]:
         """Flatten batch personalization_factors into short guest-facing chips."""
         if not raw:
             return []
         if isinstance(raw, list):
-            return [str(x).strip() for x in raw if str(x).strip()]
+            return [
+                s
+                for s in (str(x).strip() for x in raw)
+                if s and "algorithm" not in s.lower() and "request type" not in s.lower()
+            ]
         if isinstance(raw, dict):
             out: List[str] = []
             for key, val in raw.items():
+                if key in cls._INTERNAL_FACTOR_KEYS:
+                    continue
+                if key == "preferred_categories" and isinstance(val, list):
+                    for item in val[:4]:
+                        t = str(item).strip().replace("_", " ")
+                        if t:
+                            out.append(t.title())
+                    continue
                 if isinstance(val, list):
-                    out.extend(str(x).strip() for x in val if str(x).strip())
-                elif val is not None and str(val).strip():
-                    label = str(key).replace("_", " ").strip()
-                    out.append(f"{label}: {val}" if label else str(val))
-            return out
-        return [str(raw).strip()] if str(raw).strip() else []
+                    for item in val[:3]:
+                        t = str(item).strip().replace("_", " ")
+                        if t and len(t) < 40:
+                            out.append(t.title())
+                elif val is not None:
+                    text = str(val).strip()
+                    if not text or text.startswith("{") or "algorithm" in text.lower():
+                        continue
+                    label = cls._FACTOR_LABELS.get(key) or str(key).replace("_", " ").strip().title()
+                    if key in cls._FACTOR_LABELS:
+                        out.append(label)
+                    elif len(text) < 36:
+                        out.append(text.title())
+            return out[:6]
+        text = str(raw).strip()
+        if text and "algorithm" not in text.lower():
+            return [text]
+        return []
+
+    @staticmethod
+    def _is_guest_visible_attraction(attraction: Optional[Attraction]) -> bool:
+        if not attraction:
+            return False
+        blob = f"{attraction.name or ''} {attraction.description or ''}".lower()
+        blocked = (
+            "ben component",
+            "ben qa",
+            "full-component",
+            "full component qa",
+            "qa attraction",
+            "test attraction",
+            "slash-test",
+            "verify ",
+        )
+        return not any(b in blob for b in blocked)
 
     @staticmethod
     def _attraction_to_guest_summary(attraction: Attraction) -> GuestAttractionSummary:
@@ -853,6 +915,14 @@ class RecommendationService:
         factor_strings: List[str],
     ) -> GuestRecommendationItem:
         reason = (rec.why_recommended or rec.description or rec.title or "").strip()
+        if attraction:
+            tip = (attraction.host_personal_tip or attraction.host_insider_info or "").strip()
+            if tip and len(tip) > 12 and "qa" not in tip.lower():
+                reason = tip
+            elif not reason or "special insights" in reason.lower():
+                name = (attraction.name or "this place").strip()
+                city = (attraction.city or "the area").strip()
+                reason = f"Your host recommends {name} while you stay in {city}."
         if not reason:
             reason = "Recommended for your stay."
         summary = self._attraction_to_guest_summary(attraction) if attraction else None
@@ -884,18 +954,15 @@ class RecommendationService:
         ids = [r.attraction_id for r in recs if r.attraction_id]
         by_id = await self._load_attractions_by_ids(ids)
         factors = self._personalization_factor_strings(batch.personalization_factors)
-        items = [
-            self._build_guest_item(
-                r,
-                guest_group_id,
-                by_id.get(r.attraction_id) if r.attraction_id else None,
-                factors,
-            )
-            for r in recs
-        ]
+        items: List[GuestRecommendationItem] = []
+        for r in recs:
+            att = by_id.get(r.attraction_id) if r.attraction_id else None
+            if att is not None and not self._is_guest_visible_attraction(att):
+                continue
+            items.append(self._build_guest_item(r, guest_group_id, att, factors))
         return GuestRecommendationBatch(
             recommendations=items,
-            total_count=batch.total_count,
+            total_count=len(items),
             generated_at=batch.generated_at,
             guest_group_id=batch.guest_group_id or guest_group_id,
             request_context=batch.request_context or {},
@@ -912,15 +979,13 @@ class RecommendationService:
         ids = [r.attraction_id for r in recs if r.attraction_id]
         by_id = await self._load_attractions_by_ids(ids)
         factors = self._personalization_factor_strings(personalization_factors or {})
-        return [
-            self._build_guest_item(
-                r,
-                guest_group_id,
-                by_id.get(r.attraction_id) if r.attraction_id else None,
-                factors,
-            )
-            for r in recs
-        ]
+        items: List[GuestRecommendationItem] = []
+        for r in recs:
+            att = by_id.get(r.attraction_id) if r.attraction_id else None
+            if att is not None and not self._is_guest_visible_attraction(att):
+                continue
+            items.append(self._build_guest_item(r, guest_group_id, att, factors))
+        return items
 
     async def submit_feedback(
         self,

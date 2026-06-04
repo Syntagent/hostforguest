@@ -337,6 +337,59 @@ class AIService:
             logger.error(f"Gemini generation failed: {e}")
             return {"success": False, "error": str(e)}
 
+    async def generate_events_extraction(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        host_id: str = "system",
+    ) -> Dict[str, Any]:
+        """
+        Low-cost Gemini call for event scraping / discovery / repair pipelines.
+
+        Uses EVENTS_GEMINI_MODEL (default gemini-2.0-flash). Swap model via env when
+        newer small models (e.g. Gemma) are available — no selector/regex extraction logic.
+        """
+        try:
+            model_name = os.getenv("EVENTS_GEMINI_MODEL", "gemini-2.0-flash").strip()
+            temperature = float(os.getenv("EVENTS_GEMINI_TEMPERATURE", "0.2"))
+            max_tokens = int(os.getenv("EVENTS_GEMINI_MAX_TOKENS", "4096"))
+            max_attempts = int(os.getenv("EVENTS_GEMINI_RETRY_ATTEMPTS", "3"))
+
+            genai, _, _ = _import_google_generativeai()
+            gemini_messages = self._convert_to_gemini_format(messages)
+            last_error: Optional[str] = None
+
+            for attempt in range(max_attempts):
+                model = await self._get_gemini_model(host_id, model_name)
+                if not model:
+                    return {"success": False, "error": "Gemini model not available for events extraction"}
+                try:
+                    response = await model.generate_content_async(
+                        gemini_messages,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=temperature,
+                            max_output_tokens=max_tokens,
+                        ),
+                    )
+                    return {
+                        "success": True,
+                        "response": response.text,
+                        "model": model_name,
+                        "provider": "google",
+                        "task": "events_extraction",
+                    }
+                except Exception as exc:
+                    last_error = str(exc)
+                    if "429" in last_error and attempt < max_attempts - 1:
+                        await asyncio.sleep(min(30, 3 * (2 ** attempt)))
+                        continue
+                    raise
+
+            return {"success": False, "error": last_error or "events extraction failed"}
+        except Exception as e:
+            logger.error(f"Events extraction Gemini call failed: {e}")
+            return {"success": False, "error": str(e)}
+
     def _convert_to_gemini_format(self, messages: List[Dict[str, str]]) -> str:
         """Convert OpenAI format messages to Gemini format."""
         formatted_messages = []

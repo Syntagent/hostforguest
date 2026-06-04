@@ -4,8 +4,19 @@ import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { guestGroupsApi, type GuestGroup } from "@/lib/api";
+import { guestGroupsApi, type GuestEVisitorData, type GuestGroup, type GuestPreferenceRecord } from "@/lib/api";
 import type { CreateGroupFormData } from "./dashboard-types";
+import {
+  dateInputToCheckInIso,
+  dateInputToCheckOutIso,
+  formatStayDate,
+  formatStayNightCount,
+  getStayPhase,
+  groupPropertyLabel,
+  isoToDateInput,
+  stayPhaseLabel,
+  validateStayDates,
+} from "./guest-group-stay";
 
 export const CreateGroupModal: React.FC<{
   isOpen: boolean;
@@ -39,11 +50,20 @@ export const CreateGroupModal: React.FC<{
     }
   }, [isOpen, data?.preferences?.length, onChange, data]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6">
+    <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
+      <div className="max-h-[min(90vh,calc(100dvh-5rem))] w-full max-w-2xl overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-lg sm:p-6">
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-2xl font-bold text-gray-900">Create New Guest Group</h2>
           <Button variant="ghost" onClick={onClose}>
@@ -107,6 +127,71 @@ export const CreateGroupModal: React.FC<{
             )}
           </div>
 
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50/80 p-4">
+            <h3 className="text-sm font-semibold text-indigo-950">Stay schedule</h3>
+            <p className="mt-1 text-xs text-indigo-900/90">
+              When guests arrive and leave your property. Groups are sorted on the dashboard like a
+              calendar (soonest arrival first). Guests see these dates in their guide.
+            </p>
+            {accommodationPreview &&
+            (accommodationPreview.propertyName ||
+              accommodationPreview.city ||
+              accommodationPreview.address) ? (
+              <p className="mt-2 text-xs font-medium text-indigo-950">
+                Location:{" "}
+                {[
+                  accommodationPreview.propertyName,
+                  accommodationPreview.city,
+                  accommodationPreview.address,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            ) : null}
+            <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">
+                  Arrival (check-in) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={data.check_in_date}
+                  onChange={(e) => onChange({ ...data, check_in_date: e.target.value })}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-gray-700">
+                  Departure (check-out) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={data.check_out_date}
+                  min={data.check_in_date || undefined}
+                  onChange={(e) => onChange({ ...data, check_out_date: e.target.value })}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+              </div>
+            </div>
+            {validateStayDates(data.check_in_date, data.check_out_date) ? (
+              <p className="mt-2 text-sm text-red-600">
+                {validateStayDates(data.check_in_date, data.check_out_date)}
+              </p>
+            ) : data.check_in_date && data.check_out_date ? (
+              <p className="mt-2 text-sm text-indigo-800">
+                {(() => {
+                  const n = formatStayNightCount(
+                    dateInputToCheckInIso(data.check_in_date),
+                    dateInputToCheckOutIso(data.check_out_date)
+                  );
+                  return n != null ? `${n} night${n === 1 ? "" : "s"} at your property` : null;
+                })()}
+              </p>
+            ) : null}
+          </div>
+
           <div>
             <label className="mb-2 block text-sm font-medium text-gray-700">Group Size</label>
             <input
@@ -152,8 +237,16 @@ export const CreateGroupModal: React.FC<{
           <Button
             gradient
             onClick={onSubmit}
-            disabled={!data.group_name}
-            title={!data.group_name ? "Please enter a group name" : "Create the guest group"}
+            disabled={
+              !data.group_name ||
+              !!validateStayDates(data.check_in_date, data.check_out_date)
+            }
+            title={
+              !data.group_name
+                ? "Please enter a group name"
+                : validateStayDates(data.check_in_date, data.check_out_date) ||
+                  "Create the guest group"
+            }
           >
             Create Group
           </Button>
@@ -171,6 +264,9 @@ export const GroupDetailsModal: React.FC<{
   onRegenerateAccessCode: (groupId: string) => void;
   regeneratingGroupId: string | null;
   onManageEVisitorData: (groupId: string) => void;
+  onGroupUpdated?: (group: GuestGroup) => void;
+  onDeleteGroup?: (group: GuestGroup) => void;
+  deletingGroupId?: string | null;
 }> = ({
   isOpen,
   onClose,
@@ -179,8 +275,62 @@ export const GroupDetailsModal: React.FC<{
   onRegenerateAccessCode,
   regeneratingGroupId,
   onManageEVisitorData,
+  onGroupUpdated,
+  onDeleteGroup,
+  deletingGroupId,
 }) => {
   const [openingGuest, setOpeningGuest] = useState(false);
+  const [editingStay, setEditingStay] = useState(false);
+  const [stayCheckIn, setStayCheckIn] = useState("");
+  const [stayCheckOut, setStayCheckOut] = useState("");
+  const [savingStay, setSavingStay] = useState(false);
+  const [staySaveError, setStaySaveError] = useState<string | null>(null);
+  const [loadedPreferences, setLoadedPreferences] = useState<GuestPreferenceRecord[]>([]);
+  const [loadedEvisitor, setLoadedEvisitor] = useState<GuestEVisitorData[]>([]);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setEditingStay(false);
+    setStayCheckIn(isoToDateInput(group.check_in_date));
+    setStayCheckOut(isoToDateInput(group.check_out_date));
+    setStaySaveError(null);
+  }, [isOpen, group.id, group.check_in_date, group.check_out_date]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setLoadingDetails(true);
+    setLoadedPreferences([]);
+    setLoadedEvisitor([]);
+    (async () => {
+      try {
+        const code = group.access_code;
+        const tasks: Promise<void>[] = [
+          guestGroupsApi.getEVisitorData(group.id).then((res) => {
+            if (!cancelled && res.success && Array.isArray(res.data)) {
+              setLoadedEvisitor(res.data);
+            }
+          }),
+        ];
+        if (code) {
+          tasks.push(
+            guestGroupsApi.getGuestPreferences(code).then((res) => {
+              if (!cancelled && res.success && Array.isArray(res.data)) {
+                setLoadedPreferences(res.data);
+              }
+            })
+          );
+        }
+        await Promise.all(tasks);
+      } finally {
+        if (!cancelled) setLoadingDetails(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, group.id, group.access_code]);
 
   const openGuestView = async () => {
     setOpeningGuest(true);
@@ -203,13 +353,35 @@ export const GroupDetailsModal: React.FC<{
     }
   };
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const preferences = group.preferences || [];
+  const preferences =
+    loadedPreferences.length > 0 ? loadedPreferences : group.preferences || [];
+  const tagList = (items?: string[] | null) =>
+    items && items.length > 0 ? (
+      <div className="mt-1 flex flex-wrap gap-1">
+        {items.map((item) => (
+          <span key={item} className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+            {item}
+          </span>
+        ))}
+      </div>
+    ) : (
+      <span className="text-gray-500">—</span>
+    );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-6">
+    <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
+      <div className="max-h-[min(90vh,calc(100dvh-5rem))] w-full max-w-2xl overflow-y-auto rounded-t-2xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-lg sm:p-6">
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-2xl font-bold text-gray-900">{group.group_name}</h2>
           <Button variant="ghost" onClick={onClose}>
@@ -257,6 +429,207 @@ export const GroupDetailsModal: React.FC<{
                     {group.accommodation.county}
                   </p>
                 ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          <Card className="border-indigo-200 bg-indigo-50/40">
+            <CardHeader>
+              <CardTitle className="text-indigo-950">Stay at your property</CardTitle>
+              <CardDescription>
+                {groupPropertyLabel(group)
+                  ? `Location: ${groupPropertyLabel(group)}`
+                  : "Link accommodation to show the property address"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-1 text-xs font-medium",
+                    getStayPhase(group) === "in_house" && "bg-green-100 text-green-800",
+                    getStayPhase(group) === "upcoming" && "bg-blue-100 text-blue-800",
+                    getStayPhase(group) === "completed" && "bg-gray-100 text-gray-700",
+                    getStayPhase(group) === "unknown" && "bg-amber-100 text-amber-900"
+                  )}
+                >
+                  {stayPhaseLabel(getStayPhase(group))}
+                </span>
+              </div>
+              {editingStay ? (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">
+                        Arrival (check-in)
+                      </label>
+                      <input
+                        type="date"
+                        value={stayCheckIn}
+                        onChange={(e) => setStayCheckIn(e.target.value)}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">
+                        Departure (check-out)
+                      </label>
+                      <input
+                        type="date"
+                        value={stayCheckOut}
+                        min={stayCheckIn || undefined}
+                        onChange={(e) => setStayCheckOut(e.target.value)}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+                  {staySaveError ? (
+                    <p className="text-sm text-red-600">{staySaveError}</p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      gradient
+                      disabled={savingStay}
+                      onClick={async () => {
+                        const err = validateStayDates(stayCheckIn, stayCheckOut);
+                        if (err) {
+                          setStaySaveError(err);
+                          return;
+                        }
+                        setSavingStay(true);
+                        setStaySaveError(null);
+                        try {
+                          const res = await guestGroupsApi.update(group.id, {
+                            check_in_date: dateInputToCheckInIso(stayCheckIn),
+                            check_out_date: dateInputToCheckOutIso(stayCheckOut),
+                          });
+                          if (!res.success || !res.data) {
+                            setStaySaveError(res.error || "Could not save stay dates.");
+                            return;
+                          }
+                          onGroupUpdated?.(res.data);
+                          setEditingStay(false);
+                        } finally {
+                          setSavingStay(false);
+                        }
+                      }}
+                    >
+                      {savingStay ? "Saving…" : "Save dates"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={savingStay}
+                      onClick={() => {
+                        setEditingStay(false);
+                        setStayCheckIn(isoToDateInput(group.check_in_date));
+                        setStayCheckOut(isoToDateInput(group.check_out_date));
+                        setStaySaveError(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                  <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                      Arrives
+                    </p>
+                    <p className="mt-1 font-semibold text-gray-900">
+                      {formatStayDate(group.check_in_date)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-indigo-100 bg-white p-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                      Leaves
+                    </p>
+                    <p className="mt-1 font-semibold text-gray-900">
+                      {formatStayDate(group.check_out_date)}
+                    </p>
+                  </div>
+                  {group.check_in_date && group.check_out_date ? (
+                    <p className="text-gray-600 sm:col-span-2">
+                      {formatStayNightCount(group.check_in_date, group.check_out_date) ?? "—"}{" "}
+                      night
+                      {formatStayNightCount(group.check_in_date, group.check_out_date) === 1
+                        ? ""
+                        : "s"}
+                    </p>
+                  ) : (
+                    <p className="text-amber-800 sm:col-span-2">
+                      Add arrival and departure so event recommendations and guest timelines match
+                      the stay.
+                    </p>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="sm:col-span-2 sm:w-auto"
+                    onClick={() => setEditingStay(true)}
+                  >
+                    Edit stay dates
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {(group.saved_event_recommendations?.length ?? 0) > 0 ? (
+            <Card className="border-violet-200 bg-violet-50/50">
+              <CardHeader>
+                <CardTitle className="text-violet-950">Guest saved events</CardTitle>
+                <CardDescription>
+                  Events your guests saved from their guide — mark as planned when you are arranging
+                  tickets or transport.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {(group.saved_event_recommendations || []).map((ev) => (
+                  <div
+                    key={ev.event_id}
+                    className="rounded-lg border border-violet-100 bg-white p-3 text-sm"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <p className="font-semibold text-gray-900">{ev.title || ev.event_id}</p>
+                      {ev.host_status === "planned" ? (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                          Planned
+                        </span>
+                      ) : ev.guest_action === "plan_request" ? (
+                        <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                          Guest asked to plan
+                        </span>
+                      ) : null}
+                    </div>
+                    {ev.plan_hint ? (
+                      <p className="mt-1 text-xs text-gray-600">{ev.plan_hint}</p>
+                    ) : null}
+                    {ev.host_status !== "planned" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mt-2"
+                        onClick={async () => {
+                          const res = await guestGroupsApi.updateSavedEventForHost(group.id, ev.event_id, {
+                            host_status: "planned",
+                            host_note: "Marked planned from host dashboard",
+                          });
+                          if (res.success && res.data?.saved_events) {
+                            onGroupUpdated?.({
+                              ...group,
+                              saved_event_recommendations: res.data.saved_events,
+                            });
+                          }
+                        }}
+                      >
+                        Mark planned
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
               </CardContent>
             </Card>
           ) : null}
@@ -343,48 +716,51 @@ export const GroupDetailsModal: React.FC<{
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
+                {loadingDetails ? (
+                  <p className="text-sm text-gray-500">Loading guest profiles…</p>
+                ) : null}
                 {preferences.length > 0 ? (
-                  preferences.map((pref, index) => (
-                    <div key={index} className="rounded-lg border border-gray-200 p-4">
-                      <h4 className="mb-2 font-medium">
-                        {pref.guest_name || `Guest ${index + 1}`}
-                      </h4>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <span className="text-gray-600">Age Range:</span>
-                          <span className="ml-2 capitalize">{pref.age_range}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Mobility:</span>
-                          <span className="ml-2 capitalize">{pref.mobility_level}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Budget:</span>
-                          <span className="ml-2 capitalize">{pref.budget_level}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Language:</span>
-                          <span className="ml-2 capitalize">{pref.language_preference}</span>
-                        </div>
-                        {pref.interests && pref.interests.length > 0 && (
-                          <div className="col-span-2">
-                            <span className="text-gray-600">Interests:</span>
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {pref.interests.map((interest, i) => (
-                                <span
-                                  key={i}
-                                  className="rounded-full bg-blue-100 px-2 py-1 text-xs text-blue-700"
-                                >
-                                  {interest}
-                                </span>
-                              ))}
-                            </div>
+                  preferences.map((pref, index) => {
+                    const rec = pref as GuestPreferenceRecord;
+                    const interests = rec.personal_interests || pref.interests || [];
+                    return (
+                      <div key={rec.id || index} className="rounded-lg border border-gray-200 p-4">
+                        <h4 className="mb-2 font-medium">
+                          {pref.guest_name || `Guest ${index + 1}`}
+                        </h4>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <span className="text-gray-600">Age:</span>
+                            <span className="ml-2 capitalize">
+                              {rec.age_category || pref.age_range || "—"}
+                            </span>
                           </div>
-                        )}
+                          <div>
+                            <span className="text-gray-600">Language:</span>
+                            <span className="ml-2 capitalize">{pref.language_preference}</span>
+                          </div>
+                          {interests.length > 0 ? (
+                            <div className="col-span-2">
+                              <span className="text-gray-600">Interests:</span>
+                              {tagList(interests)}
+                            </div>
+                          ) : null}
+                          {rec.dietary_needs && rec.dietary_needs.length > 0 ? (
+                            <div className="col-span-2">
+                              <span className="text-gray-600">Dietary:</span>
+                              {tagList(rec.dietary_needs)}
+                            </div>
+                          ) : null}
+                          {rec.mobility_notes ? (
+                            <div className="col-span-2 whitespace-pre-line text-gray-700">
+                              {rec.mobility_notes}
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  ))
-                ) : (
+                    );
+                  })
+                ) : !loadingDetails ? (
                   <div className="rounded-lg border border-gray-200 p-4 text-center">
                     <div className="mb-2 text-gray-400">👥</div>
                     <p className="mb-2 text-gray-500">No guest preferences available yet</p>
@@ -392,7 +768,7 @@ export const GroupDetailsModal: React.FC<{
                       Guests need to join using the access code and provide their preferences
                     </p>
                   </div>
-                )}
+                ) : null}
               </div>
             </CardContent>
           </Card>
@@ -420,6 +796,18 @@ export const GroupDetailsModal: React.FC<{
                   <p className="mb-3 text-sm text-gray-600">
                     Add and manage e-visitor registration data for Croatian tourism requirements.
                   </p>
+                  {loadedEvisitor.length > 0 ? (
+                    <ul className="mb-3 space-y-1 text-sm text-gray-800">
+                      {loadedEvisitor.map((ev) => (
+                        <li key={ev.id}>
+                          {ev.first_name} {ev.last_name} · {ev.nationality}
+                          {ev.evisitor_registered ? " · registered" : " · pending"}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mb-3 text-sm text-amber-800">No e-visitor records loaded.</p>
+                  )}
                   <div className="text-sm text-gray-500">
                     <p>• Required fields: Name, Date of Birth, Nationality, ID/Passport details</p>
                     <p>• Address of residence and stay dates</p>
@@ -431,10 +819,20 @@ export const GroupDetailsModal: React.FC<{
           </Card>
         </div>
 
-        <div className="mt-6 flex gap-3">
+        <div className="mt-6 flex flex-wrap gap-3">
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
+          {onDeleteGroup ? (
+            <Button
+              variant="outline"
+              className="border-red-200 text-red-700 hover:bg-red-50"
+              disabled={String(deletingGroupId) === String(group.id)}
+              onClick={() => onDeleteGroup(group)}
+            >
+              {String(deletingGroupId) === String(group.id) ? "Deleting…" : "Delete group"}
+            </Button>
+          ) : null}
           <Button gradient type="button" disabled title="Coming soon">
             Send Message to Group
           </Button>

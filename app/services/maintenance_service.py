@@ -142,6 +142,19 @@ class MaintenanceService:
         ev = MaintenanceIssueEvent(issue_id=issue_id, event_type=event_type, payload=payload)
         self.db.add(ev)
 
+    async def list_issues_for_guest_group(self, guest_group_id: uuid.UUID) -> List[MaintenanceIssue]:
+        r = await self.db.execute(
+            select(MaintenanceIssue)
+            .where(
+                and_(
+                    MaintenanceIssue.guest_group_id == guest_group_id,
+                    MaintenanceIssue.source == "guest",
+                )
+            )
+            .order_by(MaintenanceIssue.created_at.desc())
+        )
+        return list(r.scalars().all())
+
     async def create_guest_report_for_group(
         self,
         group: GuestGroup,

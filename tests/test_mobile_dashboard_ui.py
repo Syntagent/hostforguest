@@ -32,7 +32,7 @@ def test_accommodation_tab_has_compact_mobile_photo_gallery():
     assert "overflow-x-auto" in source
     assert '<Card className="hidden sm:block">' in source
     assert "hidden bg-gradient-to-br from-yellow-50 to-orange-50 sm:block" in source
-    assert "Edit fields manually" in accommodation_tab
+    assert 'aria-label="Edit accommodation profile"' in accommodation_tab
     assert "h-8 w-8 min-h-0" in accommodation_tab
     assert "focusMissingField" in accommodation_tab
     assert 'id="stay-capacity"' in accommodation_tab

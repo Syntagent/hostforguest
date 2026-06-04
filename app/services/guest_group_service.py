@@ -30,6 +30,7 @@ from app.models.guest_group import (
     AccessCodeResponse,
     AccessCodeActivation,
     GuestPreferenceCreate,
+    GuestPreferenceUpdate,
     GuestPreferenceResponse,
     GuestEVisitorDataCreate,
     GuestEVisitorDataUpdate,
@@ -161,8 +162,17 @@ class GuestGroupService:
         code = await self._usable_access_code_for_group(group.id)
         prof = await self._profile_for_guest_group(group, profile)
         acc = _accommodation_summary_from_profile(prof) if prof else None
+        from app.services.guest_saved_events_service import GuestSavedEventsService
+
+        saved_payload = await GuestSavedEventsService(self.db).list_for_group(group.id)
         base = GuestGroupResponse.model_validate(group)
-        return base.model_copy(update={"access_code": code, "accommodation": acc})
+        return base.model_copy(
+            update={
+                "access_code": code,
+                "accommodation": acc,
+                "saved_event_recommendations": saved_payload.get("saved_events") or [],
+            }
+        )
     
     # Guest Group CRUD Operations
     async def create_guest_group(self, host_id: uuid.UUID, group_data: GuestGroupCreate) -> Optional[GuestGroupResponse]:
@@ -328,9 +338,21 @@ class GuestGroupService:
             
             # Update only provided fields
             update_data = group_data.model_dump(exclude_unset=True)
+            for field in ("check_in_date", "check_out_date", "actual_arrival", "actual_departure"):
+                if field in update_data:
+                    update_data[field] = _naive_utc(update_data[field])
+
+            if group.host_profile_id is None:
+                prof = await self._profile_for_host_id(group.host_id)
+                if prof:
+                    update_data["host_profile_id"] = prof.id
+
+            allowed = {c.key for c in GuestGroup.__table__.columns}
+            update_data = {k: v for k, v in update_data.items() if k in allowed}
+
             if update_data:
-                update_data['updated_at'] = datetime.utcnow()
-                
+                update_data["updated_at"] = datetime.utcnow()
+
                 stmt = update(GuestGroup).where(GuestGroup.id == group_id).values(**update_data)
                 await self.db.execute(stmt)
                 await self.db.commit()
@@ -351,32 +373,73 @@ class GuestGroupService:
             logger.error(f"Error updating guest group {group_id}: {e}")
             return None
     
+    async def _purge_guest_group_dependencies(self, group_id: uuid.UUID) -> None:
+        """Remove rows that reference guest_group_id before deleting the group."""
+        from app.models.recommendation import Recommendation, RecommendationRequest, RecommendationSet
+        from app.models.itinerary import Itinerary, DayPlan, ItineraryActivity, ActivityVote
+        from app.models.maintenance import MaintenanceIssue, MaintenanceIssueEvent
+        from app.models.attraction import AttractionReview
+        from app.models.partner import PartnerBooking
+
+        req_ids = select(RecommendationRequest.id).where(
+            RecommendationRequest.guest_group_id == group_id
+        )
+        await self.db.execute(
+            delete(Recommendation).where(Recommendation.request_id.in_(req_ids))
+        )
+        await self.db.execute(
+            delete(RecommendationSet).where(RecommendationSet.guest_group_id == group_id)
+        )
+        await self.db.execute(
+            delete(RecommendationRequest).where(RecommendationRequest.guest_group_id == group_id)
+        )
+
+        itin_ids = select(Itinerary.id).where(Itinerary.guest_group_id == group_id)
+        day_ids = select(DayPlan.id).where(DayPlan.itinerary_id.in_(itin_ids))
+        act_ids = select(ItineraryActivity.id).where(ItineraryActivity.day_plan_id.in_(day_ids))
+
+        await self.db.execute(delete(ActivityVote).where(ActivityVote.guest_group_id == group_id))
+        await self.db.execute(
+            delete(ActivityVote).where(ActivityVote.itinerary_activity_id.in_(act_ids))
+        )
+        await self.db.execute(
+            delete(ItineraryActivity).where(ItineraryActivity.day_plan_id.in_(day_ids)),
+        )
+        await self.db.execute(delete(DayPlan).where(DayPlan.itinerary_id.in_(itin_ids)))
+        await self.db.execute(delete(Itinerary).where(Itinerary.guest_group_id == group_id))
+
+        issue_ids = select(MaintenanceIssue.id).where(MaintenanceIssue.guest_group_id == group_id)
+        await self.db.execute(
+            delete(MaintenanceIssueEvent).where(MaintenanceIssueEvent.issue_id.in_(issue_ids))
+        )
+        await self.db.execute(delete(MaintenanceIssue).where(MaintenanceIssue.guest_group_id == group_id))
+        await self.db.execute(delete(PartnerBooking).where(PartnerBooking.guest_group_id == group_id))
+        await self.db.execute(delete(AttractionReview).where(AttractionReview.guest_group_id == group_id))
+        await self.db.execute(delete(GuestPreference).where(GuestPreference.guest_group_id == group_id))
+        await self.db.execute(delete(GuestEVisitorData).where(GuestEVisitorData.guest_group_id == group_id))
+        await self._revoke_group_access_codes(group_id)
+        await self.db.execute(delete(AccessCode).where(AccessCode.guest_group_id == group_id))
+
     async def delete_guest_group(self, group_id: uuid.UUID) -> bool:
         """
-        Delete a guest group and associated access codes.
-        
-        Args:
-            group_id: Guest group UUID
-            
-        Returns:
-            bool: True if successful
+        Delete a guest group and all dependent records.
         """
         try:
-            # First revoke all access codes for this group
-            await self._revoke_group_access_codes(group_id)
-            
-            # Delete the group
-            stmt = delete(GuestGroup).where(GuestGroup.id == group_id)
-            result = await self.db.execute(stmt)
+            existing = await self.get_guest_group_by_id(group_id)
+            if not existing:
+                logger.warning(f"Guest group not found for deletion: {group_id}")
+                return False
+
+            await self._purge_guest_group_dependencies(group_id)
+            result = await self.db.execute(delete(GuestGroup).where(GuestGroup.id == group_id))
             await self.db.commit()
-            
+
             if result.rowcount > 0:
                 logger.info(f"Guest group deleted successfully: {group_id}")
                 return True
-            else:
-                logger.warning(f"Guest group not found for deletion: {group_id}")
-                return False
-                
+            logger.warning(f"Guest group not deleted (rowcount=0): {group_id}")
+            return False
+
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error deleting guest group {group_id}: {e}")
@@ -806,6 +869,40 @@ class GuestGroupService:
         except Exception as e:
             logger.error(f"Error getting guest preferences for group {group_id}: {e}")
             return []
+
+    async def get_guest_preference_by_id(self, preference_id: uuid.UUID) -> Optional[GuestPreference]:
+        """Get a single guest preference row by ID."""
+        try:
+            stmt = select(GuestPreference).where(GuestPreference.id == preference_id)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting guest preference {preference_id}: {e}")
+            return None
+
+    async def update_guest_preference(
+        self,
+        preference_id: uuid.UUID,
+        preference_data: GuestPreferenceUpdate,
+    ) -> Optional[GuestPreferenceResponse]:
+        """Update an existing guest preference without creating a duplicate row."""
+        try:
+            values = preference_data.model_dump(exclude_unset=True)
+            values["updated_at"] = datetime.utcnow()
+            stmt = (
+                update(GuestPreference)
+                .where(GuestPreference.id == preference_id)
+                .values(**values)
+                .returning(GuestPreference)
+            )
+            result = await self.db.execute(stmt)
+            updated = result.scalar_one_or_none()
+            await self.db.commit()
+            return GuestPreferenceResponse.model_validate(updated) if updated else None
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Error updating guest preference {preference_id}: {e}")
+            return None
     
     # Analytics and Reporting
     async def update_recommendation_stats(self, group_id: uuid.UUID, given: int = 0, accepted: int = 0) -> bool:

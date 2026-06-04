@@ -57,10 +57,18 @@ export class ErrorBoundary extends Component<Props, State> {
               </Button>
               <Button 
                 variant="outline" 
-                onClick={() => window.location.href = '/dashboard'} 
+                onClick={() => {
+                  try {
+                    localStorage.removeItem("session_token");
+                    localStorage.removeItem("refresh_token");
+                  } catch {
+                    /* ignore storage access errors */
+                  }
+                  window.location.href = '/login';
+                }}
                 className="w-full"
               >
-                🏠 Go to Dashboard
+                Go to Host Login
               </Button>
             </div>
             

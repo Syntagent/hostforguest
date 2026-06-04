@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { cn, isPlausibleGpsLatLng } from "@/lib/utils";
 import { Bell, Home, Languages, MapPin, Plus, Printer, RefreshCw, ScrollText } from "lucide-react";
 import type { GuestGroup } from "@/lib/api";
+import { formatStayDate, getStayPhase, stayPhaseLabel } from "./guest-group-stay";
 import type {
   AccommodationOverview,
   DashboardStatsCard,
@@ -334,22 +335,27 @@ export const OverviewTab: React.FC<{
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {guestGroups.slice(0, 3).map((group) => (
-                <div
-                  key={group.id}
-                  className="flex items-center justify-between rounded-2xl bg-muted/60 p-3"
-                >
-                  <div>
-                    <p className="font-medium">{group.group_name}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {group.group_size} guests • {group.status}
-                    </p>
+              {guestGroups.slice(0, 3).map((group) => {
+                const phase = getStayPhase(group);
+                return (
+                  <div
+                    key={group.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl bg-muted/60 p-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium">{group.group_name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {group.group_size} guests • {stayPhaseLabel(phase)}
+                      </p>
+                      {group.check_in_date && group.check_out_date ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {formatStayDate(group.check_in_date)} – {formatStayDate(group.check_out_date)}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="text-sm text-muted-foreground">
-                    {new Date(group.created_at).toLocaleDateString()}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               {guestGroups.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-border p-4 text-sm text-muted-foreground">
                   No guest groups yet. Use the Guests tab to create your first access code.
@@ -374,18 +380,36 @@ export const OverviewTab: React.FC<{
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {realtimeUpdates.slice(0, 3).map((update, index) => (
-                <div key={`${update.id}-${index}`} className="rounded-2xl bg-muted/60 p-3">
-                  <p className="text-sm font-medium">{update.title || "Tourism Update"}</p>
-                  <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                    {update.description || update.content ||
-                      "New information available from Croatian tourism sources"}
-                  </p>
-                  {update.source ? (
-                    <p className="mt-1 text-xs text-muted-foreground">Source: {update.source}</p>
-                  ) : null}
-                </div>
-              ))}
+              {realtimeUpdates.slice(0, 3).map((update, index) => {
+                const dateLabel =
+                  update.start_at &&
+                  (() => {
+                    try {
+                      return new Date(update.start_at).toLocaleDateString(undefined, {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                      });
+                    } catch {
+                      return null;
+                    }
+                  })();
+                return (
+                  <div key={`${update.id}-${index}`} className="rounded-2xl bg-muted/60 p-3">
+                    <p className="text-sm font-medium">{update.title || "Tourism Update"}</p>
+                    {dateLabel ? (
+                      <p className="mt-1 text-xs font-medium text-primary">{dateLabel}</p>
+                    ) : null}
+                    <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                      {update.description || update.content ||
+                        "New information available from Croatian tourism sources"}
+                    </p>
+                    {update.source ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Source: {update.source}</p>
+                    ) : null}
+                  </div>
+                );
+              })}
               {realtimeUpdates.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-border p-4 text-sm text-muted-foreground">
                   No recent tourism updates yet. Refresh later when planning guest recommendations.

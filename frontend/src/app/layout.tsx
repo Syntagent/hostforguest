@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Manrope, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/contexts/auth-context";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { ToastProvider } from "@/components/ui/toast";
 
 const bodyFont = Manrope({
@@ -56,7 +56,7 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
-        <ErrorBoundary>
+        <RouteErrorBoundary>
           <AuthProvider>
             <ToastProvider>
               <div id="root">
@@ -66,7 +66,7 @@ export default function RootLayout({
               </div>
             </ToastProvider>
           </AuthProvider>
-        </ErrorBoundary>
+        </RouteErrorBoundary>
       </body>
     </html>
   );

@@ -1,10 +1,14 @@
 // API Client for TouristGuideLocal Backend
 function resolveApiBaseUrl(): string {
+  // Browser dev: always use same-origin `/api/*` proxy (avoids CORS when UI is 127.0.0.1:3055
+  // but .env points at http://localhost:8000).
+  if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
+    return "";
+  }
   const raw = process.env.NEXT_PUBLIC_API_URL;
   if (typeof raw === "string" && raw.trim() !== "") {
     return raw.replace(/\/$/, "");
   }
-  // Dev: same-origin `/api/*` → Next.js rewrites to FastAPI (avoids 127.0.0.1 vs localhost mismatches).
   if (process.env.NODE_ENV === "development") {
     return "";
   }
@@ -94,14 +98,19 @@ class ApiClient {
     if (!location) return null;
     try {
       const resolved = new URL(location, requestUrl);
-      const base = new URL(this.baseURL || requestUrl);
+      // Same-origin dev proxy (baseURL === ""): keep full API path; do not strip to "/".
+      if (!this.baseURL) {
+        return `${resolved.pathname}${resolved.search}`;
+      }
+      const base = new URL(this.baseURL);
       if (resolved.origin !== base.origin) {
         return `${resolved.pathname}${resolved.search}`;
       }
       const basePath = base.pathname.replace(/\/$/, "");
       let path = resolved.pathname;
       if (basePath && path.startsWith(basePath)) {
-        path = path.slice(basePath.length) || "/";
+        const remainder = path.slice(basePath.length);
+        path = remainder || path;
       }
       return `${path}${resolved.search}`;
     } catch {
@@ -375,6 +384,7 @@ export interface HostProfile {
   social_media_links?: Record<string, string>;
   guest_testimonials?: string[];
   location_story?: string;
+  property_rules?: GuestPropertyRules;
   google_verified?: boolean;
   onboarding_completed?: boolean;
   onboarding_completed_at?: string;
@@ -391,6 +401,83 @@ export interface HostProfile {
   welcome_message?: string;
   host_story?: string;
   local_tips?: string[];
+}
+
+export type AccommodationChecklistStatus = "missing" | "in_progress" | "draft" | "done" | "skipped";
+
+export interface AccommodationChecklistItemState {
+  id: string;
+  status: AccommodationChecklistStatus;
+  label?: string;
+  notes?: string;
+}
+
+export interface AccommodationAgentMessage {
+  role: "assistant" | "user" | "system";
+  content: string;
+}
+
+export interface AccommodationPatch {
+  property_name?: string;
+  property_type?: string;
+  max_guests?: number;
+  number_of_rooms?: number;
+  city?: string;
+  county?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  location_story?: string;
+  amenities?: string[];
+  services_offered?: string[];
+  expertise_areas?: string[];
+  languages?: string[];
+  welcome_message?: string;
+  gallery_images?: string[];
+  property_rules?: GuestPropertyRules;
+}
+
+export interface AccommodationAgentMessageRequest {
+  message: string;
+  focused_item_id?: string | null;
+  checklist_state: AccommodationChecklistItemState[];
+  accommodation_snapshot: Record<string, unknown>;
+  conversation_history: AccommodationAgentMessage[];
+}
+
+export interface AccommodationAgentAction {
+  action: "update_draft" | "replace_draft" | "move_focus" | "open_fields" | "ask_followup" | "no_op";
+  target_item_id?: string | null;
+  field?: string | null;
+  patch?: AccommodationPatch | null;
+  reason?: string | null;
+}
+
+export interface AccommodationAgentMessageResponse {
+  success: boolean;
+  reply: string;
+  quick_replies: string[];
+  suggested_patch: AccommodationPatch;
+  suggestion_options: { id: string; label: string; patch: AccommodationPatch }[];
+  actions: AccommodationAgentAction[];
+  checklist_updates: AccommodationChecklistItemState[];
+  next_focus_id?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface AccommodationEnhancementResponse {
+  success: boolean;
+  enhancement_type: string;
+  enhanced_content: {
+    description?: string;
+    amenities?: string[];
+    services?: string[];
+    specialties?: string[];
+    languages?: string[];
+    welcome_message?: string;
+  };
+  original_data?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 /** Accommodation row (host_profiles) linked to a guest group — same source as Accommodation tab. */
@@ -419,8 +506,24 @@ export interface GuestGroup {
   created_at: string;
   check_in_date?: string | null;
   check_out_date?: string | null;
+  lead_guest_name?: string | null;
+  lead_guest_email?: string | null;
+  lead_guest_phone?: string | null;
+  preferred_language?: string;
+  budget_level?: string;
+  travel_style?: string;
+  group_dynamics?: string;
+  interests?: string[];
+  age_groups?: string[];
+  dietary_restrictions?: string[];
+  mobility_requirements?: string[];
+  preferred_activities?: string[];
+  avoided_activities?: string[];
+  interested_regions?: string[];
+  feedback_notes?: string | null;
   /** Live property snapshot from host_profiles (dashboard + guest access responses). */
   accommodation?: GuestGroupAccommodation | null;
+  saved_event_recommendations?: GuestSavedEventRecord[];
 }
 
 /** Response from GET /api/v1/guest-groups/{id}/guest-experience (host session). */
@@ -487,15 +590,32 @@ export type GuestTestimonialEntry =
       rating?: number;
     };
 
+/** House rules and practical stay info shared with guests. */
+export interface GuestPropertyRules {
+  checkInTime?: string;
+  checkOutTime?: string;
+  cancellationPolicy?: string;
+  houseRules?: string[];
+  additionalPolicies?: string[];
+  wifiName?: string;
+  wifiPassword?: string;
+  emergencyNote?: string;
+}
+
 /** Host offerings for guests (guest-group access code). */
 export interface GuestHostOfferingsPayload {
   /** Where guests actually stay (property), vs host business profile city. */
   stay_info?: {
     property_name?: string | null;
+    property_type?: string | null;
+    number_of_rooms?: number | null;
     address?: string | null;
     city?: string | null;
     region?: string | null;
     amenities?: string[];
+    services_offered?: string[];
+    gallery_images?: string[];
+    property_rules?: GuestPropertyRules;
     max_guests?: number | null;
   };
   host_info: {
@@ -540,7 +660,10 @@ export interface GuestHostOfferingsPayload {
     property_name?: string | null;
     location_story?: string | null;
     guest_testimonials?: GuestTestimonialEntry[];
+    profile_image_url?: string | null;
   };
+  trusted_partners?: Array<string | Record<string, unknown>>;
+  special_offers?: Array<string | Record<string, unknown>>;
 }
 
 export interface GuestHostOfferingsApiResponse {
@@ -548,6 +671,87 @@ export interface GuestHostOfferingsApiResponse {
   host_offerings: GuestHostOfferingsPayload;
   access_code: string;
   valid_access: boolean;
+}
+
+export interface GuestEventRecommendation {
+  id: string;
+  title: string;
+  description?: string;
+  source?: string;
+  url?: string | null;
+  event_type?: string;
+  cities?: string[];
+  regions?: string[];
+  start_date?: string | null;
+  end_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  schedule_label?: string | null;
+  date_certainty?: "exact" | "date_only" | "inferred" | "unknown" | string;
+  timing_status?: "during_stay" | "near_stay" | "outside_stay" | "upcoming" | "unknown" | string;
+  admission_info?: string;
+  booking_required?: boolean;
+  distance_km?: number | null;
+  venue_name?: string | null;
+  why_recommended?: string;
+  plan_hint?: string;
+  relevance_score?: number;
+  scores?: Record<string, number>;
+  priority: "high" | "medium" | "low" | string;
+}
+
+export interface GuestEventStayWindow {
+  check_in?: string | null;
+  check_out?: string | null;
+  inferred?: boolean;
+}
+
+export interface GuestEventRecommendationsResponse {
+  recommendations: GuestEventRecommendation[];
+  city?: string;
+  access_code?: string;
+  stay_window?: GuestEventStayWindow;
+  personalization?: Record<string, unknown>;
+  total_candidates?: number;
+}
+
+export interface GuestSavedEventRecord {
+  event_id: string;
+  title?: string;
+  source?: string;
+  description?: string;
+  url?: string;
+  event_type?: string;
+  cities?: string[];
+  regions?: string[];
+  start_date?: string;
+  end_date?: string;
+  admission_info?: string;
+  booking_required?: boolean;
+  distance_km?: number;
+  why_recommended?: string;
+  plan_hint?: string;
+  saved_at?: string;
+  host_status?: string;
+  host_note?: string;
+  host_action_at?: string;
+  planned_at?: string;
+  guest_action?: string;
+  guest_note?: string;
+  guest_action_at?: string;
+  preferred_day_plan_id?: string;
+  preferred_day_number?: number;
+  preferred_day_title?: string;
+  itinerary_activity_id?: string;
+  itinerary_day_plan_id?: string;
+  itinerary_activity_title?: string;
+  itinerary_activity_start_time?: string;
+  itinerary_activity_end_time?: string;
+}
+
+export interface GuestSavedEventsResponse {
+  saved_event_ids: string[];
+  saved_events: GuestSavedEventRecord[];
 }
 
 export interface GuestEVisitorData {
@@ -924,6 +1128,9 @@ export const hostsApi = {
         content: string;
         description?: string;
         created_at: string | null;
+        start_at?: string | null;
+        end_at?: string | null;
+        source?: string | null;
       }>;
       cached_at: string;
     }>(`/api/v1/hosts/dashboard/stats${refresh ? '?refresh=true' : ''}`),
@@ -954,8 +1161,23 @@ export const guestGroupsApi = {
   create: (groupData: {
     group_name: string;
     group_size: number;
+    check_in_date?: string;
+    check_out_date?: string;
   }) =>
     apiClient.post<GuestGroup>('/api/v1/guest-groups/', groupData),
+
+  update: (
+    groupId: string,
+    groupData: {
+      group_name?: string;
+      group_size?: number;
+      check_in_date?: string | null;
+      check_out_date?: string | null;
+    }
+  ) => apiClient.put<GuestGroup>(`/api/v1/guest-groups/${groupId}`, groupData),
+
+  delete: (groupId: string) =>
+    apiClient.delete(`/api/v1/guest-groups/${groupId}`),
 
   getByHost: () =>
     apiClient.get<GuestGroup[]>('/api/v1/guest-groups/host'),
@@ -1006,6 +1228,47 @@ export const guestGroupsApi = {
       `/api/v1/guest-groups/access/${accessCode}/host-offerings`
     ),
 
+  getEventRecommendations: (accessCode: string, limit = 10, refresh = false) =>
+    apiClient.get<GuestEventRecommendationsResponse>(
+      `/api/v1/guest-groups/access/${accessCode}/event-recommendations?limit=${encodeURIComponent(String(limit))}${refresh ? "&refresh=true" : ""}`
+    ),
+
+  getSavedEvents: (accessCode: string) =>
+    apiClient.get<GuestSavedEventsResponse>(
+      `/api/v1/guest-groups/access/${accessCode}/saved-events`
+    ),
+
+  saveEvent: (accessCode: string, event: GuestEventRecommendation) =>
+    apiClient.post<GuestSavedEventsResponse>(
+      `/api/v1/guest-groups/access/${accessCode}/saved-events`,
+      event
+    ),
+
+  removeSavedEvent: (accessCode: string, eventId: string) =>
+    apiClient.delete<GuestSavedEventsResponse>(
+      `/api/v1/guest-groups/access/${accessCode}/saved-events/${encodeURIComponent(eventId)}`
+    ),
+
+  updateSavedEventForGuest: (
+    accessCode: string,
+    eventId: string,
+    patch: Record<string, unknown>
+  ) =>
+    apiClient.patch<GuestSavedEventsResponse>(
+      `/api/v1/guest-groups/access/${accessCode}/saved-events/${encodeURIComponent(eventId)}`,
+      patch
+    ),
+
+  updateSavedEventForHost: (
+    groupId: string,
+    eventId: string,
+    patch: Record<string, unknown>
+  ) =>
+    apiClient.put<GuestSavedEventsResponse>(
+      `/api/v1/guest-groups/${groupId}/saved-events/${encodeURIComponent(eventId)}`,
+      patch
+    ),
+
   sendHostMessage: (
     accessCode: string,
     body: { message: string; type?: string; guest_name?: string }
@@ -1016,7 +1279,22 @@ export const guestGroupsApi = {
       message?: string;
       suggestions?: string[];
       estimated_response_time?: string;
+      can_contact_host?: boolean;
+      ai_available?: boolean;
     }>(`/api/v1/guest-groups/access/${accessCode}/host-message`, body),
+
+  askAssistant: (
+    accessCode: string,
+    body: { message: string; guest_name?: string }
+  ) =>
+    apiClient.post<{
+      success: boolean;
+      response_type?: string;
+      message?: string;
+      suggestions?: string[];
+      can_contact_host?: boolean;
+      provider?: string;
+    }>(`/api/v1/guest-groups/access/${accessCode}/assistant`, body),
 
   updateGuestPreference: (accessCode: string, preferenceId: string, preferenceData: any) =>
     apiClient.put(`/api/v1/guest-groups/access/${accessCode}/preferences/${preferenceId}`, preferenceData),
@@ -1394,6 +1672,31 @@ export interface RoutePointDTO {
   estimated_duration: number;
 }
 
+export type EventSourceHealth = {
+  source_id: string;
+  name: string;
+  url: string;
+  status: string;
+  last_scraped?: string | null;
+  consecutive_failures: number;
+  last_error?: string | null;
+  total_scrapes: number;
+  successful_scrapes: number;
+  maintenance_hint?: string | null;
+};
+
+export type EventSourceProposal = {
+  id: string;
+  proposed_name: string;
+  proposed_url: string;
+  source_type: string;
+  confidence: number;
+  reasoning?: string;
+  status: string;
+  city?: string;
+  region?: string;
+};
+
 export const realtimeApi = {
   getUpdates: (city?: string, contentTypes?: string) => {
     const params = new URLSearchParams();
@@ -1402,10 +1705,36 @@ export const realtimeApi = {
     const query = params.toString();
     return apiClient.get<any[]>(`/api/v1/realtime/updates${query ? `?${query}` : ''}`);
   },
+  getEvents: (city?: string, hours = 168) => {
+    const params = new URLSearchParams();
+    if (city) params.append('city', city);
+    params.append('hours', String(hours));
+    return apiClient.get<any[]>(`/api/v1/realtime/events?${params.toString()}`);
+  },
+  bootstrapEvents: (city?: string) => {
+    const q = city ? `?city=${encodeURIComponent(city)}` : '';
+    return apiClient.post<Record<string, unknown>>(`/api/v1/realtime/events/bootstrap${q}`);
+  },
   getSummary: () =>
-    apiClient.get<Record<string, any>>('/api/v1/realtime/summary'),
+    apiClient.get<Record<string, unknown>>('/api/v1/realtime/summary'),
   getSourcesStatus: () =>
     apiClient.get<any[]>('/api/v1/realtime/sources/status'),
+  getSourcesHealth: () =>
+    apiClient.get<EventSourceHealth[]>('/api/v1/realtime/sources/health'),
+  discoverSources: () =>
+    apiClient.post<Record<string, unknown>>('/api/v1/realtime/sources/discover'),
+  getSourceProposals: (status = 'pending') =>
+    apiClient.get<EventSourceProposal[]>(
+      `/api/v1/realtime/sources/proposals?status_filter=${encodeURIComponent(status)}`
+    ),
+  approveProposal: (proposalId: string) =>
+    apiClient.post<{ success: boolean }>(
+      `/api/v1/realtime/sources/proposals/${proposalId}/approve`
+    ),
+  rejectProposal: (proposalId: string) =>
+    apiClient.post<{ success: boolean }>(
+      `/api/v1/realtime/sources/proposals/${proposalId}/reject`
+    ),
   refresh: (sourceIds?: string) => {
     const params = sourceIds ? `?source_ids=${sourceIds}` : '';
     return apiClient.post<any>(`/api/v1/realtime/sources/refresh${params}`);
@@ -1458,6 +1787,22 @@ export const onboardingApi = {
 
   validateProfile: (profileData: any) =>
     apiClient.post('/api/v1/onboarding/validate-profile', profileData),
+
+  enhanceAccommodation: (currentData: Record<string, unknown>, enhancementType = 'comprehensive') =>
+    apiClient.post<AccommodationEnhancementResponse>('/api/v1/onboarding/accommodation/ai-enhance', {
+      current_data: currentData,
+      enhancement_type: enhancementType,
+    }),
+
+  sendAccommodationAgentMessage: (payload: AccommodationAgentMessageRequest) =>
+    apiClient.post<AccommodationAgentMessageResponse>('/api/v1/onboarding/accommodation/agent/message', payload),
+
+  ingestAccommodationVoice: (payload: AccommodationAgentMessageRequest & {
+    audio_base64?: string;
+    sample_rate?: number;
+    message?: string;
+  }) =>
+    apiClient.post<AccommodationAgentMessageResponse>('/api/v1/onboarding/accommodation/voice/ingest', payload),
 
   completeOnboarding: (onboardingData: any) =>
     apiClient.post('/api/v1/onboarding/complete-onboarding', onboardingData),
@@ -1945,6 +2290,65 @@ export const guestMaintenanceApi = {
     description?: string;
     photo_urls?: string[];
   }) => apiClient.post<MaintenanceIssue>("/api/v1/maintenance/guest-reports", body),
+
+  listReports: (accessCode: string) =>
+    apiClient.get<{ issues: MaintenanceIssue[] }>(
+      `/api/v1/maintenance/guest-reports/${encodeURIComponent(accessCode)}`
+    ),
+};
+
+export type ComplianceItemStatus = "missing" | "done" | "skipped" | "not_applicable";
+
+export type ComplianceMe = {
+  catalog_version: string;
+  scenarios: Record<string, boolean>;
+  categories: Array<{
+    id: string;
+    label_hr: string;
+    items: Array<{
+      id: string;
+      label_hr: string;
+      summary_hr: string;
+      detail_hr?: string | null;
+      deep_link?: string | null;
+      official_links: Array<{ title: string; url: string }>;
+      status: ComplianceItemStatus;
+      relevance: "required" | "optional" | "not_applicable";
+      notes?: string | null;
+    }>;
+  }>;
+  pdv_regime_rules: Array<{ id: string; title_hr: string; body_hr: string }>;
+  novasol_regime_rules: Array<{ id: string; title_hr: string; body_hr: string }>;
+  progress: { total_relevant: number; done: number; percent: number };
+  hints: { suggest_uses_ota: boolean; has_evisitor_records: boolean };
+};
+
+export const complianceApi = {
+  getCatalog: () =>
+    apiClient.get<{
+      version: string;
+      last_reviewed: string;
+      scenarios: Array<{ id: string; label_hr: string }>;
+      categories: unknown[];
+      pdv_regime_rules: Array<{ id: string; title_hr: string; body_hr: string }>;
+      novasol_regime_rules: Array<{ id: string; title_hr: string; body_hr: string }>;
+    }>("/api/v1/compliance/catalog"),
+
+  getMe: () => apiClient.get<ComplianceMe>("/api/v1/compliance/me"),
+
+  updateScenarios: (body: { scenarios: Record<string, boolean> }) =>
+    apiClient.put<ComplianceMe>("/api/v1/compliance/me/scenarios", body),
+
+  patchItem: (itemId: string, body: { status: ComplianceItemStatus; notes?: string }) =>
+    apiClient.patch<ComplianceMe>(`/api/v1/compliance/me/items/${encodeURIComponent(itemId)}`, body),
+
+  explain: (body: { message: string; item_id?: string }) =>
+    apiClient.post<{
+      answer_hr: string;
+      suggested_item_ids: string[];
+      disclaimer: string;
+      ai_used: boolean;
+    }>("/api/v1/compliance/me/explain", body),
 };
 
 /** Google Maps directions / search from attraction fields */

@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
@@ -52,10 +52,17 @@ async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[st
     guest_group_service = GuestGroupService(db)
     attraction_service = AttractionService(db)
 
+    from app.models.guest_group import GuestGroupStatus
+    from app.services.guest_group_stay import is_in_stay
+
     guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
     attractions = await attraction_service.get_host_attractions(current_host.id)
 
-    active_groups = len([g for g in guest_groups if g.status == "active"])
+    # "Active" on the dashboard = in stay today (calendar dates), not DB activation status.
+    in_stay_groups = len([g for g in guest_groups if is_in_stay(g)])
+    activated_groups = len(
+        [g for g in guest_groups if g.status == GuestGroupStatus.ACTIVE.value]
+    )
 
     total_recommendations_query = select(func.count(RecommendationSet.id)).where(
         RecommendationSet.host_id == current_host.id
@@ -102,8 +109,10 @@ async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[st
     analytics = {
         "guest_groups": {
             "total": len(guest_groups),
-            "active": active_groups,
-            "inactive": len(guest_groups) - active_groups,
+            "active": in_stay_groups,
+            "in_stay": in_stay_groups,
+            "activated": activated_groups,
+            "inactive": len(guest_groups) - in_stay_groups,
         },
         "attractions": {"total": len(attractions), "categories": {}},
         "recommendations": {
@@ -594,9 +603,12 @@ async def get_dashboard_stats(
                 {
                     "id": str(u.get("id", "")),
                     "title": u.get("title", ""),
-                    "content": (u.get("content") or "")[:500],
-                    "description": (u.get("summary") or u.get("content") or "")[:300],
+                    "content": (u.get("content") or u.get("description") or "")[:500],
+                    "description": (u.get("description") or u.get("content") or "")[:300],
                     "created_at": u.get("created_at"),
+                    "start_at": u.get("start_at"),
+                    "end_at": u.get("end_at"),
+                    "source": u.get("source_name") or u.get("source"),
                 }
                 for u in updates
             ]
@@ -791,6 +803,7 @@ async def geocode_accommodation_address(
 @router.put("/me/profile", response_model=HostProfileResponse)
 async def update_host_profile(
     profile_data: HostProfileUpdate,
+    background_tasks: BackgroundTasks,
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
@@ -821,4 +834,18 @@ async def update_host_profile(
         )
     
     logger.info(f"Host profile updated successfully for: {current_host.email}")
+
+    if profile_data.city or profile_data.latitude or profile_data.longitude:
+        async def _discover_event_sources() -> None:
+            from app.core.database import get_async_session
+            from app.services.event_source_discovery_agent import EventSourceDiscoveryAgent
+
+            async for session in get_async_session():
+                agent = EventSourceDiscoveryAgent(session)
+                prof = await HostService(session).get_host_profile(current_host.id)
+                await agent.discover_for_host(current_host, prof)
+                break
+
+        background_tasks.add_task(_discover_event_sources)
+
     return HostProfileResponse.model_validate(profile) 

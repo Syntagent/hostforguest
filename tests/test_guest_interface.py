@@ -150,6 +150,55 @@ class TestGuestInterface:
         assert response.status_code == 201
         assert response.json()["age_category"] == "child,adult,senior"
 
+    async def test_guest_preference_update_does_not_duplicate(self, async_client: AsyncClient, async_db_session: AsyncSession, test_guest_group: GuestGroup):
+        """Guests can update an existing preference row instead of creating duplicates."""
+        from sqlalchemy import select
+        from app.models.guest_group import AccessCode
+
+        stmt = select(AccessCode).where(AccessCode.guest_group_id == test_guest_group.id)
+        result = await async_db_session.execute(stmt)
+        access_code = result.scalar_one()
+
+        created = await async_client.post(
+            f"/api/v1/guest-groups/access/{access_code.code}/preferences",
+            json={
+                "guest_name": "Update Guest",
+                "age_category": "adult",
+                "personal_interests": ["food"],
+                "dietary_needs": [],
+                "language_preference": "en",
+                "cultural_interests": [],
+                "food_interests": ["food"],
+                "mobility_notes": "Email: update@example.com\nMobility: high\nBudget: medium",
+            },
+        )
+        assert created.status_code == 201
+        preference_id = created.json()["id"]
+
+        updated = await async_client.put(
+            f"/api/v1/guest-groups/access/{access_code.code}/preferences/{preference_id}",
+            json={
+                "guest_name": "Updated Guest",
+                "age_category": "adult,senior",
+                "personal_interests": ["nature"],
+                "dietary_needs": ["Vegetarian"],
+                "language_preference": "en",
+                "cultural_interests": [],
+                "food_interests": [],
+                "mobility_notes": "Email: update@example.com\nMobility: medium\nBudget: low",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["id"] == preference_id
+        assert updated.json()["guest_name"] == "Updated Guest"
+        assert updated.json()["personal_interests"] == ["nature"]
+
+        listed = await async_client.get(f"/api/v1/guest-groups/access/{access_code.code}/preferences")
+        assert listed.status_code == 200
+        rows = [row for row in listed.json() if row["id"] == preference_id]
+        assert len(rows) == 1
+        assert rows[0]["guest_name"] == "Updated Guest"
+
     async def test_guest_preference_retrieval(self, async_client: AsyncClient, async_db_session: AsyncSession, test_guest_group: GuestGroup):
         """Test that guests can retrieve their preferences."""
         

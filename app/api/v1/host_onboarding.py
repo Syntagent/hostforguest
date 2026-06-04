@@ -53,7 +53,9 @@ from app.api.v1.host_onboarding_models import (
     EditSuggestionRequest,
     CoWriteRequest,
     AttractionSuggestionsRequest,
-    AIEnhancementResponse
+    AIEnhancementResponse,
+    AccommodationAgentMessageRequest,
+    AccommodationAgentMessageResponse,
 )
 
 # Import helper functions
@@ -2699,14 +2701,14 @@ async def complete_host_onboarding(
 
         from app.services.geocoding_service import GeocodingService
 
+        county = (
+            onboarding_data.region.value
+            if onboarding_data.region
+            else None
+        )
         lat = onboarding_data.coordinates.lat if onboarding_data.coordinates else None
         lng = onboarding_data.coordinates.lng if onboarding_data.coordinates else None
-        if lat is None or lng is None:
-            county = (
-                onboarding_data.region.value
-                if onboarding_data.region
-                else None
-            )
+        if (onboarding_data.address or "").strip() or (onboarding_data.city or "").strip():
             geo = GeocodingService.geocode(
                 address=onboarding_data.address,
                 city=onboarding_data.city,
@@ -2715,26 +2717,38 @@ async def complete_host_onboarding(
             if geo:
                 lat, lng = geo.latitude, geo.longitude
                 logger.info(
-                    "Onboarding geocode fallback: %s (%s)",
+                    "Onboarding geocode: %s (%s)",
                     geo.matched_query,
                     geo.precision,
+                )
+            elif lat is None or lng is None:
+                logger.warning(
+                    "Onboarding completed without GPS for host %s (city=%s)",
+                    current_host.email,
+                    onboarding_data.city,
                 )
 
         # Generate unique access code for guests
         import secrets
         import string
         access_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+        property_name = (onboarding_data.property_name or current_host.business_name or "").strip() or None
+        property_type = (onboarding_data.property_type or current_host.business_type or "apartment").strip()
+        languages = onboarding_data.languages or current_host.languages or ["hr", "en"]
 
         # Update main host record
         from sqlalchemy import update, select
         from app.models.host import HostProfile
 
         host_update = update(Host).where(Host.id == current_host.id).values(
+            business_name=property_name,
+            business_type=property_type,
             city=onboarding_data.city,
             address=onboarding_data.address or current_host.address,
             latitude=lat if lat is not None else current_host.latitude,
             longitude=lng if lng is not None else current_host.longitude,
             local_specialties=onboarding_data.interests,
+            languages=languages,
             guest_access_code=access_code,
             onboarding_completed=True,
             updated_at=datetime.utcnow()
@@ -2750,6 +2764,8 @@ async def complete_host_onboarding(
         if existing_profile:
             # Update existing profile
             profile_update = update(HostProfile).where(HostProfile.host_id == current_host.id).values(
+                property_name=property_name,
+                property_type=property_type,
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
@@ -2772,6 +2788,8 @@ async def complete_host_onboarding(
             # Create new profile
             new_profile = HostProfile(
                 host_id=current_host.id,
+                property_name=property_name,
+                property_type=property_type,
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
@@ -2915,6 +2933,12 @@ async def enhance_accommodation_description(
                 detail="Host profile not found"
             )
 
+        def profile_value(key: str, default: Any = None) -> Any:
+            """Host profile helpers may return ORM objects or serialized dicts."""
+            if isinstance(host_profile, dict):
+                return host_profile.get(key, default)
+            return getattr(host_profile, key, default)
+
         # Extract key data for AI enhancement
         property_name = current_data.get("property_name", "")
         property_type = current_data.get("property_type", "")
@@ -2926,6 +2950,10 @@ async def enhance_accommodation_description(
         current_specialties = current_data.get("expertise_areas", [])
         city = current_data.get("city", "")
         county = current_data.get("county", "")
+
+        host_profile_city = profile_value("city", city)
+        host_knowledge_level = profile_value("local_knowledge_level", "intermediate")
+        host_interests = profile_value("host_interests", []) or []
 
         # Create context-aware enhancement prompt
         enhancement_prompt = f"""
@@ -2944,9 +2972,9 @@ async def enhance_accommodation_description(
         - Location: {city}, {county}, Croatia
 
         HOST CONTEXT:
-        - Host Location: {host_profile.city or city}, Croatia
-        - Local Knowledge: {host_profile.local_knowledge_level or 'intermediate'}
-        - Host Interests: {', '.join(host_profile.host_interests or [])}
+        - Host Location: {host_profile_city or city}, Croatia
+        - Local Knowledge: {host_knowledge_level or 'intermediate'}
+        - Host Interests: {', '.join(host_interests)}
 
         ENHANCEMENT REQUIREMENTS:
         1. BUILD UPON existing data - don't replace with generic content
@@ -2975,44 +3003,55 @@ async def enhance_accommodation_description(
             enhanced_specialties: List[str] = Field(..., description="List of enhanced local specialties")
             welcome_message: str = Field(..., description="Enhanced welcome message in Croatian hospitality style")
 
-        # Use AI service to generate structured enhancement
-        ai_response = await onboarding_service.ai_service.generate_structured_response(
-            host_id=str(current_host.id),
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI travel expert specializing in Croatian tourism and accommodation enhancement. You must return a structured response with the exact fields specified."
+        # Use AI service to generate structured enhancement. If provider settings
+        # are unavailable in dev, continue with the deterministic fallback below.
+        try:
+            ai_response = await onboarding_service.ai_service.generate_structured_response(
+                host_id=str(current_host.id),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI travel expert specializing in Croatian tourism and accommodation enhancement. You must return a structured response with the exact fields specified."
+                    },
+                    {
+                        "role": "user",
+                        "content": enhancement_prompt
+                    }
+                ],
+                context={
+                    "location": f"{city}, {county}, Croatia",
+                    "property_type": property_type,
+                    "host_location": f"{host_profile_city or city}, Croatia"
                 },
-                {
-                    "role": "user",
-                    "content": enhancement_prompt
-                }
-            ],
-            context={
-                "location": f"{city}, {county}, Croatia",
-                "property_type": property_type,
-                "host_location": f"{host_profile.city or city}, Croatia"
-            },
-            response_schema=AccommodationEnhancementSchema
-        )
+                response_schema=AccommodationEnhancementSchema
+            )
+        except Exception as ai_error:
+            logger.warning(f"AI accommodation enhancement provider failed, using fallback: {ai_error}")
+            ai_response = {"success": False, "error": str(ai_error), "provider": "fallback"}
 
-        if not ai_response or not ai_response.get("success", False):
-            # Fallback to simple enhancement
-            enhanced_description = current_description or f"Experience authentic Croatian hospitality in this charming {property_type} in {city}, {county}. Perfect for up to {max_guests} guests seeking an authentic local experience with modern comforts."
+        # Parse structured AI response or fall back to deterministic enhancement.
+        enhanced_data: Dict[str, Any] = {}
+        try:
+            if ai_response.get("success", False) and ai_response.get("structured_data"):
+                enhanced_data = ai_response["structured_data"]
+                logger.info(f"✅ AI structured response successful: {list(enhanced_data.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to parse AI response: {e}")
 
-            # Suggest additional amenities based on property type
-            suggested_amenities = []
+        def default_amenities_for_property() -> List[str]:
             if property_type == "apartment":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "balcony", "parking"]
-            elif property_type == "villa":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "bbq", "outdoor_seating"]
-            elif property_type == "house":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "fireplace"]
+                return ["air_conditioning", "wifi", "kitchen", "balcony", "parking"]
+            if property_type == "villa":
+                return ["air_conditioning", "wifi", "kitchen", "garden", "parking", "bbq", "outdoor_seating"]
+            if property_type == "house":
+                return ["air_conditioning", "wifi", "kitchen", "garden", "parking", "fireplace"]
+            return ["wifi", "air_conditioning", "parking"]
 
-            # Filter out amenities that already exist
-            new_amenities = [amenity for amenity in suggested_amenities if amenity not in current_amenities]
+        if not enhanced_data:
+            logger.warning(f"AI service returned: {ai_response}")
+            enhanced_description = current_description or f"Experience authentic Croatian hospitality in this charming {property_type or 'accommodation'} in {city}, {county}. Perfect for up to {max_guests} guests seeking an authentic local experience with modern comforts."
+            new_amenities = [amenity for amenity in default_amenities_for_property() if amenity not in current_amenities]
 
-            # Create fallback structured response
             enhanced_data = {
                 "enhanced_description": enhanced_description,
                 "suggested_amenities": new_amenities,
@@ -3021,30 +3060,54 @@ async def enhance_accommodation_description(
                 "welcome_message": f"Dobro došli! Welcome to your Croatian home away from home in {city}. We're excited to share the beauty and culture of {county} with you."
             }
 
-        # Parse structured AI response
-        try:
-            if ai_response.get("success", False) and ai_response.get("structured_data"):
-                # Use the structured data directly
-                enhanced_data = ai_response["structured_data"]
-                logger.info(f"✅ AI structured response successful: {list(enhanced_data.keys())}")
-            else:
-                # AI service failed or returned unstructured data, use fallback
-                logger.warning(f"AI service returned: {ai_response}")
-                enhanced_data = {}
-        except Exception as e:
-            logger.warning(f"Failed to parse AI response: {e}")
-            enhanced_data = {}
+        enhanced_description = (
+            enhanced_data.get("enhanced_description")
+            or enhanced_data.get("business_description")
+            or enhanced_data.get("Description")
+            or enhanced_data.get("Enhanced Description")
+            or current_description
+        )
+        suggested_amenities = (
+            enhanced_data.get("suggested_amenities")
+            or enhanced_data.get("amenities")
+            or enhanced_data.get("Amenities")
+            or []
+        )
+        suggested_services = (
+            enhanced_data.get("suggested_services")
+            or enhanced_data.get("services")
+            or enhanced_data.get("Services")
+            or []
+        )
+        enhanced_specialties = (
+            enhanced_data.get("enhanced_specialties")
+            or enhanced_data.get("local_specialties")
+            or enhanced_data.get("specialties")
+            or enhanced_data.get("Specialties")
+            or []
+        )
+        welcome_message = enhanced_data.get("welcome_message") or enhanced_data.get("Welcome Message") or ""
+
+        if not suggested_amenities:
+            suggested_amenities = [
+                amenity for amenity in default_amenities_for_property()
+                if amenity not in current_amenities
+            ]
+        if not suggested_services:
+            suggested_services = ["guided_tours", "airport_transfer", "cleaning_service"]
+        if not enhanced_specialties:
+            enhanced_specialties = ["Local Culture", "Gastronomy", "Nature Exploration", "Family Activities"]
 
         # Prepare structured response with enhanced content
         response = AIEnhancementResponse(
             success=True,
             enhancement_type=enhancement_type,
             enhanced_content={
-                "description": enhanced_data.get("enhanced_description", current_description),
-                "amenities": enhanced_data.get("suggested_amenities", []),
-                "services": enhanced_data.get("suggested_services", []),
-                "specialties": enhanced_data.get("enhanced_specialties", []),
-                "welcome_message": enhanced_data.get("welcome_message", "")
+                "description": enhanced_description,
+                "amenities": suggested_amenities,
+                "services": suggested_services,
+                "specialties": enhanced_specialties,
+                "welcome_message": welcome_message
             },
             original_data={
                 "description": current_description,
@@ -3072,6 +3135,36 @@ async def enhance_accommodation_description(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to enhance accommodation description"
+        )
+
+
+@router.post("/accommodation/agent/message", response_model=AccommodationAgentMessageResponse)
+async def accommodation_agent_message(
+    request: AccommodationAgentMessageRequest,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Run one focused turn of the Stay-tab accommodation onboarding agent.
+
+    The response contains a reviewable patch; it does not save profile changes.
+    """
+    try:
+        onboarding_service = HostOnboardingService(db)
+        result = await onboarding_service.accommodation_agent_turn(
+            host_id=current_host.id,
+            message=request.message,
+            focused_item_id=request.focused_item_id,
+            checklist_state=[item.model_dump() for item in request.checklist_state],
+            accommodation_snapshot=request.accommodation_snapshot,
+            conversation_history=[msg.model_dump() for msg in request.conversation_history],
+        )
+        return AccommodationAgentMessageResponse(**result)
+    except Exception as e:
+        logger.error("Accommodation agent message error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to run accommodation onboarding agent",
         )
 
 

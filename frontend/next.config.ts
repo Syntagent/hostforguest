@@ -24,12 +24,16 @@ const withPWA = withPWAInit({
   },
 });
 
-const apiProxyTarget = (
-  process.env.API_PROXY_TARGET ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://127.0.0.1:8000"
-)
-  .replace(/\/$/, "");
+const apiProxyTarget = (() => {
+  if (process.env.API_PROXY_TARGET?.trim()) {
+    return process.env.API_PROXY_TARGET.trim().replace(/\/$/, "");
+  }
+  // Local dev: always proxy to local API (ignore NEXT_PUBLIC_API_URL pointing at prod).
+  if (process.env.NODE_ENV === "development") {
+    return "http://127.0.0.1:8000";
+  }
+  return (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+})();
 
 const nextConfig: NextConfig = {
   output: "standalone",

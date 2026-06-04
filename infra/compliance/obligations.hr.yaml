@@ -1,0 +1,266 @@
+# Informativni katalog obveza iznajmljivača u Hrvatskoj (HostForGuest).
+# Nije pravni/porezni savjet — ručno pregledati prije produkcije.
+version: "2026-05-30"
+last_reviewed: "2026-05-30"
+
+scenarios:
+  - id: in_pdv
+    label_hr: "U sustavu PDV-a"
+  - id: uses_ota
+    label_hr: "Iznajmljujem preko Bookinga / Airbnb / OTA"
+  - id: business_obrt
+    label_hr: "Obrt"
+  - id: business_jdoo
+    label_hr: "j.d.o.o. ili d.o.o."
+  - id: business_fizicka
+    label_hr: "Fizička osoba (nije obrt)"
+  - id: tz_member
+    label_hr: "Član turističke zajednice (TZ)"
+  - id: multiple_units
+    label_hr: "Više smještajnih jedinica"
+  - id: short_term_rental
+    label_hr: "Kratkoročni najam turistima"
+  - id: novasol
+    label_hr: "Novasol (agencija za iznajmljivanje)"
+
+categories:
+  - id: guest_registration
+    label_hr: "Registracija gostiju"
+    items:
+      - id: evisitor_registration
+        label_hr: "eVisitor — prijava boravka gostiju"
+        summary_hr: "Svakog gosta treba prijaviti u sustav eVisitor prije ili na dan dolaska."
+        detail_hr: "Voditelj smještaja obvezan je evidentirati strane i domaće goste u eVisitor sustavu Ministarstva unutarnjih poslova. U HostForGuest možete pripremiti podatke po grupi gostiju."
+        applies_when: [always, evisitor_croatia, novasol]
+        deep_link: guests_evisitor
+        official_links:
+          - title: "eVisitor — Ministarstvo unutarnjih poslova"
+            url: "https://www.evisitor.hr/"
+          - title: "Upute za eVisitor"
+            url: "https://www.evisitor.hr/eVisitorWiki"
+      - id: guest_records_retention
+        label_hr: "Evidencija i čuvanje podataka o gostima"
+        summary_hr: "Čuvajte podatke iz prijava i identifikacijskih dokumenata prema propisima."
+        detail_hr: "Podaci iz eVisitor prijava i kopije dokumenata čuvaju se u skladu s propisima o turizmu i zaštiti podataka."
+        applies_when: [always]
+        deep_link: external
+        official_links:
+          - title: "Zakon o pružanju usluga u turizmu"
+            url: "https://narodne-novine.nn.hr/"
+
+  - id: tourism_levies
+    label_hr: "Turistička članarina i boravišna pristojba"
+    items:
+      - id: tz_membership_fee
+        label_hr: "Članarina turističke zajednice (TZ)"
+        summary_hr: "Godišnja članarina lokalnoj turističkoj zajednici za pružatelje usluga smještaja."
+        detail_hr: "Iznajmljivači koji pružaju usluge smještaja obično su obvezni plaćati godišnju članarinu nadležnoj turističkoj zajednici. Iznos i rokovi ovise o lokalnoj odluci TZ."
+        applies_when: [always, tz_member, short_term_rental, novasol]
+        deep_link: external
+        official_links:
+          - title: "Hrvatska turistička zajednica"
+            url: "https://www.htz.hr/"
+      - id: tourist_tax
+        label_hr: "Boravišna pristojba (turistička pristojba)"
+        summary_hr: "Naplata i uplata boravišne pristojbe za goste prema lokalnoj odluci."
+        detail_hr: "Voditelj smještaja naplaćuje boravišnu pristojbu od gostiju (osim oslobođenih kategorija) i redovito je uplaćuje prema pravilima općine/grada."
+        applies_when: [always, short_term_rental, novasol]
+        deep_link: external
+        official_links:
+          - title: "Informacije HTZ — boravišna pristojba"
+            url: "https://www.htz.hr/"
+
+  - id: agency_novasol
+    label_hr: "Suradnja s Novasolom (agencija)"
+    items:
+      - id: novasol_contract_review
+        label_hr: "Ugovor s Novasolom — tko izdaje račun gostu"
+        summary_hr: "U ugovoru provjerite izdaje li račun gostu vi, Novasol u vaše ime, ili račun agenciji."
+        detail_hr: "Porezna uprava razlikuje model „agencija u vaše ime“ i „agencija u svoje ime“. Od toga ovisi hoće li provizija biti na vašem računu gostu ili na zasebnom računu agencije, te kako knjižiti prihod u Evidenciji prometa (EP)."
+        applies_when: [novasol]
+        related_item_ids: [novasol_ep_reporting, novasol_commission_vat]
+        deep_link: external
+        official_links:
+          - title: "Novasol — portal za iznajmljivače"
+            url: "https://www.novasol.hr/iznajmljivaci"
+          - title: "Porezna — iznajmljivač turistima"
+            url: "https://www.porezna-uprava.hr/hr/iznajmljivac-turistima/4446"
+      - id: novasol_pdv_ident
+        label_hr: "PDV identifikacijski broj (inozemna agencija)"
+        summary_hr: "Kod suradnje s poreznim obveznikom iz EU (npr. Novasol) često trebate zatražiti PDV ID prije početka."
+        detail_hr: "Ako primate uslugu posredovanja od poreznog obveznika iz EU, obično trebate podnijeti zahtjev za PDV identifikacijski broj nadležnoj ispostavi Porezne uprave (najkasnije 15 dana prije početka, prema uputama PU). To ne znači automatski ulazak u sustav PDV-a, ali omogućuje ispravan obračun."
+        applies_when: [novasol]
+        related_item_ids: [novasol_commission_vat, vat_registration]
+        deep_link: external
+        official_links:
+          - title: "Obrazac za PDV ID — Porezna uprava"
+            url: "https://www.porezna-uprava.hr/"
+      - id: novasol_commission_vat
+        label_hr: "PDV na proviziju Novasola (25%)"
+        summary_hr: "Na uslugu posredovanja agencije obračunava se i plaća hrvatski PDV (obično 25%), uz prijave PDV/PDV-S."
+        detail_hr: "Provizija Novasola predstavlja oporezivu uslugu u Hrvatskoj. Obveznik obračuna PDV, vodi evidenciju i podnosi propisane prijave. Model se razlikuje ako ste i sami u sustavu PDV-a — provjerite s računovođom."
+        applies_when: [novasol]
+        related_item_ids: [novasol_pdv_ident, vat_returns]
+        deep_link: external
+        official_links:
+          - title: "Porezna — iznajmljivač turistima"
+            url: "https://www.porezna-uprava.hr/hr/iznajmljivac-turistima/4446"
+      - id: novasol_ep_reporting
+        label_hr: "Evidencija prometa (Obrazac EP)"
+        summary_hr: "Paušalni iznajmljivači bilježe ukupan prihod od iznajmljivanja u EP, prema modelu iz ugovora s agencijom."
+        detail_hr: "Bez obzira tko izdaje račun gostu, u EP se evidentira puni iznos koji predstavlja vaš prihod od smještaja (ovisno o ugovorenom modelu s agencijom). Agencijska provizija knjiži se prema ugovoru — provjerite s računovođom."
+        applies_when: [novasol, business_fizicka]
+        related_item_ids: [novasol_contract_review, income_tax_registration]
+        deep_link: external
+        official_links:
+          - title: "Porezna — iznajmljivač turistima"
+            url: "https://www.porezna-uprava.hr/hr/iznajmljivac-turistima/4446"
+      - id: novasol_evisitor_roles
+        label_hr: "eVisitor — tko prijavljuje goste"
+        summary_hr: "Dogovorite s Novasolom tko operativno prijavljuje goste u eVisitor; zakonska odgovornost ostaje na vlasniku."
+        detail_hr: "Novasol često pomaže oko komunikacije s gostima, ali voditelj smještaja (vlasnik) odgovara za propisnu prijavu boravka. U HostForGuest možete pripremiti podatke i provjeriti jesu li prijave napravljene."
+        applies_when: [novasol]
+        related_item_ids: [evisitor_registration]
+        deep_link: guests_evisitor
+        official_links:
+          - title: "eVisitor"
+            url: "https://www.evisitor.hr/"
+
+  - id: tax_vat
+    label_hr: "Porez i PDV"
+    items:
+      - id: income_tax_registration
+        label_hr: "Porez na dohodak / paušal / obrtni porez"
+        summary_hr: "Odaberite i prijavite način oporezivanja prihoda od iznajmljivanja."
+        detail_hr: "Ovisno o statusu (fizička osoba, obrt, trgovačko društvo) prihod se oporezuje različitim modelom. Provjerite pragove i obveze s Poreznom upravom."
+        applies_when: [always, business_fizicka, business_obrt, business_jdoo]
+        deep_link: external
+        official_links:
+          - title: "Porezna uprava"
+            url: "https://www.porezna-uprava.hr/"
+      - id: vat_registration
+        label_hr: "Ulazak u sustav PDV-a"
+        summary_hr: "Registracija za PDV kad prijeđete prag ili dobrovoljno uđete u sustav."
+        detail_hr: "Kad prihod ili obujam poslovanja pređe propisani prag, ili dobrovoljno odaberete PDV, morate se registrirati, voditi knjige i izdavati račune s PDV-om."
+        applies_when: [in_pdv, business_obrt, business_jdoo]
+        related_item_ids: [vat_invoicing, ota_vat_booking]
+        deep_link: external
+        official_links:
+          - title: "PDV — Porezna uprava"
+            url: "https://www.porezna-uprava.hr/"
+      - id: vat_invoicing
+        label_hr: "Izdavanje računa s PDV-om"
+        summary_hr: "Računi za goste i poslovne partnere moraju sadržavati propisane elemente PDV-a."
+        detail_hr: "U PDV sustavu svaka isporuka usluge smještaja (i povezanih usluga) zahtijeva ispravan račun, evidenciju u knjigama i redovitu prijavu."
+        applies_when: [in_pdv]
+        related_item_ids: [vat_registration, ota_vat_booking]
+        deep_link: external
+        official_links:
+          - title: "Obrazac PDV prijave"
+            url: "https://www.porezna-uprava.hr/"
+      - id: ota_vat_booking
+        label_hr: "PDV i provizije preko Bookinga / OTA"
+        summary_hr: "Provjerite tko izdaje račun gostu i kako se obračunava PDV na proviziju kanala."
+        detail_hr: "Kod prodaje preko OTA kanala (npr. Booking.com) važno je razumjeti tko je obveznik izdavanja računa gostu, kako se prikazuje PDV na platformi i kako se knjiži provizija kanala."
+        applies_when: [in_pdv, uses_ota, novasol]
+        related_item_ids: [vat_invoicing, channel_integration, novasol_commission_vat]
+        deep_link: channels
+        official_links:
+          - title: "Booking.com — tax hub (informativno)"
+            url: "https://partner.booking.com/"
+      - id: vat_returns
+        label_hr: "PDV prijave i rokovi"
+        summary_hr: "Redovite prijave PDV-a (mjesečne ili tromjesečne) u propisanim rokovima."
+        detail_hr: "Obveznici PDV-a podnose prijave prema svom razdoblju oporezivanja. Zakašnjele prijave povlače kamate i moguće sankcije."
+        applies_when: [in_pdv]
+        deep_link: external
+        official_links:
+          - title: "ePorezna"
+            url: "https://www.porezna-uprava.hr/"
+
+  - id: business_activity
+    label_hr: "Djelatnost i računovodstvo"
+    items:
+      - id: activity_registration
+        label_hr: "Prijava djelatnosti iznajmljivanja"
+        summary_hr: "Registracija djelatnosti pružanja usluga smještaja u turizmu."
+        detail_hr: "Prije početka iznajmljivanja trebate imati registriranu odgovarajuću djelatnost (obrt, trgovačko društvo ili drugi dopušteni oblik)."
+        applies_when: [always, short_term_rental]
+        deep_link: external
+        official_links:
+          - title: "HOK — obrt"
+            url: "https://www.hok.hr/"
+      - id: channel_integration
+        label_hr: "Povezivanje Booking / OTA kanala"
+        summary_hr: "Sinkronizacija kalendara i cijena ako prodajete preko kanala."
+        detail_hr: "U HostForGuest tabu Kanali možete povezati Booking.com račun radi dostupnosti i cijena. To ne zamjenjuje porezne obveze, ali olakšava operativu."
+        applies_when: [uses_ota]
+        deep_link: channels
+        official_links: []
+      - id: accounting_records
+        label_hr: "Knjigovodstvo i arhiva računa"
+        summary_hr: "Vodite poslovne knjige i čuvajte dokumentaciju za porezne inspekcije."
+        detail_hr: "Računi, bankovni izvodi i ugovori s gostima/OTA trebaju biti dostupni računovođi i Poreznoj po zahtjevu."
+        applies_when: [business_obrt, business_jdoo, in_pdv]
+        deep_link: external
+        official_links: []
+
+  - id: safety_gdpr
+    label_hr: "Sigurnost i podaci gostiju"
+    items:
+      - id: gdpr_guest_data
+        label_hr: "GDPR — zaštita osobnih podataka gostiju"
+        summary_hr: "Obrada podataka gostiju samo u zakonite svrhe, s informiranjem i sigurnošću."
+        detail_hr: "Podatke iz prijava i komunikacije čuvajte ograničeno vrijeme, osigurajte pristup samo ovlaštenim osobama i imajte osnovu obrade (ugovor, zakonska obveza)."
+        applies_when: [always]
+        deep_link: external
+        official_links:
+          - title: "AZOP — zaštita podataka"
+            url: "https://azop.hr/"
+      - id: fire_safety
+        label_hr: "Protupožarna i osnovna sigurnost objekta"
+        summary_hr: "Detektori dima, upute za goste, evakuacijski plan gdje je potrebno."
+        detail_hr: "Objekt mora zadovoljavati minimalne sigurnosne standarde za smještaj turista. Za veće objekte mogu postojati dodatne obveze."
+        applies_when: [always, multiple_units]
+        deep_link: accommodation
+        official_links: []
+
+pdv_regime_rules:
+  - id: pdv_registration
+    title_hr: "Registracija u sustav PDV-a"
+    body_hr: "Nakon ulaska u PDV obvezni ste na svim isporukama usluga smještaja obračunavati PDV prema važećoj stopi, osim ako postoji izričito oslobođenje. Registracija se prijavljuje Poreznoj upravi."
+  - id: pdv_invoices
+    title_hr: "Računi i knjigovodstvena evidencija"
+    body_hr: "Svaka isporuka zahtijeva račun s propisanim elementima (PDV ID, stopa, osnovica, iznos PDV-a). Vodite ulazne i izlazne račune te knjige PDV-a."
+  - id: pdv_returns_deadlines
+    title_hr: "Prijave PDV-a i rokovi"
+    body_hr: "PDV se prijavljuje za razdoblje oporezivanja (mjesečno ili tromjesečno). Rokovi i obrasci definirani su Pravilnikom o PDV-u; podnošenje je elektronički preko ePorezne."
+  - id: pdv_ota_commission
+    title_hr: "OTA kanali (Booking, Airbnb)"
+    body_hr: "Kod prodaje preko OTA provjerite ugovor s platformom: tko izdaje račun gostu, kako se prikazuje PDV na cijeni, i kako knjižite proviziju kanala. Različiti modeli mogu utjecati na vašu PDV evidenciju."
+  - id: pdv_reverse_charge
+    title_hr: "Usluge iz inozemstva"
+    body_hr: "Ako primite usluge od inozemnih dobavljača (npr. oglašavanje, SaaS), moguće su posebne PDV obveze (prijenos porezne obveze). Provjerite s računovođom."
+  - id: pdv_advisor
+    title_hr: "Savjet računovođe"
+    body_hr: "Pravila PDV-a ovise o vašem statusu, pragovima i vrsti smještaja. Ovaj popis je informativan — za odluke se obratite ovlaštenom računovođi."
+
+novasol_regime_rules:
+  - id: novasol_role
+    title_hr: "Što Novasol radi umjesto vas"
+    body_hr: "Novasol je agencija za marketing, rezervacije, podršku gostima i portal za iznajmljivače. Vi ste vlasnik smještaja — zakonske obveze (eVisitor, boravišna pristojba, članarina TZ, porez) uglavnom ostaju na vama, uz pomoć agencije u operativi."
+  - id: novasol_contract
+    title_hr: "Ugovor određuje model računa"
+    body_hr: "U ugovoru provjerite: tko izdaje račun gostu, tko naplaćuje, kako se knjiži provizija i što ulazi u vašu Evidenciju prometa. Dva uobičajena modela opisuje Porezna uprava (agencija u vaše ime vs. u svoje ime)."
+  - id: novasol_pdv_id
+    title_hr: "PDV identifikacijski broj"
+    body_hr: "Kod suradnje s poreznim obveznikom iz EU (Novasol) često trebate zatražiti PDV ID prije početka sezone. To je odvojeno od pitanja jeste li puni obveznik PDV-a."
+  - id: novasol_commission
+    title_hr: "Provizija i PDV 25%"
+    body_hr: "Na uslugu posredovanja agencije u Hrvatskoj obično se obračunava PDV od 25%. Prijave i rokovi ovise o vašem poreznom statusu — uskladite s računovođom."
+  - id: novasol_still_owner
+    title_hr: "Što i dalje morate vi"
+    body_hr: "Registracija djelatnosti, cjenik u objektu, boravišna pristojba, turistička članarina, eVisitor (izravno ili uz agenciju), porez na dohodak/paušal i sigurnost objekta — provjerite svaku stavku u checklisti kad je Novasol uključen."
+  - id: novasol_advisor
+    title_hr: "Savjet računovođe"
+    body_hr: "Detalji ovise o vašem ugovoru s Novasolom i poreznom statusu. Ovaj pregled je informativan — za konkretan model obratite se računovođi i provjerite aktualni ugovor s Novasolom."

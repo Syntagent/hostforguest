@@ -102,6 +102,11 @@ async def run_weekly_content_scraping() -> Dict[str, Any]:
 
                 logger.info(f"Weekly scraping completed successfully: {results}")
 
+            from app.tasks.event_scraper_tasks import run_daily_event_sync
+
+            event_sync = await run_daily_event_sync()
+            results["event_sync"] = event_sync
+
     except Exception as e:
         error_msg = f"Critical error in weekly content scraping: {e}"
         logger.error(error_msg)

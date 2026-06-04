@@ -13,6 +13,7 @@ import {
   type AttractionGuestReview,
   type Recommendation,
 } from "@/lib/api";
+import { guestFacingFactors, guestFacingReason } from "@/components/guest/guest-recommendation-display";
 import { cn } from "@/lib/utils";
 
 function formatOpeningHours(hours: Record<string, string> | undefined): string[] {
@@ -137,10 +138,9 @@ export const AttractionDetailSheet: React.FC<AttractionDetailSheetProps> = ({
               )}
             </div>
 
-            {recommendation.personalization_factors &&
-            recommendation.personalization_factors.length > 0 ? (
+            {guestFacingFactors(recommendation).length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
-                {recommendation.personalization_factors.map((f, i) => (
+                {guestFacingFactors(recommendation).map((f, i) => (
                   <span
                     key={i}
                     className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
@@ -153,7 +153,7 @@ export const AttractionDetailSheet: React.FC<AttractionDetailSheetProps> = ({
 
             <div className="rounded-2xl bg-primary/10 p-3">
               <p className="text-sm font-semibold text-primary">Why it fits you</p>
-              <p className="mt-1 text-sm text-foreground/90">{recommendation.reason}</p>
+              <p className="mt-1 text-sm text-foreground/90">{guestFacingReason(recommendation)}</p>
             </div>
 
             {a?.description?.trim() ? (

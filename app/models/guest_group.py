@@ -325,6 +325,7 @@ class GuestGroupResponse(GuestGroupBase):
     access_code: Optional[str] = Field(default=None, max_length=32)
     # Current accommodation/property for this group (from host_profiles)
     accommodation: Optional[GuestGroupAccommodationSummary] = None
+    saved_event_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
 
     @field_validator(
         "age_groups",

@@ -5,6 +5,7 @@ Helps hosts create authentic profiles, local stories, and attraction recommendat
 using AI assistance while maintaining their personal touch and local expertise.
 """
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,12 +127,15 @@ Please create suggestions that reflect MY actual name, experience and story, not
             ]
             
             # Use enhanced structured response with robust fallback handling
-            ai_response = await self.ai_service.generate_structured_response(
-                host_id="onboarding",  # Special ID for onboarding
-                messages=messages,
-                context=context,
-                response_schema=AIProfileSuggestions,  # Use Pydantic model for structure
-                use_reasoning=False  # Use fast model for better performance
+            ai_response = await asyncio.wait_for(
+                self.ai_service.generate_structured_response(
+                    host_id="onboarding",  # Special ID for onboarding
+                    messages=messages,
+                    context=context,
+                    response_schema=AIProfileSuggestions,  # Use Pydantic model for structure
+                    use_reasoning=False  # Use fast model for better performance
+                ),
+                timeout=15,
             )
             
             if ai_response.get("success"):
@@ -153,11 +157,14 @@ Please create suggestions that reflect MY actual name, experience and story, not
                 # Fallback to manual parsing approach
                 logger.info("Attempting fallback to regular chat response with manual parsing")
                 
-                fallback_response = await self.ai_service.generate_chat_response(
-                    host_id="onboarding",
-                    messages=messages,
-                    context=context,
-                    use_reasoning=False
+                fallback_response = await asyncio.wait_for(
+                    self.ai_service.generate_chat_response(
+                        host_id="onboarding",
+                        messages=messages,
+                        context=context,
+                        use_reasoning=False
+                    ),
+                    timeout=15,
                 )
                 
                 if fallback_response.get("success"):
@@ -185,7 +192,10 @@ Please create suggestions that reflect MY actual name, experience and story, not
                 }
                 
         except Exception as e:
-            logger.error(f"Error generating host profile suggestions: {e}")
+            if isinstance(e, asyncio.TimeoutError):
+                logger.warning("AI profile generation timed out; using rule-based fallback")
+            else:
+                logger.error(f"Error generating host profile suggestions: {e}")
             return {
                 "success": True,
                 "suggestions": self._rule_based_profile_suggestions(
@@ -878,18 +888,21 @@ Focus on practical improvements that the host can easily implement."""
         story = (host_info.get("location_story") or "").strip()
         property_name = host_info.get("property_name") or host_info.get("business_name") or "our place"
         return {
+            "business_description": [
+                story or f"{property_name} offers an authentic stay in {city} with personal recommendations from a local host."
+            ],
             "welcome_message": [
                 f"Welcome to {city}! I'm {first} — looking forward to hosting you at {property_name}."
             ],
-            "description": [
-                story or f"Authentic stay in {city} with personal recommendations from a local host."
+            "host_story": [
+                story or f"{first} shares local knowledge of {city}, from quiet waterfront walks to favorite places to eat."
             ],
-            "local_tips": [
+            "local_specialties": [
                 f"Stroll through {city} and the waterfront",
                 "Day trip to Opatija or Učka Nature Park",
                 "Try local seafood and Istrian wine",
             ],
-            "guest_experience": [
+            "experience_promise": [
                 "Families and couples who enjoy culture, nature, and relaxed coastal stays"
             ],
         }
@@ -1604,4 +1617,468 @@ Focus on practical improvements that the host can easily implement."""
             
         except Exception as e:
             logger.error(f"Error getting host profile for {host_id}: {e}")
-            return None 
+            return None
+
+    def _resolve_focused_item_from_message(self, message: str, focused_item_id: str) -> str:
+        """
+        When the host names another checklist topic in free text, follow that intent
+        instead of stuffing narrative into the wrong field (e.g. property_name).
+        """
+        text = (message or "").lower()
+        if any(
+            phrase in text
+            for phrase in (
+                "property story",
+                "location story",
+                "guest-facing description",
+                "about the story",
+                "our story",
+                "the story",
+                "description",
+            )
+        ) and not any(
+            phrase in text
+            for phrase in ("property name", "public name", "listing name")
+        ):
+            return "location_story"
+        if any(phrase in text for phrase in ("welcome message", "greeting message", "greet guests")):
+            return "welcome_message"
+        if any(phrase in text for phrase in ("property name", "public name", "listing name")):
+            return "property_name"
+        if any(phrase in text for phrase in ("amenities", "amenity", "wifi", "parking", "air conditioning")):
+            return "amenities"
+        if any(phrase in text for phrase in ("services", "breakfast", "transfer", "check-in help")):
+            return "services"
+        return focused_item_id
+
+    def _looks_like_property_name_value(self, text: str) -> bool:
+        """Property names are short labels — never treat story instructions as a name."""
+        cleaned = (text or "").strip()
+        if len(cleaned) > 80:
+            return False
+        lower = cleaned.lower()
+        story_markers = (
+            "property story",
+            "location story",
+            "emphasize",
+            "emphasis",
+            "i want to",
+            "in the story",
+            "our story",
+            "description",
+            "nature",
+            "učka",
+            "ucka",
+            "mountain",
+            "sea",
+        )
+        return not any(marker in lower for marker in story_markers)
+
+    def _draft_location_story_update(
+        self,
+        existing: str,
+        instruction: str,
+        city: str,
+        property_type: str,
+    ) -> str:
+        """Build a guest-facing story draft from host instructions (deterministic fallback)."""
+        base = (existing or "").strip()
+        note = (instruction or "").strip()
+        low = note.lower()
+        themes: List[str] = []
+        if "nature" in low or "natural" in low:
+            themes.append("the lush natural surroundings")
+        if any(word in low for word in ("sea", "coast", "adriatic", "beach", "waterfront")):
+            themes.append("the Adriatic sea")
+        if "učka" in low or "ucka" in low:
+            themes.append("Mount Učka")
+        place = city or "Lovran"
+        stay_type = property_type or "stay"
+        if themes:
+            theme_line = (
+                ", ".join(themes[:-1]) + f", and {themes[-1]}"
+                if len(themes) > 1
+                else themes[0]
+            )
+            if base:
+                lead = base.split(".")[0].strip().rstrip(".")
+                return (
+                    f"{lead}. {theme_line.capitalize()} are central to the experience — "
+                    f"an ideal {stay_type} in {place} for guests who want coast, trails, and calm nature nearby."
+                )
+            return (
+                f"Our {stay_type} in {place} is embraced by stunning landscapes where {theme_line} "
+                f"are always close — a true paradise for nature lovers."
+            )
+        if base and note and note.lower() not in base.lower():
+            return f"{base.rstrip('.')}. {note}"
+        if base:
+            return base
+        if note:
+            return note
+        return (
+            f"Our {stay_type} in {place} offers an authentic local stay with practical comfort "
+            f"and easy access to coast and countryside."
+        )
+
+    async def accommodation_agent_turn(
+        self,
+        host_id: uuid.UUID,
+        message: str,
+        focused_item_id: Optional[str],
+        checklist_state: List[Dict[str, Any]],
+        accommodation_snapshot: Dict[str, Any],
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate one patch-safe Stay-tab onboarding agent turn.
+
+        The agent is intentionally constrained: it can suggest a profile patch,
+        but the frontend must still preview/apply/save it explicitly.
+        """
+        conversation_history = conversation_history or []
+        agent_context = accommodation_snapshot.get("_agent_context") if isinstance(accommodation_snapshot, dict) else {}
+        if not isinstance(agent_context, dict):
+            agent_context = {}
+        focused_item_id = focused_item_id or self._next_missing_item(checklist_state) or "location_story"
+        focused_item_id = self._resolve_focused_item_from_message(message, focused_item_id)
+        allowed_fields = self._allowed_patch_fields_for_item(focused_item_id)
+        fallback = self._fallback_agent_turn(
+            message=message,
+            focused_item_id=focused_item_id,
+            accommodation_snapshot=accommodation_snapshot,
+        )
+
+        try:
+            class AgentTurnSchema(BaseModel):
+                reply: str = Field(..., description="Short conversational reply to the host")
+                quick_replies: List[str] = Field(default_factory=list, description="Two to four useful next actions")
+                suggested_patch: Dict[str, Any] = Field(default_factory=dict, description="Only allowed accommodation profile fields")
+                actions: List[Dict[str, Any]] = Field(default_factory=list, description="Safe page-domain actions to execute")
+                checklist_updates: List[Dict[str, str]] = Field(default_factory=list)
+                next_focus_id: Optional[str] = None
+
+            profile_context = await self.get_host_profile(host_id) or {}
+            history = "\n".join(
+                f"{m.get('role', 'user')}: {m.get('content', '')}"
+                for m in conversation_history[-8:]
+                if m.get("content")
+            )
+            prompt = f"""
+You are the HostForGuest Stay onboarding agent for Croatian accommodation hosts.
+Your job is to entice the host to share concrete, promotional facts, then convert them into a safe profile patch.
+You are operating inside the Accommodation page, not in a generic chat. Use the page context and action contract.
+
+Focused checklist item: {focused_item_id}
+Allowed patch fields for this turn: {', '.join(allowed_fields)}
+
+If the host message clearly refers to property story / location story / description,
+you MUST use location_story in suggested_patch even when another item was previously focused.
+Never put story instructions into property_name.
+
+Page goal:
+Complete the Accommodation profile so HostForGuest can promote only true, useful facts to guests:
+name/type/capacity, address/GPS, property story, amenities, services, specialties, languages, welcome message, photos, and rules.
+
+Available domain actions:
+- update_draft: create or update the current review draft for allowed fields.
+- replace_draft: replace a list draft with the full corrected list when the host corrects it.
+- move_focus: move to another checklist item only when no unapplied draft needs review.
+- open_fields: ask the UI to expose the matching manual fields when exact structured input is needed.
+- ask_followup: ask one precise question when evidence is missing or ambiguous.
+- no_op: acknowledge without changing state.
+
+Action rules:
+- Always choose the action that matches the page goal, not a generic chat answer.
+- When a patch is produced, include update_draft or replace_draft and keep focus on that item until the host applies/reviews it.
+- Do not jump to another item while a draft exists in _agent_context.pending_patch unless the host explicitly confirms/applies it.
+- If user input corrects a draft, return the full corrected replacement list in suggested_patch and use replace_draft.
+- If user asks to edit exact values manually, use open_fields with the checklist target.
+
+Rules:
+1. Ask or answer conversationally in 1-3 short sentences.
+2. Do not invent facts. Use only the host message, snapshot, and existing profile context.
+3. Return a suggested_patch with ONLY the allowed fields. Omit fields that are not supported by evidence.
+4. If the host gives a useful fact, mark the focused checklist item as draft.
+5. Suggest the next highest-value missing checklist item.
+6. Prefer warm Croatian hospitality wording, but keep the host's authentic voice.
+7. If _agent_context contains visible_options and pending_patch, behave like a conversational agent:
+   - Interpret corrections against the pending draft, not as a fresh answer.
+   - "all of them" / "everything" means all visible_options.
+   - "actually no X", "not X", "without X", or "except X" means remove X from the pending draft.
+   - For list fields, return the full corrected replacement list, not only the changed item.
+   - Never put meta-phrases like "all of them" or "actually no pool" into the profile patch.
+
+Existing profile context:
+{profile_context}
+
+Accommodation snapshot:
+{accommodation_snapshot}
+
+Agent UI context:
+{agent_context}
+
+Checklist state:
+{checklist_state}
+
+Recent conversation:
+{history or 'No prior turns.'}
+
+Host message:
+{message}
+"""
+
+            ai_response = await asyncio.wait_for(
+                self.ai_service.generate_structured_response(
+                    host_id=str(host_id),
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Return only structured data for a patch-safe accommodation onboarding agent.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    context={
+                        "focused_item_id": focused_item_id,
+                        "allowed_fields": allowed_fields,
+                        "city": accommodation_snapshot.get("city"),
+                    },
+                    response_schema=AgentTurnSchema,
+                    use_reasoning=False,
+                ),
+                timeout=18,
+            )
+
+            if not ai_response.get("success"):
+                return fallback
+
+            structured = ai_response.get("structured_data") or {}
+            raw_patch = structured.get("suggested_patch") or {}
+            safe_patch = {
+                key: value
+                for key, value in raw_patch.items()
+                if key in allowed_fields and value not in (None, "", [])
+            }
+            if not safe_patch and not agent_context.get("visible_options"):
+                safe_patch = fallback["suggested_patch"]
+
+            checklist_updates = self._normalize_checklist_updates(
+                structured.get("checklist_updates") or []
+            )
+            if safe_patch and not checklist_updates:
+                checklist_updates = [{"id": focused_item_id, "status": "draft"}]
+            actions = self._sanitize_agent_actions(
+                structured.get("actions") or [],
+                allowed_fields=allowed_fields,
+                fallback_patch=safe_patch,
+                focused_item_id=focused_item_id,
+            )
+            if safe_patch and not actions:
+                action_name = "replace_draft" if agent_context.get("pending_patch") else "update_draft"
+                actions = [
+                    {
+                        "action": action_name,
+                        "target_item_id": focused_item_id,
+                        "patch": safe_patch,
+                        "reason": "Update the review draft for the current checklist item.",
+                    }
+                ]
+
+            return {
+                "success": True,
+                "reply": structured.get("reply") or fallback["reply"],
+                "quick_replies": (structured.get("quick_replies") or fallback["quick_replies"])[:4],
+                "suggested_patch": safe_patch,
+                "suggestion_options": [
+                    {
+                        "id": "primary",
+                        "label": "Apply this draft",
+                        "patch": safe_patch,
+                    }
+                ] if safe_patch else [],
+                "actions": actions,
+                "checklist_updates": checklist_updates,
+                "next_focus_id": structured.get("next_focus_id") or fallback["next_focus_id"],
+                "metadata": {
+                    "provider": ai_response.get("provider", "unknown"),
+                    "model": ai_response.get("model", "unknown"),
+                    "focused_item_id": focused_item_id,
+                    "allowed_fields": allowed_fields,
+                },
+            }
+        except Exception as e:
+            logger.warning("Accommodation agent AI turn failed, using fallback: %s", e)
+            return fallback
+
+    def _normalize_checklist_updates(self, updates: List[Any]) -> List[Dict[str, str]]:
+        """Map model synonyms (e.g. drafted) to API checklist statuses."""
+        allowed = {"missing", "in_progress", "draft", "done", "skipped"}
+        aliases = {
+            "drafted": "draft",
+            "in-progress": "in_progress",
+            "in progress": "in_progress",
+            "complete": "done",
+            "completed": "done",
+        }
+        normalized: List[Dict[str, str]] = []
+        for item in updates:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                continue
+            raw_status = str(item.get("status") or "draft").strip().lower()
+            status = aliases.get(raw_status, raw_status)
+            if status not in allowed:
+                status = "draft"
+            normalized.append({"id": item_id, "status": status})
+        return normalized
+
+    def _sanitize_agent_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        allowed_fields: List[str],
+        fallback_patch: Dict[str, Any],
+        focused_item_id: str,
+    ) -> List[Dict[str, Any]]:
+        allowed_actions = {"update_draft", "replace_draft", "move_focus", "open_fields", "ask_followup", "no_op"}
+        safe_actions: List[Dict[str, Any]] = []
+        for action in actions[:4]:
+            if not isinstance(action, dict):
+                continue
+            name = action.get("action")
+            if name not in allowed_actions:
+                continue
+            raw_patch = action.get("patch") if isinstance(action.get("patch"), dict) else {}
+            safe_patch = {
+                key: value
+                for key, value in raw_patch.items()
+                if key in allowed_fields and value not in (None, "", [])
+            }
+            if name in {"update_draft", "replace_draft"}:
+                if not safe_patch:
+                    safe_patch = fallback_patch
+                if not safe_patch:
+                    continue
+            safe_actions.append(
+                {
+                    "action": name,
+                    "target_item_id": action.get("target_item_id") or focused_item_id,
+                    "field": action.get("field"),
+                    "patch": safe_patch or None,
+                    "reason": action.get("reason"),
+                }
+            )
+        return safe_actions
+
+    def _next_missing_item(self, checklist_state: List[Dict[str, Any]]) -> Optional[str]:
+        for item in checklist_state:
+            if item.get("status") in {"missing", "in_progress"}:
+                return item.get("id")
+        return None
+
+    def _allowed_patch_fields_for_item(self, item_id: str) -> List[str]:
+        mapping = {
+            "property_name": ["property_name"],
+            "property_type": ["property_type"],
+            "capacity": ["max_guests", "number_of_rooms"],
+            "location_core": ["city", "county", "address"],
+            "gps": ["latitude", "longitude"],
+            "location_story": ["location_story"],
+            "amenities": ["amenities"],
+            "services": ["services_offered"],
+            "specialties": ["expertise_areas"],
+            "languages": ["languages"],
+            "welcome_message": ["welcome_message"],
+            "gallery": ["gallery_images"],
+            "rules": [],
+        }
+        return mapping.get(item_id, ["location_story", "amenities", "services_offered", "expertise_areas"])
+
+    def _fallback_agent_turn(
+        self,
+        message: str,
+        focused_item_id: str,
+        accommodation_snapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        city = accommodation_snapshot.get("city") or "your area"
+        property_type = accommodation_snapshot.get("property_type") or "property"
+        reply_templates = {
+            "property_name": "Great. What is the exact name guests should see for your place?",
+            "property_type": "Let's make the property type clear so guests understand the stay immediately.",
+            "capacity": "Tell me how many guests can sleep comfortably and how many rooms they can use.",
+            "location_core": "The location is important for trust. Share the city, county, and guest-facing address.",
+            "gps": "GPS helps distance-based recommendations. Add or confirm the exact map pin.",
+            "location_story": "That gives us a useful angle. I drafted a warmer guest-facing description from what you shared.",
+            "amenities": "Amenities make the listing easier to choose. Which practical comforts should guests know about?",
+            "services": "Services can become strong selling points. Tell me what you can arrange for guests.",
+            "specialties": "Your local knowledge is a differentiator. What do guests usually ask you about?",
+            "languages": "Language support builds confidence. Which languages can you comfortably use with guests?",
+            "welcome_message": "A short welcome message makes the stay feel personal before guests arrive.",
+            "gallery": "Photos help guests decide quickly. Add at least one clear property photo.",
+            "rules": "House rules reduce confusion. Confirm check-in, check-out, quiet hours, and pet policy.",
+        }
+        patch: Dict[str, Any] = {}
+        text = (message or "").strip()
+        agent_context = accommodation_snapshot.get("_agent_context") if isinstance(accommodation_snapshot, dict) else {}
+        guided_options_present = isinstance(agent_context, dict) and bool(agent_context.get("visible_options"))
+        if text:
+            if focused_item_id == "location_story":
+                patch["location_story"] = self._draft_location_story_update(
+                    existing=accommodation_snapshot.get("location_story") or "",
+                    instruction=text,
+                    city=city,
+                    property_type=property_type,
+                )
+            elif focused_item_id == "welcome_message":
+                patch["welcome_message"] = text
+            elif focused_item_id == "property_name" and self._looks_like_property_name_value(text):
+                patch["property_name"] = text[:120]
+            elif focused_item_id == "property_name":
+                patch["location_story"] = self._draft_location_story_update(
+                    existing=accommodation_snapshot.get("location_story") or "",
+                    instruction=text,
+                    city=city,
+                    property_type=property_type,
+                )
+                focused_item_id = "location_story"
+            elif focused_item_id == "amenities" and not guided_options_present:
+                patch["amenities"] = self._split_host_list(text)
+            elif focused_item_id == "services" and not guided_options_present:
+                patch["services_offered"] = self._split_host_list(text)
+            elif focused_item_id == "specialties" and not guided_options_present:
+                patch["expertise_areas"] = self._split_host_list(text)
+            elif focused_item_id == "languages" and not guided_options_present:
+                patch["languages"] = self._split_host_list(text)
+        if focused_item_id == "location_story" and not patch:
+            patch["location_story"] = (
+                f"Stay in a welcoming {property_type} in {city}, with local tips and practical comfort for an easy Croatian holiday."
+            )
+
+        next_focus = "amenities" if focused_item_id == "location_story" else "location_story"
+        return {
+            "success": True,
+            "reply": reply_templates.get(focused_item_id, "Tell me the most important fact guests should know."),
+            "quick_replies": ["Apply draft", "Make it warmer", "Skip for now"],
+            "suggested_patch": patch,
+            "suggestion_options": [{"id": "fallback", "label": "Apply draft", "patch": patch}] if patch else [],
+            "actions": [
+                {
+                    "action": "update_draft",
+                    "target_item_id": focused_item_id,
+                    "patch": patch,
+                    "reason": "Deterministic fallback draft; AI provider was unavailable.",
+                }
+            ] if patch else [{"action": "ask_followup", "target_item_id": focused_item_id}],
+            "checklist_updates": [{"id": focused_item_id, "status": "draft"}] if patch else [],
+            "next_focus_id": next_focus,
+            "metadata": {"provider": "fallback", "focused_item_id": focused_item_id},
+        }
+
+    def _split_host_list(self, text: str) -> List[str]:
+        return [
+            item.strip().lower().replace(" ", "_")
+            for chunk in text.replace(";", ",").split(",")
+            for item in [chunk.strip()]
+            if item
+        ][:12]

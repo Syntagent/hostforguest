@@ -152,5 +152,12 @@ async def test_dashboard_data_consistency(async_client: AsyncClient):
     assert analytics_data["guest_groups"]["total"] == len(groups_data)
     assert analytics_data["attractions"]["total"] == len(attractions_data)
 
-    active_groups = len([g for g in groups_data if g.get("status") == "active"])
-    assert analytics_data["guest_groups"]["active"] == active_groups
+    from app.services.guest_group_stay import is_in_stay
+
+    class _G:
+        def __init__(self, d):
+            self.check_in_date = d.get("check_in_date")
+            self.check_out_date = d.get("check_out_date")
+
+    in_stay = len([g for g in groups_data if is_in_stay(_G(g))])
+    assert analytics_data["guest_groups"]["active"] == in_stay

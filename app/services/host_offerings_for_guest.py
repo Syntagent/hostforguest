@@ -295,13 +295,40 @@ def build_host_offerings_payload(
     elif host.max_group_size is not None:
         max_guests_stay = host.max_group_size
 
+    property_rules: Dict[str, Any] = {}
+    if profile and getattr(profile, "property_rules", None):
+        raw_rules = profile.property_rules
+        if isinstance(raw_rules, dict):
+            property_rules = raw_rules
+
+    gallery_images: list = []
+    if profile and profile.gallery_images:
+        gallery_images = list(profile.gallery_images) if isinstance(profile.gallery_images, list) else []
+
+    services_offered: list = []
+    if profile and profile.services_offered:
+        services_offered = list(profile.services_offered) if isinstance(profile.services_offered, list) else []
+
+    trusted_partners: list = []
+    if profile and profile.trusted_partners:
+        trusted_partners = list(profile.trusted_partners) if isinstance(profile.trusted_partners, list) else []
+
+    special_offers: list = []
+    if profile and profile.special_offers:
+        special_offers = list(profile.special_offers) if isinstance(profile.special_offers, list) else []
+
     host_offerings: Dict[str, Any] = {
         "stay_info": {
             "property_name": property_name,
+            "property_type": getattr(profile, "property_type", None) if profile else None,
+            "number_of_rooms": getattr(profile, "number_of_rooms", None) if profile else None,
             "address": property_address,
             "city": stay_city or host_city,
             "region": region,
             "amenities": amenities,
+            "services_offered": services_offered,
+            "gallery_images": gallery_images,
+            "property_rules": property_rules,
             "max_guests": max_guests_stay,
         },
         "host_info": {
@@ -351,5 +378,10 @@ def build_host_offerings_payload(
             "property_name": getattr(profile, "property_name", None),
             "location_story": getattr(profile, "location_story", None),
             "guest_testimonials": getattr(profile, "guest_testimonials", None) or [],
+            "profile_image_url": getattr(profile, "profile_image_url", None),
         }
+    if trusted_partners:
+        host_offerings["trusted_partners"] = trusted_partners
+    if special_offers:
+        host_offerings["special_offers"] = special_offers
     return host_offerings

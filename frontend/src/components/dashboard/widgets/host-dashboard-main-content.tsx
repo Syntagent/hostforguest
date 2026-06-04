@@ -14,27 +14,16 @@ import { AttractionsTab } from "@/components/dashboard/attractions-tab";
 import { RoutesTab } from "@/components/dashboard/routes-tab";
 import { MaintenanceTab } from "@/components/dashboard/maintenance-tab";
 import { AdaptationTab } from "@/components/dashboard/adaptation-tab";
+import { ComplianceTab } from "@/components/dashboard/compliance/compliance-tab";
+import type { DashboardTab } from "@/components/dashboard/dashboard-tabs";
 import { AccountTab } from "@/components/dashboard/account-tab";
 import type { Attraction, GuestGroup, HostProfile } from "@/lib/api";
 import type { AccommodationOverview, DashboardStatsCard } from "@/components/dashboard/dashboard-types";
-
-type DashboardTab =
-  | "overview"
-  | "accommodation"
-  | "channels"
-  | "groups"
-  | "attractions"
-  | "routes"
-  | "maintenance"
-  | "adaptation"
-  | "insights"
-  | "map"
-  | "discover"
-  | "cleaning"
-  | "account";
+type DashboardTabWithAccount = DashboardTab | "account";
 
 interface HostDashboardMainContentProps {
-  activeTab: DashboardTab;
+  activeTab: DashboardTabWithAccount;
+  hostName: string;
   statsCards: DashboardStatsCard[];
   guestGroups: GuestGroup[];
   realtimeUpdates: Array<{ id: string; title: string; content: string; description?: string; created_at: string }>;
@@ -47,6 +36,8 @@ interface HostDashboardMainContentProps {
   onViewGroup: (group: GuestGroup) => void;
   onCopyAccessCode: (code: string) => void;
   onRegenerateAccessCode: (groupId: string) => void;
+  onDeleteGroup: (group: GuestGroup) => void;
+  deletingGroupId: string | null;
   regeneratingGroupId: string | null;
   attractions: Attraction[];
   openCreateAttractionModal: () => void;
@@ -64,10 +55,12 @@ interface HostDashboardMainContentProps {
     setProfile: React.Dispatch<React.SetStateAction<HostProfile | null>>;
     profile: HostProfile | null;
   }>;
+  onNavigateTab: (tab: DashboardTab, extraQuery?: string) => void;
 }
 
 export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> = ({
   activeTab,
+  hostName,
   statsCards,
   guestGroups,
   realtimeUpdates,
@@ -80,6 +73,8 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
   onViewGroup,
   onCopyAccessCode,
   onRegenerateAccessCode,
+  onDeleteGroup,
+  deletingGroupId,
   regeneratingGroupId,
   attractions,
   openCreateAttractionModal,
@@ -92,11 +87,13 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
   onPlaceSelect,
   onAddPlaceToAttractions,
   AccommodationTab,
+  onNavigateTab,
 }) => {
   const renderTab = () => {
     if (activeTab === "overview") {
       return (
         <OverviewTab
+          hostName={hostName}
           statsCards={statsCards}
           guestGroups={guestGroups}
           realtimeUpdates={realtimeUpdates}
@@ -134,6 +131,8 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
           onViewGroup={onViewGroup}
           onCopyAccessCode={onCopyAccessCode}
           onRegenerateAccessCode={onRegenerateAccessCode}
+          onDeleteGroup={onDeleteGroup}
+          deletingGroupId={deletingGroupId}
           regeneratingGroupId={regeneratingGroupId}
         />
       );
@@ -176,6 +175,14 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
       return (
         <div className="max-w-4xl">
           <AdaptationTab />
+        </div>
+      );
+    }
+
+    if (activeTab === "compliance") {
+      return (
+        <div className="w-full min-w-0">
+          <ComplianceTab onNavigateTab={onNavigateTab} />
         </div>
       );
     }
@@ -229,7 +236,7 @@ export const HostDashboardMainContent: React.FC<HostDashboardMainContentProps> =
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -8 }}
         transition={{ duration: 0.2 }}
-        className="px-3 pb-4 sm:px-0"
+        className="w-full min-w-0 px-3 pb-4 sm:px-0"
       >
         {renderTab()}
       </motion.section>

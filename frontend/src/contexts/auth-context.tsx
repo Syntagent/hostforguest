@@ -1,20 +1,24 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { authApi, apiClient, Host, normalizeHostFromApi } from '@/lib/api';
+
+export type LoginResult = { ok: true } | { ok: false; error: string };
 
 interface AuthContextType {
   user: Host | null;
   loading: boolean;
   error: string | null;
-  login: (email: string, password: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<LoginResult>;
   logout: () => void;
   logoutAllDevices: () => Promise<boolean>;
   isAuthenticated: boolean;
   clearError: () => void;
+  /** Reload user from session token (e.g. after onboarding registration). */
+  refreshUser: () => Promise<void>;
   // Development helper
-  devLogin: () => Promise<boolean>;
+  devLogin: () => Promise<LoginResult>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -85,9 +89,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const loginMessageForFailure = (email: string, apiError?: string): string => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const devEmail = (
+      process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL || "dev@touristguide.local"
+    ).toLowerCase();
+
+    if (normalizedEmail === devEmail) {
+      return (
+        apiError ||
+        "Dev account not found or wrong password. Start the API with DEV_LOGIN_SEED_ENABLED=true " +
+          "(or DEV_LOGIN_SEED_FORCE=true), or create a host via onboarding."
+      );
+    }
+
+    return apiError || "Invalid email or password. Please try again.";
+  };
+
+  const login = async (email: string, password: string): Promise<LoginResult> => {
     try {
-      // Clear any previous errors
       setError(null);
 
       logDev("🔐 Login attempt for:", email);
@@ -117,65 +137,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           payload.refresh_token ?? null
         );
 
-        logDev("💾 Tokens stored, setting user data...");
-
         const normalized = normalizeHostFromApi(payload.host);
         if (!normalized) {
-          setError("Neispravan odgovor poslužitelja (host). Pokušaj ponovno.");
-          return false;
+          const msg =
+            "Server returned an invalid host profile. Try again or complete onboarding.";
+          setError(msg);
+          return { ok: false, error: msg };
         }
         setUser(normalized);
-        return true;
+        return { ok: true };
       }
 
       logDev("❌ Login failed");
-      setError(
-        response.error ||
-          "Neispravan email ili lozinka. Pokušaj ponovno."
-      );
-      return false;
+      const msg = loginMessageForFailure(email, response.error);
+      setError(msg);
+      return { ok: false, error: msg };
     } catch (error) {
-      console.error('💥 Login failed:', error);
-      setError('Network error occurred. Please check your connection and try again.');
-      return false;
+      console.error("💥 Login failed:", error);
+      const msg =
+        "Network error. Check that the API is running on port 8000 and NEXT_PUBLIC_API_URL is correct.";
+      setError(msg);
+      return { ok: false, error: msg };
     }
   };
 
   // Development helper for automatic login
-  const devLogin = async (): Promise<boolean> => {
+  const devLogin = async (): Promise<LoginResult> => {
     if (process.env.NODE_ENV !== "development") {
-      setError("Development login is disabled in this build.");
-      return false;
+      const msg = "Development login is disabled in this build.";
+      setError(msg);
+      return { ok: false, error: msg };
     }
 
-    try {
-      logDev("🔧 Development: Attempting automatic login...");
+    const testEmail =
+      process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL || "dev@touristguide.local";
+    const testPassword =
+      process.env.NEXT_PUBLIC_DEV_LOGIN_PASSWORD || "devlogin123";
 
-      // Must match backend dev_login_seed_* (see app/core/config.py).
-      const testEmail =
-        process.env.NEXT_PUBLIC_DEV_LOGIN_EMAIL ||
-        'dev@touristguide.local';
-      const testPassword =
-        process.env.NEXT_PUBLIC_DEV_LOGIN_PASSWORD ||
-        'devlogin123';
-
-      logDev(`🔧 Development: Using test credentials for ${testEmail}`);
-
-      const success = await login(testEmail, testPassword);
-
-      if (success) {
-        logDev("✅ Development: Automatic login successful");
-        // After successful login, verify the session
-        await checkAuthStatus();
-        return true;
-      } else {
-        logDev("❌ Development: Automatic login failed");
-        return false;
-      }
-    } catch (error) {
-      console.error('💥 Development: Automatic login error:', error);
-      return false;
+    logDev(`🔧 Development: Using test credentials for ${testEmail}`);
+    const result = await login(testEmail, testPassword);
+    if (result.ok) {
+      await checkAuthStatus();
     }
+    return result;
   };
 
   const logout = async () => {
@@ -211,9 +215,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const clearError = () => {
+  const clearError = useCallback(() => {
     setError(null);
-  };
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    await checkAuthStatus();
+  }, []);
 
   const value: AuthContextType = {
     user,
@@ -224,6 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     logoutAllDevices,
     isAuthenticated,
     clearError,
+    refreshUser,
     devLogin,
   };
 

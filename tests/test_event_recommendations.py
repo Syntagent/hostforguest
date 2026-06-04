@@ -20,7 +20,7 @@ except Exception:
     pass
 
 BASE = os.getenv("API_BASE_URL", "http://127.0.0.1:8006/api").rstrip("/")
-CODE = os.getenv("BEN_GUEST_ACCESS_CODE", "72HQ5TJL")
+CODE = os.getenv("BEN_GUEST_ACCESS_CODE", os.getenv("E2E_GUEST_ACCESS_CODE", "Q4EF3BFW"))
 
 
 @pytest.fixture

@@ -1,13 +1,17 @@
 import { defineConfig } from "@playwright/test";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:3055";
-const apiURL = process.env.PLAYWRIGHT_API_URL || "http://127.0.0.1:8000";
+const apiURL = process.env.PLAYWRIGHT_API_URL || baseURL;
 
 export default defineConfig({
   testDir: ".",
   timeout: 120000,
   workers: 1,
-  testMatch: ["ci-guest-events.spec.ts", "ci-host-dashboard.spec.ts"],
+  testMatch: [
+    "ci-guest-events.spec.ts",
+    "ci-host-dashboard.spec.ts",
+    "ci-onboarding-geocode.spec.ts",
+  ],
   use: {
     baseURL,
     storageState: { cookies: [], origins: [] },

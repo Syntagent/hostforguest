@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Compass, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Compass, MoreHorizontal, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface AppNavItem {
@@ -32,6 +32,14 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   className,
 }) => {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = React.useState(false);
+  const primaryMobileItems = navItems.slice(0, 4);
+  const overflowMobileItems = navItems.slice(4);
+  const isOverflowActive = overflowMobileItems.some((item) => item.id === activeItem);
+  const selectMobileItem = (id: string) => {
+    setMobileMoreOpen(false);
+    onSelectItem(id);
+  };
 
   React.useEffect(() => {
     const media = window.matchMedia("(max-width: 1280px)");
@@ -47,7 +55,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         <aside
           className={cn(
             "relative hidden md:sticky md:top-4 md:block md:h-[calc(100vh-2rem)] md:shrink-0 md:py-4",
-            sidebarCollapsed ? "md:w-20" : "md:w-72"
+            sidebarCollapsed ? "md:w-[4.25rem]" : "md:w-max"
           )}
         >
           <button
@@ -64,51 +72,68 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             )}
           </button>
 
-          <div className="surface-glass flex h-full flex-col p-3">
+          <div
+            className={cn(
+              "surface-glass flex h-full min-h-0 flex-col overflow-hidden",
+              sidebarCollapsed ? "w-full p-2" : "w-max max-w-full p-2"
+            )}
+          >
             <div
               className={cn(
-                "mb-4 rounded-2xl bg-gradient-to-br from-cyan-700 via-sky-700 to-orange-500 text-white",
+                "mb-2 shrink-0 rounded-xl bg-gradient-to-br from-cyan-700 via-sky-700 to-orange-500 text-white",
                 sidebarCollapsed
-                  ? "flex items-center justify-center px-0 py-3"
-                  : "px-4 py-4"
+                  ? "flex items-center justify-center px-0 py-2"
+                  : "px-2 py-2"
               )}
             >
               {sidebarCollapsed ? (
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/20">
-                  <Compass className="h-5 w-5" />
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/20">
+                  <Compass className="h-4 w-4" />
                 </div>
               ) : (
-                <div className="min-w-0">
-                  <p className="text-[11px] uppercase tracking-[0.14em] text-white/80">
-                    HostForGuest
+                <div className="w-max">
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-white/80 whitespace-nowrap">
+                    H4G
                   </p>
-                  <p className="mt-1 text-sm font-semibold leading-tight">Host & Guest Experience</p>
                 </div>
               )}
             </div>
 
-            <nav className="space-y-1.5">
+            <nav
+              className={cn(
+                "min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain",
+                !sidebarCollapsed && "w-max"
+              )}
+              role="tablist"
+              aria-label="Dashboard sections"
+            >
               {navItems.map((item) => {
                 const isActive = item.id === activeItem;
                 return (
                   <button
                     key={item.id}
                     type="button"
+                    role="tab"
                     aria-label={item.label}
-                    aria-current={isActive ? "page" : undefined}
+                    aria-selected={isActive}
+                    data-testid={`app-nav-${item.id}`}
                     onClick={() => onSelectItem(item.id)}
                     className={cn(
-                      "flex w-full items-center rounded-2xl px-4 py-3 text-left text-sm font-medium transition-all",
-                      sidebarCollapsed ? "justify-center" : "gap-3",
+                      "flex items-center rounded-lg text-left text-[13px] font-medium transition-all",
+                      sidebarCollapsed
+                        ? "w-full justify-center px-2 py-2"
+                        : "w-full gap-1.5 px-2 py-1.5",
                       isActive
                         ? "bg-primary text-primary-foreground shadow"
                         : "text-foreground/80 hover:bg-primary/10 hover:text-foreground"
                     )}
                   >
-                    <span className="text-base [&>svg]:h-4 [&>svg]:w-4" aria-hidden>
+                    <span className="shrink-0 [&>svg]:h-4 [&>svg]:w-4" aria-hidden>
                       {item.icon}
                     </span>
-                    {!sidebarCollapsed && <span>{item.label}</span>}
+                    {!sidebarCollapsed && (
+                      <span className="whitespace-nowrap leading-snug">{item.label}</span>
+                    )}
                   </button>
                 );
               })}
@@ -116,34 +141,45 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1 pb-24 md:pb-8">
+        <main className="min-w-0 flex-1 pb-[calc(5.25rem+env(safe-area-inset-bottom))] md:pb-8">
           {(title || subtitle || headerActions) && (
-            <header className="section-shell mb-4 mt-2 flex flex-col gap-3 px-4 py-3 sm:px-5 md:flex-row md:items-center md:justify-between">
-              <div>
-                {title && <h1 className="text-xl font-semibold text-foreground md:text-2xl">{title}</h1>}
-                {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
+            <header className="section-shell mb-2 mt-1 flex items-center justify-between gap-2 px-3 py-2 sm:mb-4 sm:mt-2 sm:px-5 sm:py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-primary text-xs font-bold tracking-tight text-primary-foreground shadow-sm">
+                  H4G
+                </div>
+                <div className="min-w-0">
+                  {title && <h1 className="truncate text-sm font-semibold text-foreground sm:text-lg md:text-2xl">{title}</h1>}
+                  {subtitle && <p className="hidden text-sm text-muted-foreground sm:block">{subtitle}</p>}
+                </div>
               </div>
-              {headerActions && <div className="flex flex-wrap items-center gap-2">{headerActions}</div>}
+              {headerActions && <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">{headerActions}</div>}
             </header>
           )}
           {children}
         </main>
       </div>
 
-      <nav className="surface-glass fixed inset-x-3 bottom-3 z-50 flex items-center gap-1 overflow-x-auto p-1.5 md:hidden">
-        {navItems.map((item) => {
+      <nav
+        className="surface-glass fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 gap-0 rounded-none rounded-t-2xl border-b-0 border-t border-border/60 px-1 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-[0_-10px_30px_-18px_hsl(206_52%_22%_/_0.45)] md:hidden"
+        role="tablist"
+        aria-label="Dashboard sections"
+      >
+        {primaryMobileItems.map((item) => {
           const isActive = item.id === activeItem;
           return (
             <button
               key={item.id}
               type="button"
+              role="tab"
               aria-label={item.label}
-              onClick={() => onSelectItem(item.id)}
+              aria-selected={isActive}
+              data-testid={`app-nav-${item.id}`}
+              onClick={() => selectMobileItem(item.id)}
               className={cn(
-                "flex min-w-[4.25rem] shrink-0 flex-col items-center rounded-xl px-2 py-2.5 text-[11px] font-medium transition-colors",
+                "flex min-w-0 flex-col items-center rounded-xl px-1 py-2.5 text-[11px] font-medium transition-colors",
                 isActive ? "bg-primary text-primary-foreground" : "text-foreground/70 hover:bg-primary/10"
               )}
-              aria-current={isActive ? "page" : undefined}
             >
               <span className="text-base leading-none [&>svg]:h-4 [&>svg]:w-4" aria-hidden>
                 {item.icon}
@@ -152,7 +188,70 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             </button>
           );
         })}
+        {overflowMobileItems.length > 0 && (
+          <button
+            type="button"
+            role="tab"
+            aria-label="More dashboard sections"
+            aria-selected={isOverflowActive}
+            onClick={() => setMobileMoreOpen(true)}
+            className={cn(
+              "flex min-w-0 flex-col items-center rounded-xl px-1 py-2.5 text-[11px] font-medium transition-colors",
+              isOverflowActive ? "bg-primary text-primary-foreground" : "text-foreground/70 hover:bg-primary/10"
+            )}
+          >
+            <span className="text-base leading-none" aria-hidden>
+              <MoreHorizontal className="h-4 w-4" />
+            </span>
+            <span className="mt-1 truncate">More</span>
+          </button>
+        )}
       </nav>
+
+      {mobileMoreOpen && (
+        <div className="fixed inset-0 z-40 bg-black/35 p-3 md:hidden" onClick={() => setMobileMoreOpen(false)}>
+          <div
+            className="surface-glass absolute inset-x-3 bottom-[calc(4.75rem+env(safe-area-inset-bottom))] max-h-[60vh] overflow-y-auto rounded-3xl p-3 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-2 flex items-center justify-between px-1">
+              <p className="text-sm font-semibold text-foreground">More sections</p>
+              <button
+                type="button"
+                onClick={() => setMobileMoreOpen(false)}
+                className="rounded-full p-2 text-muted-foreground transition hover:bg-primary/10 hover:text-foreground"
+                aria-label="Close more sections"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {overflowMobileItems.map((item) => {
+                const isActive = item.id === activeItem;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-testid={`app-nav-${item.id}`}
+                    onClick={() => selectMobileItem(item.id)}
+                    className={cn(
+                      "flex items-center gap-2 rounded-2xl px-3 py-3 text-left text-sm font-medium transition",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background/70 text-foreground/80 hover:bg-primary/10"
+                    )}
+                  >
+                    <span className="[&>svg]:h-4 [&>svg]:w-4" aria-hidden>
+                      {item.icon}
+                    </span>
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

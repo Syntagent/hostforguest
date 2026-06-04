@@ -23,6 +23,9 @@ export interface DashboardAnalytics {
 export interface CreateGroupFormData {
   group_name: string;
   group_size: number;
+  /** YYYY-MM-DD for stay at linked property */
+  check_in_date: string;
+  check_out_date: string;
   preferences: Array<{
     guest_name: string;
     age_range: string;
@@ -61,8 +64,9 @@ export interface DashboardStatsCard {
   value: string | number;
   description: string;
   icon: ReactNode;
-  trend: string;
-  trendUp: boolean;
+  href?: string;
+  trend?: string;
+  trendUp?: boolean;
 }
 
 export interface RealtimeUpdateSnippet {
@@ -72,6 +76,8 @@ export interface RealtimeUpdateSnippet {
   created_at: string;
   description?: string;
   source?: string;
+  start_at?: string;
+  end_at?: string;
   content_type?: string;
   url?: string;
   relevant_cities?: string[];

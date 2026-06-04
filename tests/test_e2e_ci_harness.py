@@ -54,6 +54,12 @@ def test_playwright_ci_config_includes_host_dashboard() -> None:
     assert "ci-host-dashboard.spec.ts" in text
 
 
+def test_ci_host_auth_opens_tabs_via_dashboard_query_param() -> None:
+    text = PW_HOST_AUTH.read_text(encoding="utf-8")
+    assert "dashboard-tab-url" in text
+    assert "dashboardPathForTab" in text
+
+
 def test_ci_host_dashboard_spec_covers_create_group_flow() -> None:
     text = PW_HOST_SPEC.read_text(encoding="utf-8")
     assert "Create New Group" in text

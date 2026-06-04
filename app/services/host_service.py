@@ -31,6 +31,7 @@ from app.models.settings import HostSettings
 from app.core.config import settings
 from app.services.session_service import SessionService
 from app.services.geocoding_service import GeocodingService
+from app.services.maintenance_service import haversine_km
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +55,38 @@ def _coerce_placeholder_gps_to_none(
 
 
 def _apply_geocode_if_needed(profile: HostProfile) -> None:
-    """Fill latitude/longitude from address when GPS was not provided."""
+    """Fill or refresh latitude/longitude from address when GPS missing or stale."""
     clat, clng = _coerce_placeholder_gps_to_none(profile.latitude, profile.longitude)
     profile.latitude, profile.longitude = clat, clng
-    if clat is not None and clng is not None:
-        return
+
     if not ((profile.address or "").strip() or (profile.city or "").strip()):
         return
+
     result = GeocodingService.geocode(
         address=profile.address,
         city=profile.city,
         county=profile.county,
     )
-    if result:
+    if not result:
+        return
+
+    if clat is None or clng is None:
         profile.latitude = result.latitude
         profile.longitude = result.longitude
         logger.info(
             "Geocoded host profile via %s (%s)",
+            result.matched_query,
+            result.precision,
+        )
+        return
+
+    drift_km = haversine_km(clat, clng, result.latitude, result.longitude)
+    if drift_km > 1.5:
+        profile.latitude = result.latitude
+        profile.longitude = result.longitude
+        logger.info(
+            "Refreshed host GPS by %.1f km using %s (%s)",
+            drift_km,
             result.matched_query,
             result.precision,
         )

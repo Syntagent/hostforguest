@@ -8,7 +8,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Button } from "@/components/ui/button";
 import { FeatureSection } from "@/components/ui/feature-section";
 import { cn } from "@/lib/utils";
-import { onboardingApi, authApi, apiClient, API_BASE_URL, locationsApi } from "@/lib/api";
+import { onboardingApi, authApi, API_BASE_URL, hostsApi } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 
 interface OnboardingStep {
   id: number;
@@ -20,15 +21,36 @@ interface OnboardingStep {
 interface HostOnboardingProps {
   className?: string;
   onComplete?: (hostData: any) => void;
+  /** When true, always show registration even if a session exists (e2e / new host signup). */
+  forceRegistration?: boolean;
 }
 
 export const HostOnboarding: React.FC<HostOnboardingProps> = ({
   className,
-  onComplete
+  onComplete,
+  forceRegistration = false,
 }) => {
-  const [currentStep, setCurrentStep] = useState(1); // Skip welcome step, start directly at Basic Info
+  const { user: currentHost, loading: authLoading } = useAuth();
+  const [currentStep, setCurrentStep] = useState(1); // Skip welcome step, start at registration
   const [hostData, setHostData] = useState<any>({});
   const [loading, setLoading] = useState(false);
+  const [authStepApplied, setAuthStepApplied] = useState(false);
+
+  // Signed-in hosts already have an account — skip registration, go to property profile.
+  React.useEffect(() => {
+    if (forceRegistration || authLoading || !currentHost || authStepApplied) return;
+    setHostData((prev: Record<string, unknown>) => ({
+      ...prev,
+      full_name: currentHost.full_name,
+      email: currentHost.email,
+      first_name: currentHost.first_name,
+      last_name: currentHost.last_name,
+      registered: true,
+      host_id: currentHost.id,
+    }));
+    setCurrentStep(2);
+    setAuthStepApplied(true);
+  }, [forceRegistration, authLoading, currentHost, authStepApplied]);
 
   const steps: OnboardingStep[] = [
     {
@@ -98,8 +120,11 @@ export const HostOnboarding: React.FC<HostOnboardingProps> = ({
         city: hostData.city || '',
         region: hostData.region || 'Istria',
         address: hostData.location || hostData.address || '',
+        property_name: hostData.business_name || '',
+        property_type: hostData.property_type || 'apartment',
         coordinates: hostData.coordinates || null,
         interests: hostData.specialties || hostData.interests || [],
+        languages: hostData.languages || [],
         local_experience: hostData.local_experience || null,
         preferred_guests: hostData.preferred_guests || [],
         location_story: hostData.location_story || '',
@@ -238,6 +263,7 @@ const RegistrationStep: React.FC<{
   onNext: () => void;
   onPrev: () => void;
 }> = ({ step, hostData, updateHostData, onNext, onPrev }) => {
+  const { login: authLogin } = useAuth();
   const [formData, setFormData] = useState({
     email: hostData.email || '',
     password: '',
@@ -294,17 +320,9 @@ const RegistrationStep: React.FC<{
       });
 
       if (response.success && response.data) {
-        // Automatically log them in after registration
-        const loginResponse = await authApi.login(formData.email, formData.password);
+        const loginResult = await authLogin(formData.email, formData.password);
 
-        if (loginResponse.success && loginResponse.data) {
-          // Store the session tokens
-          apiClient.setSessionTokens(
-            loginResponse.data.session_token,
-            loginResponse.data.refresh_token
-          );
-
-          // Update host data with registration info
+        if (loginResult.ok) {
           updateHostData({
             email: formData.email,
             full_name: formData.full_name,
@@ -313,11 +331,12 @@ const RegistrationStep: React.FC<{
             registered: true,
             host_id: response.data.id
           });
-
-          // Move to next step
           onNext();
         } else {
-          setError('Registration successful but login failed. Please try logging in manually.');
+          setError(
+            loginResult.error ||
+              "Registration successful but login failed. Please try logging in manually."
+          );
         }
       } else {
         // Handle different error formats
@@ -543,25 +562,37 @@ const BasicInfoStep: React.FC<{
   }, []);
 
   // Validate required fields
-  const validateForm = (): boolean => {
+  const validateForm = (
+    data: typeof formData = formData,
+    geoStatus: typeof geocodeStatus = geocodeStatus
+  ): boolean => {
     const errors: Record<string, string> = {};
 
-    if (!formData.business_name.trim()) {
+    if (!data.business_name.trim()) {
       errors.business_name = 'Property name is required';
     }
-    if (!formData.city.trim()) {
+    if (!data.city.trim()) {
       errors.city = 'City is required';
     }
-    if (!formData.local_experience) {
+    if (!data.local_experience) {
       errors.local_experience = 'Please select how long you\'ve lived here';
     }
-    if (!formData.preferred_guests || formData.preferred_guests.length === 0) {
+    if (!data.preferred_guests || data.preferred_guests.length === 0) {
       errors.preferred_guests = 'Please select at least one guest type';
     }
-    if (!formData.location_story.trim()) {
+    if (!data.location_story.trim()) {
       errors.location_story = 'Please tell us what makes your location special';
-    } else if (formData.location_story.trim().length < 20) {
+    } else if (data.location_story.trim().length < 20) {
       errors.location_story = 'Please write at least 20 characters';
+    }
+
+    if (data.city.trim() && !data.coordinates) {
+      if (geoStatus === "error") {
+        errors.location =
+          "We could not locate this address — refine it or use Verify with Google Places.";
+      } else if (geoStatus !== "loading") {
+        errors.city = "Confirm your location so guests get accurate distances to events.";
+      }
     }
 
     setValidationErrors(errors);
@@ -593,7 +624,7 @@ const BasicInfoStep: React.FC<{
         return;
       }
       setGeocodeStatus("loading");
-      const res = await locationsApi.geocode({
+      const res = await hostsApi.geocodeLocation({
         address: address || city,
         city: city || undefined,
         county: fields?.region ?? formData.region,
@@ -601,7 +632,7 @@ const BasicInfoStep: React.FC<{
       if (res.success && res.data) {
         setFormData((prev) => ({
           ...prev,
-          coordinates: { lat: res.data!.lat, lng: res.data!.lng },
+          coordinates: { lat: res.data!.latitude, lng: res.data!.longitude },
           verified_location: res.data!.precision === "address",
         }));
         setGeocodeStatus(res.data.precision === "address" ? "exact" : "approx");
@@ -669,11 +700,38 @@ const BasicInfoStep: React.FC<{
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAttemptedSubmit(true);
 
-    if (!validateForm()) {
+    let submitData = formData;
+    let submitGeoStatus = geocodeStatus;
+    const address = (formData.location || "").trim();
+    const city = (formData.city || "").trim();
+    if ((address || city) && !formData.coordinates) {
+      setGeocodeStatus("loading");
+      submitGeoStatus = "loading";
+      const res = await hostsApi.geocodeLocation({
+        address: address || city,
+        city: city || undefined,
+        county: formData.region,
+      });
+      if (res.success && res.data) {
+        submitGeoStatus = res.data.precision === "address" ? "exact" : "approx";
+        submitData = {
+          ...formData,
+          coordinates: { lat: res.data.latitude, lng: res.data.longitude },
+          verified_location: res.data.precision === "address",
+        };
+        setFormData(submitData);
+        setGeocodeStatus(submitGeoStatus);
+      } else {
+        submitGeoStatus = "error";
+        setGeocodeStatus("error");
+      }
+    }
+
+    if (!validateForm(submitData, submitGeoStatus)) {
       // Scroll to first error
       const firstErrorField = Object.keys(validationErrors)[0];
       const element = document.querySelector(`[name="${firstErrorField}"]`);
@@ -685,7 +743,7 @@ const BasicInfoStep: React.FC<{
 
     // Clear localStorage on successful submit
     localStorage.removeItem('onboarding_basic_info');
-    updateHostData(formData);
+    updateHostData(submitData);
     onNext();
   };
 

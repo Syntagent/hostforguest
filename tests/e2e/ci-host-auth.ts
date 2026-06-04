@@ -1,4 +1,5 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { dashboardPathForTab, HOST_TAB_LABEL_TO_ID } from "./dashboard-tab-url";
 
 export const DEV_EMAIL =
   process.env.DEV_LOGIN_SEED_EMAIL || "dev@touristguide.local";
@@ -121,11 +122,19 @@ export async function ensureHostDashboard(page: Page, request: APIRequestContext
 }
 
 export async function openHostTab(page: Page, label: string) {
-  let tab = page.getByRole("button", { name: label, exact: true }).first();
-  if (!(await tab.isVisible({ timeout: 3000 }).catch(() => false))) {
-    throw new Error(`Host tab "${label}" not visible on dashboard`);
+  const tabId = HOST_TAB_LABEL_TO_ID[label];
+  if (!tabId) {
+    throw new Error(`Unknown host dashboard tab label: ${label}`);
   }
-  await tab.scrollIntoViewIfNeeded();
-  await tab.click({ timeout: 30000 });
-  await page.waitForTimeout(300);
+  await page.goto(dashboardPathForTab(label), {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  if (tabId === "overview") {
+    await expect(page).not.toHaveURL(/[?&]tab=/);
+  } else {
+    await expect(page).toHaveURL(new RegExp(`[?&]tab=${tabId}(&|$|#)`));
+  }
+  const tabButton = page.getByRole("button", { name: label, exact: true }).first();
+  await expect(tabButton).toBeVisible({ timeout: 30000 });
 }

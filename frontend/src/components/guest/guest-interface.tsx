@@ -11,9 +11,15 @@ import { cn } from "@/lib/utils";
 import { AppLayout } from "@/components/layout/app-layout";
 import { AttractionDetailSheet } from "@/components/guest/AttractionDetailSheet";
 import {
+  guestFacingFactors,
+  guestFacingReason,
+  isGuestVisibleRecommendation,
+} from "@/components/guest/guest-recommendation-display";
+import {
   AlertTriangle,
   Compass,
   Handshake,
+  Home,
   Landmark,
   Map as MapIcon,
   MapPin,
@@ -52,11 +58,16 @@ import {
   type ItineraryActivity,
   type GuestEventRecommendation,
 } from "@/lib/api";
+import { formatGuestDistanceLabel } from "@/lib/guest-distance";
+import { resolveGuestLocale, type GuestLocale } from "@/lib/guest-i18n";
 import {
   GuestEventsTab,
   GuestEventsPreview,
   resolveGuestCity,
 } from "@/components/guest/guest-events-section";
+import { GuestStayTab } from "@/components/guest/guest-stay-tab";
+import { GuestTodayStrip } from "@/components/guest/guest-today-strip";
+import { GuestAssistantFab } from "@/components/guest/guest-assistant-fab";
 
 const GuestMap = dynamic(
   () =>
@@ -71,6 +82,7 @@ interface GuestInterfaceProps {
 
 type GuestTab =
   | "welcome"
+  | "stay"
   | "events"
   | "recommendations"
   | "itinerary"
@@ -232,12 +244,18 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
   const [itineraries, setItineraries] = useState<Itinerary[]>([]);
   const [hostOfferings, setHostOfferings] = useState<GuestHostOfferingsPayload | null>(null);
   const [eventRecommendations, setEventRecommendations] = useState<GuestEventRecommendation[]>([]);
+  const [eventStayWindow, setEventStayWindow] = useState<{
+    check_in?: string | null;
+    check_out?: string | null;
+    inferred?: boolean;
+  } | null>(null);
   const [savedEventIds, setSavedEventIds] = useState<string[]>([]);
   const [savedEventDetails, setSavedEventDetails] = useState<Record<string, SavedEventMetadata>>({});
   const [guestPreferences, setGuestPreferences] = useState<GuestPreferenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [contentWarning, setContentWarning] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<GuestTab>("welcome");
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailRec, setDetailRec] = useState<Recommendation | null>(null);
@@ -279,7 +297,9 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
       setRefreshing(true);
     }
     setError(null);
+    setContentWarning(null);
     let pendingSetupRedirect = false;
+    let criticalGuideLoaded = false;
 
     try {
       const groupResponse = await guestGroupsApi.getByAccessCode(accessCode);
@@ -304,18 +324,32 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         setGuestPreferences([]);
       }
 
-      const [recommendationsResponse, historyResponse, itinerariesResponse, hostOffResponse] =
-        await Promise.all([
-          recommendationsApi.getForGroup(accessCode),
-          recommendationsApi.getHistory(accessCode),
-          itinerariesApi.getForGroup(accessCode),
-          guestGroupsApi.getHostOfferings(accessCode),
-        ]);
+      const hostOffResponse = await guestGroupsApi.getHostOfferings(accessCode);
+      const offerings =
+        hostOffResponse.success &&
+        hostOffResponse.data &&
+        hostOffResponse.data.success &&
+        hostOffResponse.data.host_offerings
+          ? hostOffResponse.data.host_offerings
+          : null;
+      setHostOfferings(offerings);
+      criticalGuideLoaded = true;
 
-      const recs =
+      if (mode === "initial") {
+        setLoading(false);
+      }
+
+      const [recommendationsResponse, historyResponse, itinerariesResponse] = await Promise.all([
+        recommendationsApi.getForGroup(accessCode),
+        recommendationsApi.getHistory(accessCode),
+        itinerariesApi.getForGroup(accessCode),
+      ]);
+
+      const recs = (
         recommendationsResponse.success && recommendationsResponse.data
           ? recommendationsResponse.data
-          : [];
+          : []
+      ).filter(isGuestVisibleRecommendation);
       setRecommendations(recs);
 
       setRecFeedback((prev) => {
@@ -344,34 +378,18 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
       } else {
         setItineraries([]);
       }
+      if (!recommendationsResponse.success || !itinerariesResponse.success) {
+        setContentWarning("Some guide suggestions could not refresh. The rest of your guide is still available.");
+      }
 
-      const offerings =
-        hostOffResponse.success &&
-        hostOffResponse.data &&
-        hostOffResponse.data.success &&
-        hostOffResponse.data.host_offerings
-          ? hostOffResponse.data.host_offerings
-          : null;
-      setHostOfferings(offerings);
-
-      const [eventRecRes, savedEventsRes] = await Promise.all([
-        guestGroupsApi.getEventRecommendations(accessCode, 15),
-        guestGroupsApi.getSavedEvents(accessCode),
-      ]);
-      setEventRecommendations(
-        eventRecRes.success && eventRecRes.data?.recommendations
-          ? eventRecRes.data.recommendations
-          : []
-      );
+      const savedEventsRes = await guestGroupsApi.getSavedEvents(accessCode);
       if (savedEventsRes.success && savedEventsRes.data?.saved_event_ids) {
         const serverIds = savedEventsRes.data.saved_event_ids;
         const serverDetails = Object.fromEntries(
           (savedEventsRes.data.saved_events || []).map((event) => [event.event_id, event])
         );
         setSavedEventIds((prev) => {
-          const merged = Array.from(
-            new Set([...serverIds, ...prev])
-          );
+          const merged = Array.from(new Set([...serverIds, ...prev]));
           setSavedEventDetails((prevDetails) => {
             const nextDetails = { ...prevDetails, ...serverDetails };
             persistSavedEventsCache(savedEventsStorageKey, merged, nextDetails);
@@ -379,9 +397,42 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
           });
           return merged;
         });
+      } else if (
+        !savedEventsRes.success &&
+        savedEventsRes.status &&
+        savedEventsRes.status >= 500
+      ) {
+        setContentWarning(
+          "Saved plan items could not sync. You can still browse places and events."
+        );
+      }
+
+      const eventRecRes = await guestGroupsApi.getEventRecommendations(
+        accessCode,
+        15,
+        mode === "refresh"
+      );
+      setEventRecommendations(
+        eventRecRes.success && eventRecRes.data?.recommendations
+          ? eventRecRes.data.recommendations
+          : []
+      );
+      setEventStayWindow(
+        eventRecRes.success && eventRecRes.data?.stay_window
+          ? eventRecRes.data.stay_window
+          : null
+      );
+      if (!eventRecRes.success) {
+        setContentWarning(
+          "Local events could not load right now. Discover, Plan, and your host tips are still available."
+        );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load data");
+      if (criticalGuideLoaded) {
+        setContentWarning("Some guide content could not refresh. The rest of your guide is still available.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load data");
+      }
     } finally {
       if (!pendingSetupRedirect) {
         setLoading(false);
@@ -399,6 +450,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     switch (activeTab) {
       case "welcome":
         return "Your curated Croatian journey";
+      case "stay":
+        return name
+          ? `Practical info for ${name}'s stay`
+          : "Your accommodation, rules, and essentials";
       case "events":
         return name
           ? `What's on near ${name}'s stay`
@@ -531,6 +586,19 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     [accessCode, feedbackStorageKey]
   );
 
+  const guestLocale: GuestLocale = useMemo(
+    () => resolveGuestLocale(guestGroup?.preferred_language, accessCode),
+    [guestGroup?.preferred_language, accessCode]
+  );
+
+  const savedOnlyEventRecommendations = useMemo(
+    () =>
+      buildSavedEventRecommendations(savedEventIds, savedEventDetails, eventRecommendations).filter(
+        (event) => !eventRecommendations.some((rec) => rec.id === event.id)
+      ),
+    [savedEventIds, savedEventDetails, eventRecommendations]
+  );
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background px-4 py-8 md:px-6 lg:px-8">
@@ -576,12 +644,6 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
     );
   }
 
-  const savedOnlyEventRecommendations = buildSavedEventRecommendations(
-    savedEventIds,
-    savedEventDetails,
-    eventRecommendations
-  ).filter((event) => !eventRecommendations.some((rec) => rec.id === event.id));
-
   return (
     <>
       <AppLayout
@@ -590,6 +652,7 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         subtitle={headerSubtitle}
         navItems={[
           { id: "welcome", label: "Welcome", icon: <Handshake /> },
+          { id: "stay", label: "Your stay", icon: <Home /> },
           { id: "events", label: "Events", icon: <PartyPopper /> },
           { id: "recommendations", label: "Discover", icon: <Sparkles /> },
           { id: "itinerary", label: "Plan", icon: <CalendarDays /> },
@@ -608,6 +671,22 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
           </Button>
         }
       >
+        {contentWarning ? (
+          <div className="mx-3 mb-3 flex flex-col gap-2 rounded-2xl border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-950 shadow-sm sm:mx-0 sm:flex-row sm:items-center sm:justify-between">
+            <span>{contentWarning}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full border-amber-300 bg-white/70 sm:w-auto"
+              disabled={refreshing}
+              onClick={() => void loadGuestData("refresh")}
+            >
+              Try again
+            </Button>
+          </div>
+        ) : null}
+
         {activeTab === "welcome" && (
           <WelcomeTab
             key="welcome"
@@ -627,11 +706,23 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
           />
         )}
 
+        {activeTab === "stay" && (
+          <GuestStayTab
+            key="stay"
+            guestGroup={guestGroup}
+            hostOfferings={hostOfferings}
+            onNavigateMaintenance={() => setActiveTab("maintenance")}
+            onNavigateDiscover={() => setActiveTab("recommendations")}
+          />
+        )}
+
         {activeTab === "events" && (
           <GuestEventsTab
             key="events"
             city={guestCity}
+            locale={guestLocale}
             recommendations={eventRecommendations}
+            stayWindow={eventStayWindow}
             savedOnlyRecommendations={savedOnlyEventRecommendations}
             savedEventIds={savedEventIds}
             savedEventDetails={savedEventDetails}
@@ -645,6 +736,7 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
           <RecommendationsTab
             key="recommendations"
             guestGroup={guestGroup}
+            accessCode={accessCode}
             recommendations={recommendations}
             eventRecommendations={eventRecommendations}
             savedEventIds={savedEventIds}
@@ -698,8 +790,10 @@ export const GuestInterface: React.FC<GuestInterfaceProps> = ({
         recommendation={detailRec}
       />
 
-      <GuestMessageFab
+      <GuestAssistantFab
         accessCode={accessCode}
+        guestName={guestGroup.group_name}
+        guestLocale={guestLocale}
         hostOfferings={hostOfferings}
         activeTab={activeTab}
       />
@@ -756,6 +850,59 @@ function stayContextChips(guestGroup: GuestGroup): { label: string; key: string 
     }
   }
   return chips;
+}
+
+function formatStayTime(date: Date): string | null {
+  if (date.getHours() === 0 && date.getMinutes() === 0) return null;
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function stayDateSummary(guestGroup: GuestGroup): {
+  range: string;
+  checkIn: string;
+  checkOut: string;
+  nights: string;
+} | null {
+  const inStr = guestGroup.check_in_date;
+  const outStr = guestGroup.check_out_date;
+  if (!inStr || !outStr) return null;
+  const inD = new Date(inStr);
+  const outD = new Date(outStr);
+  if (Number.isNaN(inD.getTime()) || Number.isNaN(outD.getTime())) return null;
+
+  const sameYear = inD.getFullYear() === outD.getFullYear();
+  const sameMonth = sameYear && inD.getMonth() === outD.getMonth();
+  const monthDay: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  const range = sameMonth
+    ? `${inD.toLocaleDateString(undefined, monthDay)}-${outD.getDate()}, ${outD.getFullYear()}`
+    : sameYear
+      ? `${inD.toLocaleDateString(undefined, monthDay)} - ${outD.toLocaleDateString(undefined, {
+          ...monthDay,
+          year: "numeric",
+        })}`
+      : `${inD.toLocaleDateString(undefined, {
+          ...monthDay,
+          year: "numeric",
+        })} - ${outD.toLocaleDateString(undefined, { ...monthDay, year: "numeric" })}`;
+
+  const fullDate: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  };
+  const inTime = formatStayTime(inD);
+  const outTime = formatStayTime(outD);
+  const nightMs = 86400000;
+  const start = new Date(inD.getFullYear(), inD.getMonth(), inD.getDate());
+  const end = new Date(outD.getFullYear(), outD.getMonth(), outD.getDate());
+  const nightsCount = Math.max(1, Math.round((end.getTime() - start.getTime()) / nightMs));
+
+  return {
+    range,
+    checkIn: `${inD.toLocaleDateString(undefined, fullDate)}${inTime ? ` at ${inTime}` : ""}`,
+    checkOut: `${outD.toLocaleDateString(undefined, fullDate)}${outTime ? ` at ${outTime}` : ""}`,
+    nights: `${nightsCount} night${nightsCount === 1 ? "" : "s"}`,
+  };
 }
 
 function activityTimeLabel(activity: ItineraryActivity): string {
@@ -1003,6 +1150,7 @@ const WelcomeTab: React.FC<{
       : `Hosted by ${hi.name}`
     : null;
   const stayChips = stayContextChips(guestGroup);
+  const stayDates = stayDateSummary(guestGroup);
   const primaryPref = guestPreferences[0];
   const amenityChips = (si?.amenities || []).filter(
     (a): a is string => typeof a === "string" && a.trim().length > 0
@@ -1035,6 +1183,45 @@ const WelcomeTab: React.FC<{
           {hostLine ? (
             <p className="mt-0.5 text-sm font-medium text-primary">{hostLine}</p>
           ) : null}
+          {stayDates ? (
+            <section
+              className="mt-4 rounded-2xl border border-primary/25 bg-primary/10 p-4 shadow-sm"
+              aria-labelledby="guest-stay-dates"
+            >
+              <div className="flex items-start gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                  <CalendarDays className="h-5 w-5" aria-hidden />
+                </span>
+                <div className="min-w-0">
+                  <p
+                    id="guest-stay-dates"
+                    className="text-xs font-semibold uppercase tracking-wide text-primary"
+                  >
+                    Stay dates
+                  </p>
+                  <p className="mt-1 text-xl font-bold leading-tight text-foreground sm:text-2xl">
+                    {stayDates.range}
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-primary">{stayDates.nights}</p>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-xl border border-primary/15 bg-background/75 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Check-in
+                  </p>
+                  <p className="mt-0.5 text-sm font-medium text-foreground">{stayDates.checkIn}</p>
+                </div>
+                <div className="rounded-xl border border-primary/15 bg-background/75 px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Check-out
+                  </p>
+                  <p className="mt-0.5 text-sm font-medium text-foreground">{stayDates.checkOut}</p>
+                </div>
+              </div>
+            </section>
+          ) : null}
+          <GuestTodayStrip guestGroup={guestGroup} hostOfferings={hostOfferings} />
           {hostWelcomeBody ? (
             <p className="mt-3 max-w-2xl text-pretty text-sm leading-relaxed text-foreground/90 md:text-base">
               {hostWelcomeBody}
@@ -1173,7 +1360,7 @@ const WelcomeTab: React.FC<{
                               </span>
                             ) : null}
                             {typeof spot.distance_km === "number" ? (
-                              <span>{spot.distance_km} km away</span>
+                              <span>{formatGuestDistanceLabel(spot.distance_km, resolveGuestLocale(guestGroup?.preferred_language, accessCode)) ?? `${spot.distance_km} km away`}</span>
                             ) : null}
                           </div>
                           {spot.description?.trim() ? (
@@ -1282,6 +1469,14 @@ const WelcomeTab: React.FC<{
               onClick={onViewItinerary}
             >
               View itinerary
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => onNavigate("stay")}
+            >
+              Your stay info
             </Button>
             <Button
               type="button"
@@ -1409,6 +1604,7 @@ const WelcomeTab: React.FC<{
 
 const RecommendationsTab: React.FC<{
   guestGroup: GuestGroup;
+  accessCode: string;
   recommendations: Recommendation[];
   eventRecommendations: GuestEventRecommendation[];
   savedEventIds: string[];
@@ -1420,6 +1616,7 @@ const RecommendationsTab: React.FC<{
   onFeedback: (recId: string, rating: 1 | 5) => void | Promise<void>;
 }> = ({
   guestGroup,
+  accessCode,
   recommendations,
   eventRecommendations,
   savedEventIds,
@@ -1502,7 +1699,10 @@ const RecommendationsTab: React.FC<{
               const meta = [
                 event.cities?.length ? event.cities.join(", ") : guestCity,
                 event.start_date || null,
-                event.distance_km != null ? `~${event.distance_km} km away` : null,
+                formatGuestDistanceLabel(
+                  event.distance_km,
+                  resolveGuestLocale(guestGroup?.preferred_language, accessCode)
+                ),
               ]
                 .filter(Boolean)
                 .join(" · ");
@@ -1684,12 +1884,11 @@ const RecommendationsTab: React.FC<{
                         </p>
                         <div className="mt-4 rounded-2xl bg-primary/10 p-3 text-sm">
                           <p className="font-medium text-primary">Why it fits you</p>
-                          <p className="mt-1 text-foreground/80">{rec.reason}</p>
+                          <p className="mt-1 text-foreground/80">{guestFacingReason(rec)}</p>
                         </div>
-                        {rec.personalization_factors &&
-                        rec.personalization_factors.length > 0 ? (
+                        {guestFacingFactors(rec).length > 0 ? (
                           <div className="mt-3 flex flex-wrap gap-1">
-                            {rec.personalization_factors.slice(0, 5).map((factor, idx) => (
+                            {guestFacingFactors(rec).map((factor, idx) => (
                               <span
                                 key={idx}
                                 className="rounded-full bg-accent/15 px-2 py-1 text-xs text-foreground/80"
@@ -1807,12 +2006,11 @@ const RecommendationsTab: React.FC<{
                         ) : null}
                         <div className="rounded-2xl bg-primary/10 p-3">
                           <p className="text-sm font-medium text-primary">Why it fits you</p>
-                          <p className="text-sm text-foreground/80">{rec.reason}</p>
+                          <p className="text-sm text-foreground/80">{guestFacingReason(rec)}</p>
                         </div>
-                        {rec.personalization_factors &&
-                        rec.personalization_factors.length > 0 ? (
+                        {guestFacingFactors(rec).length > 0 ? (
                           <div className="flex flex-wrap gap-1">
-                            {rec.personalization_factors.slice(0, 5).map((factor, idx) => (
+                            {guestFacingFactors(rec).map((factor, idx) => (
                               <span
                                 key={idx}
                                 className="rounded-full bg-accent/15 px-2 py-1 text-xs text-foreground/80"
@@ -2044,7 +2242,10 @@ const ItineraryTab: React.FC<{
                     ? `${event.start_date} → ${event.end_date}`
                     : event.start_date
                   : null,
-                event.distance_km != null ? `~${event.distance_km} km away` : null,
+                formatGuestDistanceLabel(
+                  event.distance_km,
+                  resolveGuestLocale(guestGroup?.preferred_language, accessCode)
+                ),
                 `${Math.round(event.relevance_score * 100)}% fit`,
               ]
                 .filter(Boolean)
@@ -2592,7 +2793,10 @@ const MapTab: React.FC<{
               const meta = [
                 event.cities?.length ? event.cities.join(", ") : guestCity,
                 event.start_date || null,
-                event.distance_km != null ? `~${event.distance_km} km away` : null,
+                formatGuestDistanceLabel(
+                  event.distance_km,
+                  resolveGuestLocale(guestGroup?.preferred_language, accessCode)
+                ),
               ]
                 .filter(Boolean)
                 .join(" · ");
@@ -2793,90 +2997,6 @@ const MapTab: React.FC<{
   );
 };
 
-const GuestMessageFab: React.FC<{
-  accessCode: string;
-  hostOfferings: GuestHostOfferingsPayload | null;
-  activeTab: GuestTab;
-}> = ({ accessCode, hostOfferings, activeTab }) => {
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [reply, setReply] = useState<string | null>(null);
-
-  if (activeTab === "maintenance") return null;
-
-  const responseHint =
-    hostOfferings?.contact?.response_time || "Usually within 2 hours";
-
-  const send = async () => {
-    if (!text.trim()) return;
-    setBusy(true);
-    setReply(null);
-    const r = await guestGroupsApi.sendHostMessage(accessCode, {
-      message: text.trim(),
-      type: "general",
-    });
-    setBusy(false);
-    if (!r.success) {
-      setReply(r.error || "Could not send. Try again later.");
-      return;
-    }
-    setReply(r.data?.message || "Sent.");
-    setText("");
-  };
-
-  return (
-    <>
-      <button
-        type="button"
-        className="fixed bottom-24 right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 md:bottom-8"
-        onClick={() => {
-          setOpen(true);
-          setReply(null);
-        }}
-        aria-label="Message host"
-      >
-        <MessageCircle className="h-7 w-7" aria-hidden />
-      </button>
-      {open ? (
-        <div className="fixed inset-0 z-[110] flex items-end justify-center sm:items-center sm:p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            aria-label="Close"
-            onClick={() => setOpen(false)}
-          />
-          <div className="relative z-[111] w-full max-w-md rounded-t-3xl border border-border bg-background p-5 shadow-2xl sm:rounded-3xl">
-            <h3 className="text-lg font-semibold text-foreground">Message your host</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Quick note or question. {responseHint}.
-            </p>
-            <textarea
-              className="mt-3 min-h-[100px] w-full rounded-xl border border-input bg-background px-3 py-2 text-sm"
-              placeholder="e.g. Could we get an extra towel?"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-            />
-            {reply ? (
-              <p className="mt-2 rounded-lg border border-border bg-muted/50 px-3 py-2 text-sm text-foreground">
-                {reply}
-              </p>
-            ) : null}
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button type="button" disabled={busy || !text.trim()} onClick={() => void send()}>
-                {busy ? "Sending…" : "Send"}
-              </Button>
-              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-                Close
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
-};
-
 const MAINTENANCE_CATEGORY_LABELS: Record<string, string> = {
   plumbing: "Plumbing & water",
   electrical: "Electrical",
@@ -2894,6 +3014,23 @@ const GuestMaintenanceReportPanel: React.FC<{ accessCode: string }> = ({ accessC
   const [msg, setMsg] = useState<string | null>(null);
   const [msgTone, setMsgTone] = useState<"neutral" | "error" | "success">("neutral");
   const [busy, setBusy] = useState(false);
+  const [reports, setReports] = useState<
+    Array<{ id: string; title: string; category: string; status: string; created_at?: string }>
+  >([]);
+  const [loadingReports, setLoadingReports] = useState(true);
+
+  const loadReports = useCallback(async () => {
+    setLoadingReports(true);
+    const r = await guestMaintenanceApi.listReports(accessCode);
+    if (r.success && r.data?.issues) {
+      setReports(r.data.issues);
+    }
+    setLoadingReports(false);
+  }, [accessCode]);
+
+  useEffect(() => {
+    void loadReports();
+  }, [loadReports]);
 
   const submit = async () => {
     if (!title.trim()) {
@@ -2920,6 +3057,7 @@ const GuestMaintenanceReportPanel: React.FC<{ accessCode: string }> = ({ accessC
     setMsg("Sent. Your host will see this in their dashboard.");
     setTitle("");
     setDescription("");
+    void loadReports();
   };
 
   return (
@@ -2931,6 +3069,51 @@ const GuestMaintenanceReportPanel: React.FC<{ accessCode: string }> = ({ accessC
           bookings — use Discover and Plan for activities.
         </p>
       </div>
+
+      {reports.length > 0 || loadingReports ? (
+        <div className="mx-auto max-w-lg px-1 md:px-0">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Your reports</CardTitle>
+              <CardDescription>Status updates from your host appear here.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loadingReports ? (
+                <p className="text-sm text-muted-foreground">Loading reports…</p>
+              ) : (
+                <ul className="space-y-2" data-testid="guest-maintenance-reports">
+                  {reports.map((issue) => (
+                    <li
+                      key={issue.id}
+                      className="rounded-xl border border-border/70 bg-muted/20 px-3 py-2 text-sm"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium text-foreground">{issue.title}</span>
+                        <span
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-xs font-medium capitalize",
+                            issue.status === "resolved"
+                              ? "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200"
+                              : "bg-amber-500/15 text-amber-900 dark:text-amber-100"
+                          )}
+                        >
+                          {issue.status.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {MAINTENANCE_CATEGORY_LABELS[issue.category] || issue.category}
+                        {issue.created_at
+                          ? ` · ${new Date(issue.created_at).toLocaleDateString()}`
+                          : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
 
       <div className="mx-auto max-w-lg px-1 pb-8 md:px-0">
         <Card>

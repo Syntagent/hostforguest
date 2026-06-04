@@ -9,17 +9,6 @@ import { Attraction, API_BASE_URL } from "@/lib/api";
 import { MarkdownRenderer } from "@/components/ui/MarkdownRenderer";
 import { Check } from "lucide-react";
 
-// TypeScript declarations for Google GenAI SDK
-declare global {
-  interface Window {
-    google?: {
-      genai?: {
-        GoogleGenAI: any;
-      };
-    };
-  }
-}
-
 /**
  * Enhanced Place interface with comprehensive Google Places data
  */
@@ -393,56 +382,6 @@ export const EnhancedAttractionModal: React.FC<EnhancedAttractionModalProps> = (
   const [nearbyPlaces, setNearbyPlaces] = useState<EnhancedPlace[]>([]);
   const [isEditingDescription, setIsEditingDescription] = useState(false);
   const [showRawMarkdown, setShowRawMarkdown] = useState(false);
-
-  // Load Google GenAI SDK
-  useEffect(() => {
-    const loadGeminiSDK = async () => {
-      if (typeof window !== 'undefined' && !window.google?.genai) {
-        try {
-          // Load the Google GenAI SDK
-          const script = document.createElement('script');
-          script.src = 'https://unpkg.com/@google/generative-ai@latest/dist/web/index.js';
-          script.async = true;
-          script.onload = () => {
-            console.log('Google GenAI SDK loaded successfully');
-          };
-          script.onerror = () => {
-            console.log('Google GenAI SDK failed to load, will use backend API fallback');
-          };
-          document.head.appendChild(script);
-        } catch (error) {
-          console.log('Error loading Google GenAI SDK:', error);
-        }
-      }
-    };
-
-    loadGeminiSDK();
-  }, []);
-
-  // Load Google GenAI SDK
-  useEffect(() => {
-    const loadGeminiSDK = async () => {
-      if (typeof window !== 'undefined' && !window.google?.genai) {
-        try {
-          // Load the Google GenAI SDK
-          const script = document.createElement('script');
-          script.src = 'https://unpkg.com/@google/generative-ai@latest/dist/web/index.js';
-          script.async = true;
-          script.onload = () => {
-            console.log('Google GenAI SDK loaded successfully');
-          };
-          script.onerror = () => {
-            console.log('Google GenAI SDK failed to load, will use backend API fallback');
-          };
-          document.head.appendChild(script);
-        } catch (error) {
-          console.log('Error loading Google GenAI SDK:', error);
-        }
-      }
-    };
-
-    loadGeminiSDK();
-  }, []);
 
   // ============================================================================
   // EFFECTS
@@ -911,9 +850,7 @@ export const EnhancedAttractionModal: React.FC<EnhancedAttractionModalProps> = (
     }
   };
 
-  /**
- * Generates AI-enhanced description using Google GenAI SDK or backend API fallback
- */
+  /** Generates AI-enhanced description via the host backend (keys stay server-side). */
   const generateAIDescription = async () => {
     // In edit mode, we can use existing attraction data
     // In create mode, we need selectedLocation
@@ -930,7 +867,7 @@ export const EnhancedAttractionModal: React.FC<EnhancedAttractionModalProps> = (
     }
 
     setIsGeneratingDescription(true);
-    setAiGenerationStatus('🤖 Generating AI-enhanced description using backend API...');
+    setAiGenerationStatus('🤖 Generating AI-enhanced description...');
 
     try {
       // Gather contextual data - handle both create and edit modes

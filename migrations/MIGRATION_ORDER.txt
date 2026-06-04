@@ -8,3 +8,4 @@ add_property_name_to_host_profiles.sql
 add_guest_groups_host_profile_id.sql
 add_vector_embeddings.sql
 create_evisitor_data_table.sql
+add_property_rules_to_host_profiles.sql

@@ -190,6 +190,20 @@ async def guest_report(
     return _issue_dict(issue)
 
 
+@router.get("/guest-reports/{access_code}")
+async def list_guest_reports(
+    access_code: str,
+    db: AsyncSession = Depends(get_db),
+):
+    gsvc = GuestGroupService(db)
+    group = await gsvc.validate_access_code(access_code)
+    if not group:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invalid or expired access code")
+    svc = MaintenanceService(db)
+    issues = await svc.list_issues_for_guest_group(group.id)
+    return {"issues": [_issue_dict(i) for i in issues]}
+
+
 @router.get("/schedules")
 async def list_schedules(
     current_host: Host = Depends(get_current_host),

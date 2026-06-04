@@ -158,6 +158,7 @@ class HostProfile(Base):
     onboarding_completed = Column(Boolean, default=False)  # Onboarding completion status
     onboarding_completed_at = Column(String(50), nullable=True)  # ISO timestamp
     ai_generated_content = Column(Boolean, default=False)  # Has AI-generated content
+    property_rules = Column(JSON, default={})  # check-in/out, house rules, wifi, emergency notes
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -345,6 +346,7 @@ class HostProfileUpdate(SQLModel):
     success_stories: Optional[List[Dict[str, Any]]] = None
     trusted_partners: Optional[List[str]] = None
     special_offers: Optional[List[str]] = None
+    property_rules: Optional[Dict[str, Any]] = None
 
 
 class HostProfileResponse(SQLModel):
@@ -383,6 +385,7 @@ class HostProfileResponse(SQLModel):
     success_stories: Optional[List[Dict[str, Any]]] = None
     trusted_partners: Optional[List[str]] = None
     special_offers: Optional[List[str]] = None
+    property_rules: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True 

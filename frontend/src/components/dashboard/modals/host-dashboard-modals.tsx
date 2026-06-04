@@ -67,6 +67,9 @@ interface HostDashboardModalsProps {
   createEVisitorData: GuestEVisitorDataCreate;
   /** Saved host profile for “linked property” copy in Create Group. */
   hostProfileForGuestGroups: HostProfile | null;
+  onGuestGroupUpdated?: (group: GuestGroup) => void;
+  onDeleteGroup?: (group: GuestGroup) => void;
+  deletingGroupId?: string | null;
 }
 
 export const HostDashboardModals: React.FC<HostDashboardModalsProps> = ({
@@ -115,6 +118,9 @@ export const HostDashboardModals: React.FC<HostDashboardModalsProps> = ({
   handleCreateEVisitor,
   createEVisitorData,
   hostProfileForGuestGroups,
+  onGuestGroupUpdated,
+  onDeleteGroup,
+  deletingGroupId,
 }) => {
   const accommodationPreview =
     hostProfileForGuestGroups &&
@@ -153,6 +159,9 @@ export const HostDashboardModals: React.FC<HostDashboardModalsProps> = ({
             loadEVisitorData(groupId);
             setShowEVisitorModal(true);
           }}
+          onGroupUpdated={onGuestGroupUpdated}
+          onDeleteGroup={onDeleteGroup}
+          deletingGroupId={deletingGroupId}
         />
       )}
 

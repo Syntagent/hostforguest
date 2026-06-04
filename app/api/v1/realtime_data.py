@@ -10,18 +10,25 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
+from uuid import UUID
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from app.core.database import get_db
+from app.api.v1.hosts import get_current_host
 from app.services.crawl4ai_scraper_service import Crawl4AIScraperService
 from app.services.ai_service import AIService
 from app.services.events_feed_service import EventsFeedService
+from app.services.event_ingestion_service import EventIngestionService
+from app.services.event_source_discovery_agent import EventSourceDiscoveryAgent
+from app.services.host_service import HostService
 from app.models.content_source import ContentType
 from app.models.content_source import ContentSource, ContentUpdate, SourceStatus
+from app.models.event_source_proposal import EventSourceProposal
 from app.models.host import Host
 from pydantic import BaseModel
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,9 @@ class RealTimeUpdateResponse(BaseModel):
     content_type: str
     url: Optional[str]
     publication_date: Optional[str]
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    venue_name: Optional[str] = None
     relevant_cities: List[str]
     relevant_regions: List[str]
     keywords: List[str]
@@ -44,6 +54,7 @@ class RealTimeUpdateResponse(BaseModel):
     relevance_score: float
     created_at: str
     source_name: Optional[str]
+    is_demo_seed: bool = False
 
 
 class LiveStreamResponse(BaseModel):
@@ -403,11 +414,15 @@ async def initialize_tourism_sources(db: AsyncSession = Depends(get_db)):
 async def bootstrap_events_feed(
     db: AsyncSession = Depends(get_db),
     city: Optional[str] = Query("Lovran", description="City focus for seeded events"),
+    sync_mode: Optional[str] = Query(
+        None,
+        description="all | regional | none — default from EVENTS_SYNC_MODE env (regional)",
+    ),
 ):
     """Init sources, seed regional events, return availability summary."""
     try:
         feed = EventsFeedService(db)
-        return await feed.bootstrap_feed(city=city)
+        return await feed.bootstrap_feed(city=city, sync_mode=sync_mode)
     except Exception as e:
         logger.error(f"Events bootstrap failed: {e}")
         raise HTTPException(
@@ -431,6 +446,107 @@ async def get_events_updates(
         hours=hours,
         limit=limit,
     )
+
+
+@router.get("/sources/health")
+async def get_sources_health(db: AsyncSession = Depends(get_db)):
+    """Per-source scrape health for event monitors."""
+    feed = EventsFeedService(db)
+    return await feed.get_source_health()
+
+
+@router.post("/sources/discover")
+async def discover_event_sources(
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
+):
+    """Run discovery agent for host property location."""
+    host_service = HostService(db)
+    profile = await host_service.get_host_profile(current_host.id)
+    agent = EventSourceDiscoveryAgent(db)
+    return await agent.discover_for_host(current_host, profile)
+
+
+@router.get("/sources/proposals")
+async def list_source_proposals(
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
+    status_filter: Optional[str] = Query("pending"),
+):
+    stmt = select(EventSourceProposal).where(EventSourceProposal.host_id == current_host.id)
+    if status_filter:
+        stmt = stmt.where(EventSourceProposal.status == status_filter)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        {
+            "id": str(p.id),
+            "proposed_name": p.proposed_name,
+            "proposed_url": p.proposed_url,
+            "source_type": p.source_type,
+            "confidence": p.confidence,
+            "reasoning": p.reasoning,
+            "status": p.status,
+            "city": p.city,
+            "region": p.region,
+        }
+        for p in rows
+    ]
+
+
+@router.post("/sources/proposals/{proposal_id}/approve")
+async def approve_source_proposal(
+    proposal_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
+):
+    agent = EventSourceDiscoveryAgent(db)
+    source = await agent.approve_proposal(proposal_id, current_host.id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Proposal not found or not pending")
+    return {"success": True, "source_id": str(source.id), "name": source.name}
+
+
+@router.post("/sources/proposals/{proposal_id}/reject")
+async def reject_source_proposal(
+    proposal_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
+):
+    agent = EventSourceDiscoveryAgent(db)
+    ok = await agent.reject_proposal(proposal_id, current_host.id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return {"success": True}
+
+
+@router.post("/sources/{source_id}/scrape")
+async def scrape_single_source(
+    source_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual scrape for a content source linked to national registry slug."""
+    row = await db.execute(select(ContentSource).where(ContentSource.id == source_id))
+    source = row.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    selectors = source.scraping_selectors or {}
+    slug = selectors.get("slug")
+    if not slug:
+        from app.scraping.events.sources import load_national_event_sources
+
+        src_url = (source.url or "").rstrip("/")
+        for defn in load_national_event_sources():
+            reg_url = (defn.get("url") or "").rstrip("/")
+            if defn.get("name") == source.name or (
+                src_url and reg_url and (src_url in reg_url or reg_url in src_url)
+            ):
+                slug = defn["slug"]
+                break
+    if not slug:
+        raise HTTPException(status_code=400, detail="Source has no event scraper slug")
+    ingestion = EventIngestionService(db)
+    return await ingestion.sync_source(str(slug))
 
 
 @router.get("/health")
