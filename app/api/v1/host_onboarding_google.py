@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, status
+import httpx
 
 from app.api.v1.host_onboarding_models import (
     GooglePlacesResponse,
@@ -16,6 +17,21 @@ from app.api.v1.host_onboarding_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+GOOGLE_PLACES_TEXTSEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+GOOGLE_PLACES_NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+
+
+async def _get_google_places_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+    status_value = data.get("status")
+    if status_value not in (None, "OK", "ZERO_RESULTS"):
+        raise RuntimeError(data.get("error_message") or f"Google Places returned {status_value}")
+    return data
 
 
 async def get_google_places_info(place_name: str) -> GooglePlacesResponse:
@@ -29,19 +45,17 @@ async def get_google_places_info(place_name: str) -> GooglePlacesResponse:
         GooglePlacesResponse with place information
     """
     try:
-        import googlemaps
-        
         api_key = os.getenv('GOOGLE_MAPS_API_KEY')
         if not api_key:
             return GooglePlacesResponse(
                 success=False,
                 error="Google Places API not configured"
             )
-        
-        gmaps = googlemaps.Client(key=api_key)
-        
-        # Search for place
-        places_result = gmaps.places(query=place_name, language='en')
+
+        places_result = await _get_google_places_json(
+            GOOGLE_PLACES_TEXTSEARCH_URL,
+            {"query": place_name, "language": "en", "key": api_key},
+        )
         
         if not places_result.get('results'):
             return GooglePlacesResponse(
@@ -111,23 +125,22 @@ async def get_nearby_google_places(
         Dictionary with nearby places information
     """
     try:
-        import googlemaps
-        
         api_key = os.getenv('GOOGLE_MAPS_API_KEY')
         if not api_key:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Google Places API not configured"
             )
-        
-        gmaps = googlemaps.Client(key=api_key)
-        
-        # Search for nearby places
-        nearby_results = gmaps.places_nearby(
-            location=(lat, lng),
-            radius=radius,
-            type=place_type,
-            language='en'
+
+        nearby_results = await _get_google_places_json(
+            GOOGLE_PLACES_NEARBY_URL,
+            {
+                "location": f"{lat},{lng}",
+                "radius": radius,
+                "type": place_type,
+                "language": "en",
+                "key": api_key,
+            },
         )
         
         if not nearby_results.get('results'):

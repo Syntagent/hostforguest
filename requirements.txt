@@ -37,9 +37,6 @@ httpx>=0.25.2
 requests>=2.31.0
 websockets>=13.0,<15.0
 
-# Google Services
-googlemaps>=4.10.0
-
 # Environment Management
 python-dotenv>=1.0.0
 
