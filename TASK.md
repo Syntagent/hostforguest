@@ -1,6 +1,6 @@
 # HostForGuest — Task backlog (living doc)
 
-Last updated: 2026-06-04 (stabilization sprint)
+Last updated: 2026-06-07 (event scraper / QA follow-up)
 
 ## Production status (H1 VPS)
 
@@ -32,29 +32,25 @@ Deploy: `docker compose -p hostforguest-prod -f docker-compose.yml -f docker-com
 - Routes save + TNT points
 - `channel_sync` health when 0 accounts
 
+## Completed follow-up — 2026-06-07
+
+- **Event scraper production config** — Lovran listing moved to the working official path, crawler now uses browser-like headers, retries `403`/`429`, and raises final HTTP errors instead of parsing error pages.
+- **Gemini SDK migration** — `ai_service.py` and fallback structured AI paths now use `google.genai`; deprecated `google-generativeai` was removed from runtime requirements.
+- **Migration workflow** — `create_host_compliance_tables.sql` added to `migrations/MIGRATION_ORDER.txt`.
+- **QA / E2E expansion** — local Playwright config now includes host dashboard, guest events, and onboarding geocode specs; host Compliance/Accommodation and guest stay/preferences redirect coverage added.
+- **Fast test hygiene** — source-only tests can use `pytest.mark.no_db` to skip the autouse PostgreSQL schema reset.
+
 ## Open — next sprint
 
-### 1. Event scraper production config
+### 1. Database migrations (manual on prod if not auto-applied)
 
-- Prod logs: `No Google AI API key found` — set `GOOGLE_AI_API_KEY` (or disable LLM enrichment) for event date extraction.
-- `visitlovran.com` returns **403** to scraper — add User-Agent / retry policy or alternate source.
-- Migrate off deprecated `google.generativeai` → `google.genai` (`ai_service.py` FutureWarning).
-
-### 2. Database migrations (manual on prod if not auto-applied)
-
-- `migrations/create_host_compliance_tables.sql`
-- `migrations/add_property_rules_to_host_profiles.sql`
+- `migrations/create_host_compliance_tables.sql` (now in `migrations/MIGRATION_ORDER.txt`)
+- `migrations/add_property_rules_to_host_profiles.sql` (in `migrations/MIGRATION_ORDER.txt`)
 - `scripts/migrate_local_events_tables.py` for local events tables
 
-Run via existing migration workflow; do not change schemas without need.
+Run SQL via the existing migration workflow; run the local-events script with explicit prod DB env or inside the prod API container. Do not change schemas without need.
 
-### 3. QA / E2E expansion
-
-- Host tabs: Accommodation, Compliance (new), Insights events
-- Guest: stay tab, saved events, preferences `[accessCode]` route
-- Playwright: `tests/e2e/playwright.local.config.ts` for local 3055 runs
-
-### 4. Routes / map polish (if gaps remain)
+### 2. Routes / map polish (if gaps remain)
 
 - Drag-reorder TNT points on map
 - Click-to-add waypoint from map UI

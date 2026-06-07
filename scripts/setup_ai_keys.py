@@ -165,10 +165,10 @@ async def check_ai_setup():
         print("OpenAI library: ❌ Not installed")
     
     try:
-        import google.generativeai
-        print("Google AI library: ✅ Available")
+        from google import genai  # noqa: F401
+        print("Google GenAI library: ✅ Available")
     except ImportError:
-        print("Google AI library: ❌ Not installed")
+        print("Google GenAI library: ❌ Not installed")
 
 if __name__ == "__main__":
     print("🚀 Starting AI setup...")

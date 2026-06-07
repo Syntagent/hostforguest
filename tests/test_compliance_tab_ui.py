@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+pytestmark = pytest.mark.no_db
 
 
 def test_dashboard_tabs_include_compliance():

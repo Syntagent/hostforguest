@@ -7,9 +7,10 @@ keys are not available, making development easier.
 
 import os
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 import openai
-from app.services.ai_service import AIService, _import_google_generativeai
+from app.services.ai_service import AIService, _import_google_genai
 from app.services.settings_service import SettingsService
 
 # Ensure environment variables are loaded
@@ -17,6 +18,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class _GeminiModelAdapter:
+    """Adapter for old generate_content_async call sites using google.genai."""
+
+    def __init__(self, *, client: Any, model_name: str, genai_types: Any) -> None:
+        self.client = client
+        self.model_name = model_name
+        self.genai_types = genai_types
+
+    def _config(self, generation_config: Any = None) -> Any:
+        if generation_config is None:
+            return None
+        kwargs: dict[str, Any] = {}
+        for key in ("temperature", "max_output_tokens", "response_mime_type", "response_schema"):
+            value = getattr(generation_config, key, None)
+            if value is not None:
+                kwargs[key] = value
+        return self.genai_types.GenerateContentConfig(**kwargs)
+
+    async def generate_content_async(self, contents: Any, generation_config: Any = None) -> Any:
+        return await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=contents,
+            config=self._config(generation_config),
+        )
+
+
+def _generation_config_factory(**kwargs: Any) -> Any:
+    return SimpleNamespace(**kwargs)
+
+
+class _GenerationTypesCompat:
+    GenerationConfig = staticmethod(_generation_config_factory)
 
 class AIServiceWithFallback(AIService):
     """
@@ -79,25 +114,12 @@ class AIServiceWithFallback(AIService):
                         logger.warning(f"No Google AI API key found for host {host_id}")
                         return None
             
-            genai, HarmCategory, HarmBlockThreshold = _import_google_generativeai()
-
-            # Configure Gemini with the API key
-            genai.configure(api_key=api_key)
-            
-            # Configure safety settings for tourism content - DISABLE ALL FILTERS
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-            
-            model = genai.GenerativeModel(
+            genai, genai_types = _import_google_genai()
+            return _GeminiModelAdapter(
+                client=genai.Client(api_key=api_key),
                 model_name=model_name,
-                safety_settings=safety_settings
+                genai_types=genai_types,
             )
-            
-            return model
             
         except Exception as e:
             logger.error(f"Failed to initialize Gemini model {model_name}: {e}")
@@ -338,7 +360,7 @@ class AIServiceWithFallback(AIService):
             content_payload = self._gemini_structured_content_payload(gemini_messages, image_parts)
 
             # Generate response with structured output
-            genai, _, _ = _import_google_generativeai()
+            genai = SimpleNamespace(types=_GenerationTypesCompat)
             import json
 
             # ATTEMPT 1: Try native Pydantic structured output
@@ -699,7 +721,7 @@ Include every top-level key listed under "required" when present; use sensible d
             gemini_messages = self._convert_to_gemini_format(messages)
             
             # Generate response
-            genai, _, _ = _import_google_generativeai()
+            genai = SimpleNamespace(types=_GenerationTypesCompat)
             response = await model.generate_content_async(
                 gemini_messages,
                 generation_config=genai.types.GenerationConfig(

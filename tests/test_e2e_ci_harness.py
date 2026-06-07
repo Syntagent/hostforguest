@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 FRONTEND_PUBLIC = REPO_ROOT / "frontend" / "public"
@@ -15,6 +17,8 @@ PW_CONFIG = REPO_ROOT / "tests" / "e2e" / "playwright.ci.config.ts"
 PW_GUEST_SPEC = REPO_ROOT / "tests" / "e2e" / "ci-guest-events.spec.ts"
 PW_HOST_SPEC = REPO_ROOT / "tests" / "e2e" / "ci-host-dashboard.spec.ts"
 PW_HOST_AUTH = REPO_ROOT / "tests" / "e2e" / "ci-host-auth.ts"
+
+pytestmark = pytest.mark.no_db
 
 
 def test_e2e_ci_harness_files_exist() -> None:
@@ -78,11 +82,13 @@ def test_ci_host_dashboard_spec_covers_channels_and_maintenance_tabs() -> None:
 
 def test_ci_host_dashboard_spec_covers_stay_routes_insights_tabs() -> None:
     text = PW_HOST_SPEC.read_text(encoding="utf-8")
-    assert "stay, routes, and insights tabs load" in text
-    assert 'openHostTab(page, "Stay")' in text
+    assert "accommodation, compliance, routes, and insights tabs load" in text
+    assert 'openHostTab(page, "Accommodation")' in text
+    assert 'openHostTab(page, "Compliance")' in text
     assert 'openHostTab(page, "Routes")' in text
     assert 'openHostTab(page, "Insights")' in text
     assert "Accommodation Management" in text
+    assert "Obveze prema državi" in text
     assert "Routes & itineraries" in text
 
 

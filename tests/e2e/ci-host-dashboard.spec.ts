@@ -86,13 +86,28 @@ test.describe("CI host dashboard", () => {
     await expect(page.getByText(name).first()).toBeVisible({ timeout: 45000 });
   });
 
-  test("stay, routes, and insights tabs load", async ({ page, request }) => {
+  test("accommodation, compliance, routes, and insights tabs load", async ({ page, request }) => {
     await ensureHostDashboard(page, request);
 
-    await openHostTab(page, "Stay");
+    await openHostTab(page, "Accommodation");
     await expect(
       page.getByRole("heading", { name: "Accommodation Management" })
     ).toBeVisible({ timeout: 20000 });
+
+    await openHostTab(page, "Compliance");
+    await expect(page.getByRole("heading", { name: "Obveze prema državi" })).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByText(/Informativno/i).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole("button", { name: /Prikaži PDV pravila/i })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("button", { name: /Prikaži Novasol pravila/i })).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("button", { name: /Pitaj o obvezama/i })).toBeVisible({
+      timeout: 15000,
+    });
 
     await openHostTab(page, "Routes");
     await expect(page.getByRole("heading", { name: "Routes & itineraries" })).toBeVisible({

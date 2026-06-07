@@ -88,6 +88,10 @@ async def _reset_test_db_schema(request: pytest.FixtureRequest) -> AsyncGenerato
     """
     global _integration_full_db_initialized
 
+    if request.node.get_closest_marker("no_db"):
+        yield
+        return
+
     mod = getattr(request.node, "module", None)
     mod_name = getattr(mod, "__name__", "") or ""
     if mod_name.endswith("test_integration_full"):

@@ -12,7 +12,7 @@ from datetime import datetime
 import json
 import asyncio
 
-# AI Libraries (Gemini deferred — see _import_google_generativeai — avoids heavy import at collection time)
+# AI Libraries (Gemini deferred — see _import_google_genai — avoids heavy import at collection time)
 import openai
 
 # Internal imports
@@ -22,24 +22,24 @@ from app.services.embedding_stub import deterministic_stub_embedding
 
 logger = logging.getLogger(__name__)
 
-_google_generativeai_cache: Optional[Tuple[Any, Any, Any]] = None
+_google_genai_cache: Optional[Tuple[Any, Any]] = None
 
 
-def _import_google_generativeai() -> Tuple[Any, Any, Any]:
+def _import_google_genai() -> Tuple[Any, Any]:
     """
-    Import google.generativeai only when Gemini is used.
+    Import google.genai only when Gemini is used.
 
     Keeps `import app.services.ai_service` (and pytest collection) lighter; avoids
     MemoryError / long startup on constrained CI when tests never call Gemini.
     """
-    global _google_generativeai_cache
-    if _google_generativeai_cache is not None:
-        return _google_generativeai_cache
-    import google.generativeai as genai_mod
-    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    global _google_genai_cache
+    if _google_genai_cache is not None:
+        return _google_genai_cache
+    from google import genai as genai_mod
+    from google.genai import types as genai_types
 
-    _google_generativeai_cache = (genai_mod, HarmCategory, HarmBlockThreshold)
-    return _google_generativeai_cache
+    _google_genai_cache = (genai_mod, genai_types)
+    return _google_genai_cache
 
 class AIService:
     """
@@ -73,10 +73,9 @@ class AIService:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
 
-    async def _get_gemini_model(self, host_id: str, model_name: str) -> Optional[Any]:
-        """Get configured Gemini model for a host."""
+    async def _get_gemini_api_key(self, host_id: str) -> Optional[str]:
+        """Get configured Gemini API key for a host."""
         try:
-            import os
             api_key = None
             if self.settings_service:
                 api_key = await self.settings_service.get_host_api_key(host_id, "google_ai")
@@ -85,29 +84,21 @@ class AIService:
             if not api_key:
                 logger.warning(f"No Google AI API key found for host {host_id}")
                 return None
-
-            genai, HarmCategory, HarmBlockThreshold = _import_google_generativeai()
-
-            # Configure Gemini with the API key
-            genai.configure(api_key=api_key)
-
-            # Configure safety settings for tourism content
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            }
-
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                safety_settings=safety_settings
-            )
-
-            return model
-
+            return api_key
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini model {model_name}: {e}")
+            logger.error(f"Failed to load Gemini API key: {e}")
+            return None
+
+    async def _get_gemini_client(self, host_id: str) -> Optional[Any]:
+        """Get configured google.genai client for a host."""
+        try:
+            api_key = await self._get_gemini_api_key(host_id)
+            if not api_key:
+                return None
+            genai, _ = _import_google_genai()
+            return genai.Client(api_key=api_key)
+        except Exception as e:
+            logger.error(f"Failed to initialize Gemini client: {e}")
             return None
 
     async def generate_chat_response(
@@ -189,20 +180,14 @@ class AIService:
             # Prefer pro for better grounding; fallback to flash
             model_name = ai_config.get("gemini_pro_model", "gemini-2.5-pro") if use_reasoning else ai_config.get("gemini_model", "gemini-2.5-flash")
 
-            # Acquire API key via settings service
-            api_key = await self.settings_service.get_host_api_key(host_id, "google_ai")
+            # Acquire API key via settings service or environment.
+            api_key = await self._get_gemini_api_key(host_id)
             if not api_key:
-                # Fallback to environment variable
-                import os
-                api_key = os.environ.get("GOOGLE_AI_API_KEY")
-            if not api_key:
-                logger.warning(f"No Google AI API key found for host {host_id}")
                 return {"success": False, "error": "Gemini API key missing"}
 
             # Use new google.genai client for tools
             try:
-                from google import genai as genai_client
-                from google.genai import types as genai_types
+                genai_client, genai_types = _import_google_genai()
             except Exception as e:  # pragma: no cover
                 logger.error(f"Failed to import google.genai client: {e}")
                 return {"success": False, "error": "genai client not available"}
@@ -218,11 +203,11 @@ class AIService:
             response = await client.aio.models.generate_content(
                 model=model_name,
                 contents=combined,
-                config={
-                    "tools": [{"google_search": {}}],
-                    "temperature": float(ai_config.get("gemini_temperature", "0.7")),
-                    "max_output_tokens": 2000,
-                },
+                config=genai_types.GenerateContentConfig(
+                    tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                    temperature=float(ai_config.get("gemini_temperature", "0.7")),
+                    max_output_tokens=2000,
+                ),
             )
 
             text = getattr(response, "text", None) or ""
@@ -303,22 +288,23 @@ class AIService:
             else:
                 model_name = ai_config.get("gemini_model", "gemini-2.5-flash")
 
-            model = await self._get_gemini_model(host_id, model_name)
-            if not model:
-                return {"success": False, "error": "Gemini model not available"}
-
-            genai, _, _ = _import_google_generativeai()
-
-            # Convert messages to Gemini format
-            gemini_messages = self._convert_to_gemini_format(messages)
+            client = await self._get_gemini_client(host_id)
+            if not client:
+                return {"success": False, "error": "Gemini client not available"}
+            try:
+                _, genai_types = _import_google_genai()
+            except Exception as e:  # pragma: no cover
+                logger.error(f"Failed to import google.genai types: {e}")
+                return {"success": False, "error": "genai client not available"}
 
             # Generate response
-            response = await model.generate_content_async(
-                gemini_messages,
-                generation_config=genai.types.GenerationConfig(
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=self._messages_to_text(messages),
+                config=genai_types.GenerateContentConfig(
                     temperature=float(ai_config.get("gemini_temperature", "0.7")),
                     max_output_tokens=2000,
-                )
+                ),
             )
 
             return {
@@ -327,9 +313,9 @@ class AIService:
                 "model": model_name,
                 "provider": "google",
                 "usage": {
-                    "prompt_tokens": response.usage_metadata.prompt_token_count if hasattr(response, 'usage_metadata') else 0,
-                    "completion_tokens": response.usage_metadata.candidates_token_count if hasattr(response, 'usage_metadata') else 0,
-                    "total_tokens": response.usage_metadata.total_token_count if hasattr(response, 'usage_metadata') else 0
+                    "prompt_tokens": response.usage_metadata.prompt_token_count if getattr(response, "usage_metadata", None) else 0,
+                    "completion_tokens": response.usage_metadata.candidates_token_count if getattr(response, "usage_metadata", None) else 0,
+                    "total_tokens": response.usage_metadata.total_token_count if getattr(response, "usage_metadata", None) else 0
                 }
             }
 
@@ -343,30 +329,81 @@ class AIService:
         *,
         host_id: str = "system",
     ) -> Dict[str, Any]:
-        """
-        Low-cost Gemini call for event scraping / discovery / repair pipelines.
+        """Extract events via Gemma4 (local LLM, zero cost) with Gemini fallback.
 
-        Uses EVENTS_GEMINI_MODEL (default gemini-2.0-flash). Swap model via env when
-        newer small models (e.g. Gemma) are available — no selector/regex extraction logic.
+        Uses EVENTS_GEMINI_MODEL (default gemini-2.5-flash) as fallback when
+        Gemma4 is unavailable or fails.
         """
+        # 1. Try Gemma4 first (local LLM via Cloudflare Tunnel, zero cost)
         try:
-            model_name = os.getenv("EVENTS_GEMINI_MODEL", "gemini-2.0-flash").strip()
+            import httpx
+
+            gemma4_url = os.getenv("GEMMA4_BASE_URL", "https://gemma4.syntagent.com/v1")
+            gemma4_model = os.getenv("GEMMA4_MODEL", "gemma-4-26b-a4b-nvfp4")
+            cf_id = os.getenv("GEMMA4_CF_CLIENT_ID", "")
+            cf_secret = os.getenv("GEMMA4_CF_CLIENT_SECRET", "")
+            temperature = float(os.getenv("EVENTS_GEMINI_TEMPERATURE", "0.2"))
+            max_tokens = int(os.getenv("EVENTS_GEMINI_MAX_TOKENS", "4096"))
+
+            if cf_id and cf_secret and gemma4_url:
+                payload = {
+                    "model": gemma4_model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    resp = await client.post(
+                        f"{gemma4_url.rstrip('/')}/chat/completions",
+                        headers={
+                            "Content-Type": "application/json",
+                            "CF-Access-Client-Id": cf_id,
+                            "CF-Access-Client-Secret": cf_secret,
+                        },
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    if content and len(content.strip()) > 10:
+                        logger.info("Events extraction via Gemma4 succeeded")
+                        return {
+                            "success": True,
+                            "response": content,
+                            "model": gemma4_model,
+                            "provider": "gemma4",
+                            "task": "events_extraction",
+                        }
+                    logger.warning("Gemma4 returned empty response, falling back to Gemini")
+            else:
+                logger.info("Gemma4 not configured, using Gemini directly")
+        except Exception as exc:
+            logger.warning("Gemma4 extraction failed (%s), falling back to Gemini", exc)
+
+        # 2. Fallback to Gemini API
+        try:
+            model_name = os.getenv("EVENTS_GEMINI_MODEL", "gemini-2.5-flash").strip()
             temperature = float(os.getenv("EVENTS_GEMINI_TEMPERATURE", "0.2"))
             max_tokens = int(os.getenv("EVENTS_GEMINI_MAX_TOKENS", "4096"))
             max_attempts = int(os.getenv("EVENTS_GEMINI_RETRY_ATTEMPTS", "3"))
 
-            genai, _, _ = _import_google_generativeai()
-            gemini_messages = self._convert_to_gemini_format(messages)
+            client = await self._get_gemini_client(host_id)
+            if not client:
+                return {"success": False, "error": "Gemini client not available for events extraction"}
+            try:
+                _, genai_types = _import_google_genai()
+            except Exception as e:  # pragma: no cover
+                logger.error("Failed to import google.genai types: %s", e)
+                return {"success": False, "error": "genai client not available"}
+            prompt = self._messages_to_text(messages)
             last_error: Optional[str] = None
 
             for attempt in range(max_attempts):
-                model = await self._get_gemini_model(host_id, model_name)
-                if not model:
-                    return {"success": False, "error": "Gemini model not available for events extraction"}
                 try:
-                    response = await model.generate_content_async(
-                        gemini_messages,
-                        generation_config=genai.types.GenerationConfig(
+                    response = await client.aio.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=genai_types.GenerateContentConfig(
                             temperature=temperature,
                             max_output_tokens=max_tokens,
                         ),
@@ -387,13 +424,12 @@ class AIService:
 
             return {"success": False, "error": last_error or "events extraction failed"}
         except Exception as e:
-            logger.error(f"Events extraction Gemini call failed: {e}")
+            logger.error("Events extraction Gemini call failed: %s", e)
             return {"success": False, "error": str(e)}
 
-    def _convert_to_gemini_format(self, messages: List[Dict[str, str]]) -> str:
-        """Convert OpenAI format messages to Gemini format."""
+    def _messages_to_text(self, messages: List[Dict[str, str]]) -> str:
+        """Convert OpenAI-style chat messages to a single Gemini prompt."""
         formatted_messages = []
-
         for message in messages:
             role = message["role"]
             content = message["content"]
@@ -406,6 +442,10 @@ class AIService:
                 formatted_messages.append(f"Assistant: {content}")
 
         return "\n\n".join(formatted_messages)
+
+    def _convert_to_gemini_format(self, messages: List[Dict[str, str]]) -> str:
+        """Backward-compatible alias for older structured AI code paths."""
+        return self._messages_to_text(messages)
 
     def _build_system_context(self, context: Dict[str, Any], ai_config: Dict[str, Any]) -> str:
         """Build system context for Croatian tourism assistance."""

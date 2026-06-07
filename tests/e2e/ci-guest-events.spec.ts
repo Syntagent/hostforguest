@@ -7,6 +7,17 @@ import { openGuestApp, openGuestTab, waitForGuestShell } from "./ci-guest-auth";
 test.describe.configure({ mode: "serial" });
 
 test.describe("CI guest events", () => {
+  test("stay tab renders accommodation details", async ({ page }) => {
+    await openGuestApp(page);
+    await waitForGuestShell(page);
+    await openGuestTab(page, "Your stay");
+
+    await expect(page.getByTestId("guest-stay-tab")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole("heading", { name: /Your stay|Vaš boravak/i })).toBeVisible({
+      timeout: 15000,
+    });
+  });
+
   test("events tab renders feed or empty state", async ({ page }) => {
     await openGuestApp(page);
     await waitForGuestShell(page);
@@ -29,6 +40,17 @@ test.describe("CI guest events", () => {
       .catch(() => false);
 
     expect(hasFeed || empty).toBeTruthy();
+  });
+
+  test("legacy preferences URLs redirect to setup wizard", async ({ page }) => {
+    const accessCode = process.env.E2E_GUEST_ACCESS_CODE;
+    expect(accessCode).toBeTruthy();
+
+    await page.goto(`/guest/preferences/${accessCode}`);
+    await expect(page).toHaveURL(new RegExp(`/guest/setup/${accessCode}`), { timeout: 15000 });
+
+    await page.goto(`/guest/preferences?accessCode=${accessCode}`);
+    await expect(page).toHaveURL(new RegExp(`/guest/setup/${accessCode}`), { timeout: 15000 });
   });
 
   test("guest can save a synthetic event to plan", async ({ page, request }) => {

@@ -116,7 +116,7 @@ class Recommendation(Base):
     
     # Relationships
     request_id = Column(UUID(as_uuid=True), ForeignKey("recommendation_requests.id"), nullable=False)
-    attraction_id = Column(UUID(as_uuid=True), ForeignKey("attractions.id"), nullable=True)
+    attraction_id = Column(UUID(as_uuid=True), ForeignKey("attractions.id", ondelete="SET NULL"), nullable=True)
     seasonal_event_id = Column(UUID(as_uuid=True), ForeignKey("seasonal_events.id"), nullable=True)
     
     # Recommendation Details

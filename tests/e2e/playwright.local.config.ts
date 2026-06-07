@@ -8,6 +8,9 @@ export default defineConfig({
   testMatch: [
     "ci-login-feedback.spec.ts",
     "ci-host-login-procedure.spec.ts",
+    "ci-host-dashboard.spec.ts",
+    "ci-guest-events.spec.ts",
+    "ci-onboarding-geocode.spec.ts",
     "complete-full-onboarding.spec.ts",
   ],
   timeout: 300000,

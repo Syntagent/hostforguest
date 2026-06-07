@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Mapping, Optional
 
-from app.scraping.events.policies import PoliteCrawler, ScrapingError
+from app.scraping.events.policies import PoliteCrawler, PoliteCrawlerConfig, ScrapingError
 from app.scraping.events.schemas.local_event import LocalEventDraft
 from app.scraping.events.sources import EventSourceDefinition
 
@@ -33,10 +33,18 @@ class BaseEventScraper(ABC):
         policy: Optional[PoliteCrawler] = None,
     ) -> None:
         self.source: dict[str, Any] = dict(source or {})
-        if policy is None and self.source.get("insecure_ssl"):
-            from app.scraping.events.policies import PoliteCrawlerConfig
-
-            policy = PoliteCrawler(config=PoliteCrawlerConfig(verify_ssl=False))
+        if policy is None and (
+            self.source.get("insecure_ssl")
+            or self.source.get("user_agent")
+            or self.source.get("headers")
+        ):
+            policy = PoliteCrawler(
+                config=PoliteCrawlerConfig(
+                    verify_ssl=not bool(self.source.get("insecure_ssl")),
+                    user_agent=str(self.source.get("user_agent") or PoliteCrawlerConfig.user_agent),
+                    headers=dict(self.source.get("headers") or {}),
+                )
+            )
         self._policy = policy or PoliteCrawler()
 
     @property

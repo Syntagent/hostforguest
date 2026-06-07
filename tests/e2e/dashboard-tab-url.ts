@@ -2,6 +2,7 @@
 
 export const HOST_TAB_LABEL_TO_ID: Record<string, string> = {
   Overview: "overview",
+  Accommodation: "accommodation",
   Stay: "accommodation",
   Channels: "channels",
   Guests: "groups",
@@ -13,6 +14,8 @@ export const HOST_TAB_LABEL_TO_ID: Record<string, string> = {
   Discover: "discover",
   Cleaning: "cleaning",
   Insights: "insights",
+  Compliance: "compliance",
+  Account: "account",
 };
 
 export function dashboardPathForTab(label: string): string {

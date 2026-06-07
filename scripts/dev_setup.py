@@ -162,11 +162,11 @@ def check_dependencies():
         missing_deps.append("openai")
     
     try:
-        import google.generativeai
-        print("✅ Google AI library installed")
+        from google import genai  # noqa: F401
+        print("✅ Google GenAI library installed")
     except ImportError:
-        print("❌ Google AI library missing")
-        missing_deps.append("google-generativeai")
+        print("❌ Google GenAI library missing")
+        missing_deps.append("google-genai")
     
     if missing_deps:
         print(f"\n⚠️  Missing dependencies: {', '.join(missing_deps)}")

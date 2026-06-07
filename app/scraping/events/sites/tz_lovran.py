@@ -20,10 +20,7 @@ class TzLovranScraper(ConfigurableListingScraper):
     desc_selector = ".entry-content p, .grid-content p, .excerpt"
 
     def _parse_listing_impl(self, html: str, *, base_url: str) -> List:
-        base = base_url.rstrip("/")
-        if "visitlovran.com" not in base:
-            base = "https://visitlovran.com"
-        listing = f"{base}/dogadanja/"
+        listing = self.listing_url()
         drafts = parse_article_cards(
             html,
             base_url=listing,

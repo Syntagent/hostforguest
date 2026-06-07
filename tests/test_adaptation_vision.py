@@ -7,6 +7,8 @@ import pytest
 from app.services.adaptation_service import fetch_image_bytes_for_adaptation_vision
 from app.services.ai_service_fallback import AIServiceWithFallback
 
+pytestmark = pytest.mark.no_db
+
 
 def test_gemini_structured_payload_text_only():
     p = AIServiceWithFallback._gemini_structured_content_payload("hello", None)

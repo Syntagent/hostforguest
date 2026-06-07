@@ -9,6 +9,8 @@ import pytest
 from app.services import adaptation_service as adaptation_svc
 from app.services.adaptation_roi import bom_totals, compute_adaptation_roi
 
+pytestmark = pytest.mark.no_db
+
 
 def test_offline_pool_shell_bom_totals_sane():
     lines = [x.model_dump() for x in adaptation_svc._offline_pool_shell_finish_bom()]
