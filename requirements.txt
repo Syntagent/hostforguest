@@ -31,6 +31,7 @@ numpy>=1.24.0
 
 # Web Scraping & Real-time Data
 crawl4ai>=0.4.0,<0.5.0
+litellm==1.83.0
 
 # HTTP Client
 httpx>=0.25.2
