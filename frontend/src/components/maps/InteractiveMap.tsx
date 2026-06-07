@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useGoogleMaps } from "./GoogleMapsProvider";
 import { motion } from "framer-motion";
 
-interface Location {
+export interface Location {
   id: string;
   title: string;
   description: string;
@@ -26,6 +26,11 @@ interface InteractiveMapProps {
   onLocationSelect?: (location: Location) => void;
   selectedLocationId?: string;
   className?: string;
+  onMapClick?: (coords: { lat: number; lng: number }) => void;
+  draggableLocationIds?: string[];
+  onMarkerDragEnd?: (location: Location, coords: { lat: number; lng: number }) => void;
+  initialCenter?: { lat: number; lng: number };
+  initialZoom?: number;
 }
 
 const CROATIA_CENTER = { lat: 45.1, lng: 15.2 };
@@ -40,7 +45,12 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
   locations,
   onLocationSelect,
   selectedLocationId,
-  className = ""
+  className = "",
+  onMapClick,
+  draggableLocationIds = [],
+  onMarkerDragEnd,
+  initialCenter = CROATIA_CENTER,
+  initialZoom = 7
 }) => {
   const { isLoaded, google, setMap } = useGoogleMaps();
   const mapRef = useRef<HTMLDivElement>(null);
@@ -53,8 +63,8 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     if (!isLoaded || !google || !mapRef.current) return;
 
     const mapInstance = new google.maps.Map(mapRef.current, {
-      center: CROATIA_CENTER,
-      zoom: 7,
+      center: initialCenter,
+      zoom: initialZoom,
       mapTypeId: google.maps.MapTypeId.ROADMAP,
       mapTypeControl: true,
       streetViewControl: true,
@@ -87,7 +97,21 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     return () => {
       setMap(null);
     };
-  }, [isLoaded, google, setMap]);
+  }, [isLoaded, google, setMap, initialCenter, initialZoom]);
+
+  useEffect(() => {
+    if (!map || !google || !onMapClick) return;
+
+    const listener = map.addListener("click", (event: google.maps.MapMouseEvent) => {
+      const latLng = event.latLng;
+      if (!latLng) return;
+      onMapClick({ lat: latLng.lat(), lng: latLng.lng() });
+    });
+
+    return () => {
+      google.maps.event.removeListener(listener);
+    };
+  }, [map, google, onMapClick]);
 
   // Create markers for locations
   useEffect(() => {
@@ -98,11 +122,14 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
 
     const newMarkers: google.maps.Marker[] = [];
 
+    const draggableIds = new Set(draggableLocationIds);
+
     locations.forEach((location) => {
       const marker = new google.maps.Marker({
         position: location.coordinates,
         map: map,
         title: location.title,
+        draggable: draggableIds.has(location.id),
         icon: {
           url: getMarkerIcon(location.category),
           scaledSize: new google.maps.Size(32, 32),
@@ -125,6 +152,12 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
         }
       });
 
+      marker.addListener("dragend", () => {
+        const position = marker.getPosition();
+        if (!position || !onMarkerDragEnd) return;
+        onMarkerDragEnd(location, { lat: position.lat(), lng: position.lng() });
+      });
+
       newMarkers.push(marker);
     });
 
@@ -142,7 +175,7 @@ export const InteractiveMap: React.FC<InteractiveMapProps> = ({
     return () => {
       newMarkers.forEach(marker => marker.setMap(null));
     };
-  }, [map, google, infoWindow, locations, selectedLocationId, onLocationSelect]);
+  }, [map, google, infoWindow, locations, selectedLocationId, onLocationSelect, draggableLocationIds, onMarkerDragEnd]);
 
   const getMarkerIcon = (category: string): string => {
     const iconMap: Record<string, string> = {

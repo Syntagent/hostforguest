@@ -16,7 +16,7 @@ import {
   type ItineraryMapViewData,
 } from "@/lib/api";
 import { GoogleMapsProvider } from "@/components/maps/GoogleMapsProvider";
-import { InteractiveMap } from "@/components/maps/InteractiveMap";
+import { InteractiveMap, type Location as MapLocation } from "@/components/maps/InteractiveMap";
 import { CalendarClock, ChevronDown, ChevronUp, Loader2, MapPin, Plus, Save, Sparkles, Trash2, Wand2 } from "lucide-react";
 
 interface RoutesTabProps {
@@ -53,6 +53,8 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
   const [mapData, setMapData] = useState<ItineraryMapViewData | null>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
+  const [addWaypointFromMap, setAddWaypointFromMap] = useState(false);
+  const [mapActionLoading, setMapActionLoading] = useState(false);
 
   const [showNewTemplate, setShowNewTemplate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -142,12 +144,17 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
     return [...acts].sort((a, b) => a.sequence_order - b.sequence_order);
   }, [currentDay]);
 
-  const mapLocations = useMemo(() => {
+  const mapLocations: MapLocation[] = useMemo(() => {
     if (!mapData?.locations?.length) return [];
     return mapData.locations.map((l) => ({
       id: l.id,
       title: l.name,
-      description: l.type === "base" ? "Base / stay" : "Stop",
+      description:
+        l.type === "base"
+          ? "Base / stay"
+          : l.sequence
+            ? `Stop ${l.sequence}`
+            : "Stop",
       category: l.type,
       location: "",
       rating: 0,
@@ -155,6 +162,11 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
       coordinates: { lat: l.lat, lng: l.lng },
     }));
   }, [mapData]);
+
+  const routeMapLocations = useMemo(
+    () => mapLocations.filter((location) => location.category !== "base"),
+    [mapLocations]
+  );
 
   const handleCreateTemplate = async () => {
     if (!newTitle.trim()) return;
@@ -333,6 +345,77 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
       await openDetail(selected as unknown as HostItineraryRow);
       if (selectedDayId) await loadMapForDay(selectedDayId);
     } else setError(res.error || "Reorder failed");
+  };
+
+  const refreshCurrentDay = async (dayPlanId: string) => {
+    if (!selected) return;
+    await openDetail(selected as unknown as HostItineraryRow);
+    setSelectedDayId(dayPlanId);
+    await loadMapForDay(dayPlanId);
+  };
+
+  const handleMapWaypointAdd = async (coords: { lat: number; lng: number }) => {
+    if (!selected || !currentDay || !addWaypointFromMap || mapActionLoading) return;
+    setMapActionLoading(true);
+    setError(null);
+    const next = sortedActivities.length + 1;
+    const res = await itinerariesApi.createRoutePoint(selected.id, {
+      day_plan_id: currentDay.id,
+      name: `Waypoint ${next}`,
+      latitude: coords.lat,
+      longitude: coords.lng,
+      description: "Added from map",
+      order_index: next,
+      estimated_duration: 45,
+    });
+    if (res.success) {
+      setAddWaypointFromMap(false);
+      await refreshCurrentDay(currentDay.id);
+    } else {
+      setError(res.error || "Failed to add waypoint from map");
+    }
+    setMapActionLoading(false);
+  };
+
+  const handleMapMarkerDragEnd = async (
+    location: MapLocation,
+    coords: { lat: number; lng: number }
+  ) => {
+    if (!selected || !currentDay || mapActionLoading) return;
+    const ids = routeMapLocations.map((item) => item.id);
+    const currentIdx = ids.indexOf(location.id);
+    if (currentIdx < 0 || ids.length < 2) return;
+
+    const nearest = routeMapLocations
+      .filter((item) => item.id !== location.id)
+      .map((item) => ({
+        item,
+        distance:
+          Math.abs(item.coordinates.lat - coords.lat) +
+          Math.abs(item.coordinates.lng - coords.lng),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0]?.item;
+    if (!nearest) return;
+
+    const targetIdx = ids.indexOf(nearest.id);
+    if (targetIdx < 0) return;
+    const nextIds = ids.filter((id) => id !== location.id);
+    const insertAt = targetIdx;
+    nextIds.splice(insertAt, 0, location.id);
+    if (nextIds.join("|") === ids.join("|")) return;
+
+    setMapActionLoading(true);
+    setError(null);
+    const res = await itinerariesApi.reorderRoutePoints(selected.id, {
+      day_plan_id: currentDay.id,
+      ordered_activity_ids: nextIds,
+    });
+    if (res.success) {
+      await refreshCurrentDay(currentDay.id);
+    } else {
+      setError(res.error || "Failed to reorder waypoint from map");
+    }
+    setMapActionLoading(false);
   };
 
   const handleAddActivity = async () => {
@@ -634,25 +717,55 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
                 </div>
 
                 <div>
-                  <h4 className="mb-2 flex items-center gap-2 text-sm font-medium">
-                    <MapPin className="h-4 w-4" />
-                    Map
-                  </h4>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="flex items-center gap-2 text-sm font-medium">
+                      <MapPin className="h-4 w-4" />
+                      Map
+                    </h4>
+                    {currentDay && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={addWaypointFromMap ? "primary" : "outline"}
+                        onClick={() => setAddWaypointFromMap((value) => !value)}
+                        disabled={mapActionLoading}
+                      >
+                        {mapActionLoading ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Plus className="mr-2 h-4 w-4" />
+                        )}
+                        {addWaypointFromMap ? "Click map to add" : "Add from map"}
+                      </Button>
+                    )}
+                  </div>
                   {mapLoading && (
                     <p className="text-xs text-muted-foreground">Loading map…</p>
                   )}
                   {!mapLoading && mapLocations.length === 0 && (
                     <p className="text-xs text-muted-foreground">
-                      Add stops with coordinates or linked attractions to see the map.
+                      Use "Add from map" to place the first waypoint, or add stops with coordinates.
                     </p>
                   )}
-                  {!mapLoading && mapLocations.length > 0 && (
+                  {!mapLoading && currentDay && (
                     <GoogleMapsProvider
                       apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""}
                     >
                       <div className="h-[280px] overflow-hidden rounded-xl border">
-                        <InteractiveMap locations={mapLocations} className="h-full w-full" />
+                        <InteractiveMap
+                          locations={mapLocations}
+                          className="h-full w-full"
+                          onMapClick={addWaypointFromMap ? handleMapWaypointAdd : undefined}
+                          draggableLocationIds={routeMapLocations.map((location) => location.id)}
+                          onMarkerDragEnd={handleMapMarkerDragEnd}
+                          initialCenter={mapData?.center}
+                          initialZoom={mapData?.zoom}
+                        />
                       </div>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Drag route markers near another stop to reorder them. Toggle "Add from map"
+                        and click anywhere on the map to create a waypoint.
+                      </p>
                     </GoogleMapsProvider>
                   )}
                 </div>
