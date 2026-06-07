@@ -9,9 +9,7 @@ import os
 import logging
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
-import openai
-from app.services.ai_service import AIService, _import_google_genai
-from app.services.settings_service import SettingsService
+from app.services.ai_service import AIService, _import_google_genai, _import_openai
 
 # Ensure environment variables are loaded
 from dotenv import load_dotenv
@@ -60,7 +58,7 @@ class AIServiceWithFallback(AIService):
     This makes it easier to test AI features without setting up database keys.
     """
     
-    async def _get_openai_client(self, host_id: str) -> Optional[openai.AsyncOpenAI]:
+    async def _get_openai_client(self, host_id: str) -> Optional[Any]:
         """Get configured OpenAI client with environment variable fallback."""
         try:
             # For onboarding flow, use environment variable directly
@@ -68,6 +66,7 @@ class AIServiceWithFallback(AIService):
                 api_key = os.getenv('OPENAI_API_KEY')
                 if api_key:
                     logger.info(f"Using OpenAI API key from environment for onboarding flow")
+                    openai = _import_openai()
                     return openai.AsyncOpenAI(api_key=api_key)
                 else:
                     logger.warning(f"No OpenAI API key found for onboarding flow")
@@ -85,6 +84,7 @@ class AIServiceWithFallback(AIService):
                     logger.warning(f"No OpenAI API key found for host {host_id}")
                     return None
                 
+            openai = _import_openai()
             return openai.AsyncOpenAI(api_key=api_key)
             
         except Exception as e:

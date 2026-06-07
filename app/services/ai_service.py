@@ -7,22 +7,35 @@ supporting both OpenAI GPT models and Google Gemini models.
 
 import logging
 import os
-from typing import Dict, List, Optional, Any, Union, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime
 import json
 import asyncio
 
-# AI Libraries (Gemini deferred — see _import_google_genai — avoids heavy import at collection time)
-import openai
-
-# Internal imports
-from app.core.config import settings
-from app.services.settings_service import SettingsService
 from app.services.embedding_stub import deterministic_stub_embedding
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from app.services.settings_service import SettingsService
+
 _google_genai_cache: Optional[Tuple[Any, Any]] = None
+_openai_cache: Optional[Any] = None
+
+
+def _import_openai() -> Any:
+    """
+    Import OpenAI only when it is used.
+
+    The SDK imports a large generated type tree. Deferring it keeps app startup
+    and pytest collection responsive when OpenAI is not the selected provider.
+    """
+    global _openai_cache
+    if _openai_cache is None:
+        import openai
+
+        _openai_cache = openai
+    return _openai_cache
 
 
 def _import_google_genai() -> Tuple[Any, Any]:
@@ -49,12 +62,12 @@ class AIService:
     host preferences and handles API key management through the settings service.
     """
 
-    def __init__(self, settings_service: Optional[SettingsService] = None):
+    def __init__(self, settings_service: Optional["SettingsService"] = None):
         self.settings_service = settings_service
         self._openai_client = None
         self._gemini_models = {}
 
-    async def _get_openai_client(self, host_id: str) -> Optional[openai.AsyncOpenAI]:
+    async def _get_openai_client(self, host_id: str) -> Optional[Any]:
         """Get configured OpenAI client for a host."""
         try:
             import os
@@ -67,6 +80,7 @@ class AIService:
                 logger.warning(f"No OpenAI API key found for host {host_id}")
                 return None
 
+            openai = _import_openai()
             return openai.AsyncOpenAI(api_key=api_key)
 
         except Exception as e:

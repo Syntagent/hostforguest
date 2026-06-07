@@ -15,6 +15,16 @@ services:
     container_name: hostforguest_prod_api
     ports: !override
       - "127.0.0.1:8006:8000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "awk '$$2 ~ /:1F40$/ && $$4 == \"0A\" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
     environment:
       ENVIRONMENT: production
       DEBUG: "false"

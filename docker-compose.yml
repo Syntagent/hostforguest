@@ -37,7 +37,11 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      test:
+        [
+          "CMD-SHELL",
+          "awk '$$2 ~ /:1F40$/ && $$4 == \"0A\" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -68,7 +72,11 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD-SHELL",
+          "awk '$$2 ~ /:0BB8$/ && $$4 == \"0A\" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3

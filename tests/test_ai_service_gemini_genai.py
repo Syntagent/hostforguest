@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+import subprocess
+import sys
 
 from app.services.ai_service import AIService
 
@@ -41,3 +43,18 @@ def test_messages_to_text_preserves_chat_roles():
     assert "System: Return JSON only." in text
     assert "Human: Find events." in text
     assert "Assistant: []" in text
+
+
+def test_ai_service_import_does_not_load_openai_sdk():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import app.services.ai_service; print('openai' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
