@@ -1,6 +1,6 @@
 # HostForGuest — Task backlog (living doc)
 
-Last updated: 2026-06-07 (event scraper / QA follow-up)
+Last updated: 2026-06-07 (production startup / migrations)
 
 ## Production status (H1 VPS)
 
@@ -39,18 +39,12 @@ Deploy: `docker compose -p hostforguest-prod -f docker-compose.yml -f docker-com
 - **Migration workflow** — `create_host_compliance_tables.sql` added to `migrations/MIGRATION_ORDER.txt`.
 - **QA / E2E expansion** — local Playwright config now includes host dashboard, guest events, and onboarding geocode specs; host Compliance/Accommodation and guest stay/preferences redirect coverage added.
 - **Fast test hygiene** — source-only tests can use `pytest.mark.no_db` to skip the autouse PostgreSQL schema reset.
+- **Production startup health** — API/OpenAI imports are lazy, Docker healthchecks use lightweight listener checks, and the stack was redeployed healthy behind Cloudflare.
+- **Production migrations** — compliance tables, `host_profiles.property_rules`, `local_events`, and `event_source_proposals` verified on prod DB.
 
 ## Open — next sprint
 
-### 1. Database migrations (manual on prod if not auto-applied)
-
-- `migrations/create_host_compliance_tables.sql` (now in `migrations/MIGRATION_ORDER.txt`)
-- `migrations/add_property_rules_to_host_profiles.sql` (in `migrations/MIGRATION_ORDER.txt`)
-- `scripts/migrate_local_events_tables.py` for local events tables
-
-Run SQL via the existing migration workflow; run the local-events script with explicit prod DB env or inside the prod API container. Do not change schemas without need.
-
-### 2. Routes / map polish (if gaps remain)
+### 1. Routes / map polish (if gaps remain)
 
 - Drag-reorder TNT points on map
 - Click-to-add waypoint from map UI
