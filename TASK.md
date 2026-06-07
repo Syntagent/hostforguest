@@ -48,7 +48,7 @@ Deploy: `docker compose -p hostforguest-prod -f docker-compose.yml -f docker-com
 ### 1. Frontend production build / deploy blocker
 
 - Redeploy route map polish after `docker compose ... build frontend` completes.
-- Current VPS frontend build reaches `next build` optimization, then hangs after `[AggregateError: ] { code: 'ETIMEDOUT' }`; existing production frontend remains healthy/live.
+- `next/font/google` build-time fetch was removed, but the VPS build still stays CPU-bound in `next build` optimization; existing production frontend remains healthy/live.
 
 ## Local dev (canonical)
 
