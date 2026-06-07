@@ -41,13 +41,14 @@ Deploy: `docker compose -p hostforguest-prod -f docker-compose.yml -f docker-com
 - **Fast test hygiene** — source-only tests can use `pytest.mark.no_db` to skip the autouse PostgreSQL schema reset.
 - **Production startup health** — API/OpenAI imports are lazy, Docker healthchecks use lightweight listener checks, and the stack was redeployed healthy behind Cloudflare.
 - **Production migrations** — compliance tables, `host_profiles.property_rules`, `local_events`, and `event_source_proposals` verified on prod DB.
+- **Routes / map polish (code complete)** — route map now supports click-to-add waypoints and draggable marker reorder via existing route point APIs (`10ada0c`).
 
 ## Open — next sprint
 
-### 1. Routes / map polish (if gaps remain)
+### 1. Frontend production build / deploy blocker
 
-- Drag-reorder TNT points on map
-- Click-to-add waypoint from map UI
+- Redeploy route map polish after `docker compose ... build frontend` completes.
+- Current VPS frontend build reaches `next build` optimization, then hangs after `[AggregateError: ] { code: 'ETIMEDOUT' }`; existing production frontend remains healthy/live.
 
 ## Local dev (canonical)
 

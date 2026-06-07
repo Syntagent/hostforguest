@@ -32,3 +32,11 @@ def test_routes_tab_uses_map_hooks_for_waypoints_and_reorder():
     assert "itinerariesApi.reorderRoutePoints" in source
     assert "draggableLocationIds={routeMapLocations.map" in source
     assert "onMapClick={addWaypointFromMap ? handleMapWaypointAdd : undefined}" in source
+
+
+def test_frontend_layout_does_not_fetch_google_fonts_at_build_time():
+    source = (ROOT / "frontend" / "src" / "app" / "layout.tsx").read_text()
+
+    assert "next/font/google" not in source
+    assert "--font-body" in source
+    assert "--font-display" in source
