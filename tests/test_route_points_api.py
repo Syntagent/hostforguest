@@ -9,7 +9,33 @@ from fastapi import status
 
 
 @pytest.mark.asyncio
-async def test_route_points_create_update_delete_reorder(async_client: AsyncClient):
+async def test_route_points_create_update_delete_reorder(
+    async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    from app.services.itinerary_service import ItineraryService
+
+    async def fake_geocode_address(self, host_id, address):
+        return None
+
+    async def fake_calculate_travel_to_activity(self, day_plan_id, activity_data, coords, host_id):
+        return {
+            "time_minutes": 0,
+            "distance_km": 0,
+            "cost": 0,
+            "instructions": None,
+        }
+
+    async def fake_generate_google_maps_url(self, location_name, address, coords, host_id):
+        return None
+
+    monkeypatch.setattr(ItineraryService, "_geocode_address", fake_geocode_address)
+    monkeypatch.setattr(
+        ItineraryService, "_calculate_travel_to_activity", fake_calculate_travel_to_activity
+    )
+    monkeypatch.setattr(
+        ItineraryService, "_generate_google_maps_url", fake_generate_google_maps_url
+    )
+
     email = f"route-{uuid.uuid4().hex[:12]}@example.com"
     password = "securepassword123"
     reg = await async_client.post(
@@ -80,13 +106,25 @@ async def test_route_points_create_update_delete_reorder(async_client: AsyncClie
         },
     )
     assert p2.status_code == status.HTTP_201_CREATED, p2.text
+    p3 = await async_client.post(
+        f"/api/v1/itineraries/{itinerary_id}/route-points",
+        headers=headers,
+        json={
+            "day_plan_id": day_plan_id,
+            "name": "Hidden viewpoint",
+            "latitude": 45.2751,
+            "longitude": 14.2734,
+            "estimated_duration": 30,
+        },
+    )
+    assert p3.status_code == status.HTTP_201_CREATED, p3.text
 
     listed = await async_client.get(
         f"/api/v1/itineraries/{itinerary_id}/route-points",
         headers=headers,
     )
     assert listed.status_code == status.HTTP_200_OK, listed.text
-    assert len(listed.json()) == 2
+    assert len(listed.json()) == 3
 
     pid = p1.json()["id"]
     upd = await async_client.put(
@@ -106,6 +144,27 @@ async def test_route_points_create_update_delete_reorder(async_client: AsyncClie
         },
     )
     assert reorder.status_code == status.HTTP_200_OK, reorder.text
+    reordered = await async_client.get(
+        f"/api/v1/itineraries/{itinerary_id}/route-points",
+        headers=headers,
+    )
+    assert reordered.status_code == status.HTTP_200_OK, reordered.text
+    order_by_name = {point["name"]: point["order_index"] for point in reordered.json()}
+    assert order_by_name == {
+        "Old town": 1,
+        "Lungomare pier": 2,
+        "Hidden viewpoint": 3,
+    }
+
+    duplicate_reorder = await async_client.put(
+        f"/api/v1/itineraries/{itinerary_id}/route-points/reorder",
+        headers=headers,
+        json={
+            "day_plan_id": day_plan_id,
+            "ordered_activity_ids": [p2.json()["id"], p2.json()["id"]],
+        },
+    )
+    assert duplicate_reorder.status_code == status.HTTP_400_BAD_REQUEST
 
     save = await async_client.put(
         f"/api/v1/itineraries/{itinerary_id}",

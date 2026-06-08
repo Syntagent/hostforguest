@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,9 +16,20 @@ import {
   type ItineraryActivityDTO,
   type ItineraryMapViewData,
 } from "@/lib/api";
-import { GoogleMapsProvider } from "@/components/maps/GoogleMapsProvider";
-import { InteractiveMap, type Location as MapLocation } from "@/components/maps/InteractiveMap";
+import type { Location as MapLocation } from "@/components/maps/InteractiveMap";
 import { CalendarClock, ChevronDown, ChevronUp, Loader2, MapPin, Plus, Save, Sparkles, Trash2, Wand2 } from "lucide-react";
+
+const RouteDayMap = dynamic(
+  () => import("./route-day-map").then((module) => module.RouteDayMap),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-[280px] items-center justify-center rounded-xl border bg-muted/30 text-xs text-muted-foreground">
+        Loading map...
+      </div>
+    ),
+  }
+);
 
 interface RoutesTabProps {
   guestGroups: GuestGroup[];
@@ -403,12 +415,17 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
     const insertAt = targetIdx;
     nextIds.splice(insertAt, 0, location.id);
     if (nextIds.join("|") === ids.join("|")) return;
+    const nextMappedIds = [...nextIds];
+    const orderedDayIds = sortedActivities.map((activity) => activity.id);
+    const fullDayIds = orderedDayIds.map((id) =>
+      nextMappedIds.includes(id) ? nextMappedIds.shift() ?? id : id
+    );
 
     setMapActionLoading(true);
     setError(null);
     const res = await itinerariesApi.reorderRoutePoints(selected.id, {
       day_plan_id: currentDay.id,
-      ordered_activity_ids: nextIds,
+      ordered_activity_ids: fullDayIds,
     });
     if (res.success) {
       await refreshCurrentDay(currentDay.id);
@@ -748,25 +765,15 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
                     </p>
                   )}
                   {!mapLoading && currentDay && (
-                    <GoogleMapsProvider
+                    <RouteDayMap
                       apiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ""}
-                    >
-                      <div className="h-[280px] overflow-hidden rounded-xl border">
-                        <InteractiveMap
-                          locations={mapLocations}
-                          className="h-full w-full"
-                          onMapClick={addWaypointFromMap ? handleMapWaypointAdd : undefined}
-                          draggableLocationIds={routeMapLocations.map((location) => location.id)}
-                          onMarkerDragEnd={handleMapMarkerDragEnd}
-                          initialCenter={mapData?.center}
-                          initialZoom={mapData?.zoom}
-                        />
-                      </div>
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Drag route markers near another stop to reorder them. Toggle "Add from map"
-                        and click anywhere on the map to create a waypoint.
-                      </p>
-                    </GoogleMapsProvider>
+                      locations={mapLocations}
+                      onMapClick={addWaypointFromMap ? handleMapWaypointAdd : undefined}
+                      draggableLocationIds={routeMapLocations.map((location) => location.id)}
+                      onMarkerDragEnd={handleMapMarkerDragEnd}
+                      initialCenter={mapData?.center}
+                      initialZoom={mapData?.zoom}
+                    />
                   )}
                 </div>
               </div>

@@ -1,4 +1,8 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "../app";
+@source "../components";
+@source "../contexts";
+@source "../lib";
 
 /* Load legacy JS config (theme, tailwindcss-animate, content paths) — without this, most utilities never generate. */
 @config "../../tailwind.config.js";

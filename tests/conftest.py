@@ -9,8 +9,10 @@ import os
 
 os.environ.setdefault("TOURISTGUIDE_PYTEST", "1")
 os.environ.setdefault("RUN_POSTGRES_TESTS", "1")
-os.environ.setdefault("POSTGRES_SERVER", "localhost")
-os.environ.setdefault("POSTGRES_PORT", "5434")
+# The app loads .env during settings import; production Docker values such as
+# POSTGRES_SERVER=postgres are not resolvable from host-based pytest runs.
+os.environ["POSTGRES_SERVER"] = os.environ.get("PYTEST_POSTGRES_SERVER", "localhost")
+os.environ["POSTGRES_PORT"] = os.environ.get("PYTEST_POSTGRES_PORT", "5434")
 
 import pytest
 import pytest_asyncio

@@ -959,11 +959,23 @@ class ItineraryService:
         day_plan = await self._get_day_plan(data.day_plan_id)
         if not day_plan or day_plan.itinerary_id != itinerary_id:
             return False
-        for idx, act_id in enumerate(data.ordered_activity_ids, start=1):
-            act = await self._get_activity(act_id)
-            if not act or act.day_plan_id != data.day_plan_id:
-                return False
-            act.sequence_order = idx
+        stmt = (
+            select(ItineraryActivity)
+            .where(ItineraryActivity.day_plan_id == data.day_plan_id)
+            .order_by(ItineraryActivity.sequence_order, ItineraryActivity.created_at)
+        )
+        result = await self.db.execute(stmt)
+        activities = list(result.scalars().all())
+        activities_by_id = {act.id: act for act in activities}
+        submitted_ids = list(data.ordered_activity_ids)
+        if len(set(submitted_ids)) != len(submitted_ids):
+            return False
+        if any(act_id not in activities_by_id for act_id in submitted_ids):
+            return False
+
+        ordered_ids = submitted_ids + [act.id for act in activities if act.id not in submitted_ids]
+        for idx, act_id in enumerate(ordered_ids, start=1):
+            activities_by_id[act_id].sequence_order = idx
         await self.db.commit()
         return True
 
