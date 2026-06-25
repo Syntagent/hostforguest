@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     maintenance_job_secret: str = ""
     # Optional explicit Fernet key (44 chars base64). If empty, crypto_util derives from secret_key.
     channel_encryption_key: str = ""
+    # Stripe Configuration
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+
+    # Telegram A2A bot
+    telegram_bot_token: str = "YOUR_BOT_TOKEN_HERE"
+    telegram_webhook_url: str = ""
 
     # Local dev: auto-create host for login page "Dev Login"
     dev_login_seed_enabled: bool = True

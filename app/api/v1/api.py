@@ -34,6 +34,7 @@ from app.api.v1 import (
     channel_webhooks,
     accommodation_voice,
     compliance,
+    a2a,
 )
 
 api_router = APIRouter()
@@ -102,3 +103,6 @@ api_router.include_router(
     prefix="/channel-webhooks",
     tags=["channel-webhooks"],
 )
+
+# A2A Telegram orchestrator
+api_router.include_router(a2a.router, prefix="/a2a", tags=["a2a"])

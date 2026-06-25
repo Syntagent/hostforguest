@@ -294,6 +294,34 @@ async def ensure_cleaning_partner_schema() -> None:
         logger.warning("Cleaning partner schema migration non-fatal: %s", e)
 
 
+async def ensure_host_telegram_schema() -> None:
+    """Add telegram_id column on hosts for A2A bot binding (idempotent)."""
+
+    def _run(sync_conn: Connection) -> None:
+        dialect = sync_conn.dialect.name
+        if dialect == "postgresql":
+            stmts = [
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_id BIGINT",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_hosts_telegram_id ON hosts (telegram_id) WHERE telegram_id IS NOT NULL",
+            ]
+        else:
+            stmts = [
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_id INTEGER",
+            ]
+        for stmt in stmts:
+            try:
+                sync_conn.execute(text(stmt))
+            except Exception as e:
+                logger.debug("Host telegram schema migration skipped: %s — %s", stmt, e)
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(_run)
+        logger.info("Host telegram_id schema checks applied")
+    except Exception as e:
+        logger.warning("Host telegram schema migration non-fatal: %s", e)
+
+
 async def ensure_guest_preference_age_category_length() -> None:
     """Widen age_category for multi-select (comma-separated keys)."""
     if not USE_POSTGRESQL:
@@ -392,6 +420,7 @@ async def init_postgresql() -> None:
                         await ensure_guest_preference_age_category_length()
                         await ensure_cleaning_partner_schema()
                         await ensure_partner_trade_schema()
+                        await ensure_host_telegram_schema()
                         return
 
                     # Try to enable pgvector extension (PostgreSQL only) - optional
@@ -426,6 +455,7 @@ async def init_postgresql() -> None:
         await ensure_cleaning_partner_schema()
         await ensure_partner_trade_schema()
         await ensure_attraction_host_contributions_schema()
+        await ensure_host_telegram_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise

@@ -43,6 +43,13 @@ async def lifespan(app: FastAPI):
         if settings.environment != "development":
             raise
 
+    try:
+        from app.services.a2a.telegram_handler import register_telegram_webhook
+
+        await register_telegram_webhook()
+    except Exception as e:
+        logger.warning("Telegram webhook registration skipped: %s", e)
+
     yield
 
     logger.info("Shutting down databases")

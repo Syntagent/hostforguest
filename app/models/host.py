@@ -8,7 +8,7 @@ where Croatian tourist hosts can manage their guest services.
 from typing import Optional, List, Dict, Any
 import re
 from datetime import datetime
-from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey
+from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlmodel import SQLModel, Field
@@ -85,6 +85,9 @@ class Host(Base):
     # Guest Access
     guest_access_code = Column(String(10), nullable=True, unique=True, index=True)
     onboarding_completed = Column(Boolean, default=False)
+
+    # Telegram A2A bot binding
+    telegram_id = Column(BigInteger, nullable=True, unique=True, index=True)
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
