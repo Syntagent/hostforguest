@@ -231,6 +231,12 @@ class RecommendationCandidates:
                             keep = True
                     if not keep:
                         continue
+                # Filter by requested city (when explicitly set)
+                if request.current_location and request.current_location.strip():
+                    req_city = request.current_location.strip().lower()
+                    attr_city = (attraction.city or '').strip().lower()
+                    if req_city != attr_city:
+                        continue
                 if request.season and not _attraction_matches_request_season(
                     attraction, request.season
                 ):
@@ -397,11 +403,12 @@ class RecommendationCandidates:
                 )
             )
             if request.current_location and host.city:
-                cities = [host.city]
-                hcity = host.city.lower() if host.city else ""
-                if hcity == "lovran":
+                target = (request.current_location or host.city or '').strip()
+                cities = [target]
+                tcity = target.lower()
+                if tcity == "lovran":
                     cities.append("Opatija")
-                elif hcity == "opatija":
+                elif tcity == "opatija":
                     cities.append("Lovran")
                 stmt = stmt.where(Attraction.city.in_(cities))
             stmt = stmt.order_by(
