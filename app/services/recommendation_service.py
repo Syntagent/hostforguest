@@ -1258,6 +1258,10 @@ class RecommendationService:
             google_phone=scrub_contact_from_text(attraction.google_phone),
             google_maps_url=maps_fields.get("google_maps_url"),
             static_map_image_url=maps_fields.get("static_map_image_url"),
+            wikipedia_pageid=attraction.wikipedia_pageid,
+            wikipedia_extract=attraction.wikipedia_extract,
+            wikipedia_url=attraction.wikipedia_url,
+            wikipedia_image=attraction.wikipedia_image,
         )
 
     async def _load_attractions_by_ids(
