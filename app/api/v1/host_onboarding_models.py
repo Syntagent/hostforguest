@@ -4,7 +4,7 @@ Pydantic models for host onboarding API.
 Contains all request/response models and enums for the onboarding endpoints.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
 from enum import Enum
 
@@ -132,6 +132,38 @@ class AttractionSuggestionsResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
+class GooglePlacePhoto(BaseModel):
+    """Google Places photo metadata."""
+
+    photo_reference: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+class GooglePlaceNearbyItem(BaseModel):
+    """Single nearby place from Google Places nearby search."""
+
+    name: Optional[str] = None
+    place_id: Optional[str] = None
+    rating: Optional[float] = None
+    types: List[str] = Field(default_factory=list)
+    vicinity: Optional[str] = None
+    location: Optional[GooglePlaceLocation] = None
+    price_level: Optional[int] = None
+    photos: List[GooglePlacePhoto] = Field(default_factory=list)
+
+
+class NearbyGooglePlacesResponse(BaseModel):
+    """GET /onboarding/google-places/nearby response."""
+
+    success: bool
+    nearby_places: List[GooglePlaceNearbyItem] = Field(default_factory=list)
+    total_found: Optional[int] = None
+    search_location: Optional[GooglePlaceLocation] = None
+    search_radius: Optional[int] = None
+    error: Optional[str] = None
+
+
 class GooglePlacesResponse(BaseModel):
     """Google Places API response"""
     success: bool
@@ -216,6 +248,139 @@ class CoWriteRequest(BaseModel):
     style_preference: str = Field(default="warm_authentic", description="Preferred writing style")
 
 
+class EditSuggestionResponse(BaseModel):
+    """POST /onboarding/edit-suggestion response."""
+
+    success: bool
+    original: str
+    user_edit: str
+    final_suggestion: str
+    collaboration_used: bool
+    ai_improved: Optional[str] = None
+
+
+class CoWriteResponse(BaseModel):
+    """POST /onboarding/co-write response."""
+
+    success: bool
+    user_input: str
+    co_written: str
+    category: str
+
+
+class LocationAnalysisSection(BaseModel):
+    """Location analysis subsection for analyze-location."""
+
+    city: Optional[str] = None
+    region: Optional[str] = None
+    coordinates: Optional[Dict[str, Any]] = None
+    local_experience_score: float = 0.0
+    knowledge_level: Optional[str] = None
+
+
+class MarketPotentialSection(BaseModel):
+    """Market potential subsection for analyze-location."""
+
+    guest_alignment: Optional[Dict[str, Any]] = None
+    interest_diversity: int = 0
+    location_story_quality: Optional[Dict[str, Any]] = None
+    authenticity_indicators: List[Any] = Field(default_factory=list)
+
+
+class LocationRecommendationsSection(BaseModel):
+    """Recommendations subsection for analyze-location."""
+
+    suggested_improvements: List[str] = Field(default_factory=list)
+    marketing_angles: List[str] = Field(default_factory=list)
+    competitive_advantages: List[str] = Field(default_factory=list)
+
+
+class LocationAnalysisMetadata(BaseModel):
+    """Metadata subsection for analyze-location."""
+
+    analysis_timestamp: Optional[str] = None
+    data_sources: List[str] = Field(default_factory=list)
+    confidence_score: float = 0.0
+
+
+class LocationPotentialAnalysis(BaseModel):
+    """Nested analysis payload for analyze-location."""
+
+    location_analysis: LocationAnalysisSection = Field(default_factory=LocationAnalysisSection)
+    market_potential: MarketPotentialSection = Field(default_factory=MarketPotentialSection)
+    recommendations: LocationRecommendationsSection = Field(default_factory=LocationRecommendationsSection)
+    metadata: LocationAnalysisMetadata = Field(default_factory=LocationAnalysisMetadata)
+
+
+class AnalyzeLocationResponse(BaseModel):
+    """POST /onboarding/analyze-location response."""
+
+    success: bool
+    analysis: LocationPotentialAnalysis
+    insights: List[str] = Field(default_factory=list)
+    next_steps: List[str] = Field(default_factory=list)
+
+
+class OnboardingProgressStepItem(BaseModel):
+    """Single onboarding progress step."""
+
+    name: str
+    required: bool
+    completed: bool
+
+
+class OnboardingProgressResponse(BaseModel):
+    """GET /onboarding/progress/{host_id} response."""
+
+    host_id: Optional[str] = None
+    total_steps: Optional[int] = None
+    completed_steps: Optional[int] = None
+    completion_percentage: Optional[float] = None
+    steps: List[OnboardingProgressStepItem] = Field(default_factory=list)
+    next_step: Optional[str] = None
+    error: Optional[str] = None
+
+
+class OnboardingTrackStepResponse(BaseModel):
+    """POST /onboarding/track-step response."""
+
+    success: bool
+    message: str
+
+
+class OnboardingSuccessMetricsResponse(BaseModel):
+    """GET /onboarding/success-metrics/{host_id} response."""
+
+    host_id: Optional[str] = None
+    time_to_complete_hours: Optional[float] = None
+    profile_completeness_score: Optional[int] = None
+    onboarding_completed: Optional[bool] = None
+    created_at: Optional[str] = None
+    last_updated: Optional[str] = None
+    error: Optional[str] = None
+
+
+class OnboardingDropOffPoint(BaseModel):
+    """Drop-off point in admin onboarding analytics."""
+
+    step: str
+    drop_off_rate: float
+
+
+class OnboardingAdminAnalyticsResponse(BaseModel):
+    """GET /onboarding/analytics admin response."""
+
+    period_days: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    total_hosts: Optional[int] = None
+    completed_onboarding: Optional[int] = None
+    completion_rate: Optional[float] = None
+    average_time_to_complete_hours: Optional[float] = None
+    drop_off_points: List[OnboardingDropOffPoint] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
 class AttractionSuggestionsRequest(BaseModel):
     """Request for generating attraction suggestions"""
     city: Optional[str] = Field(None, description="City name")
@@ -267,6 +432,41 @@ class AccommodationPatch(BaseModel):
     languages: Optional[List[str]] = None
     welcome_message: Optional[str] = None
     gallery_images: Optional[List[str]] = None
+    property_rules: Optional[Dict[str, Any]] = None
+
+
+class AccommodationAgentContext(BaseModel):
+    """UI/agent state carried inside accommodation_snapshot._agent_context."""
+    model_config = ConfigDict(extra="allow")
+
+    page_goal: Optional[str] = None
+    allowed_actions: Optional[List[str]] = None
+    safety_rules: Optional[List[str]] = None
+    pending_patch: Optional[AccommodationPatch] = None
+    active_item_id: Optional[str] = None
+    checklist_state: Optional[List[ChecklistItemState]] = None
+    source: Optional[str] = None
+    option_field: Optional[str] = None
+    visible_options: Optional[List[str]] = None
+    selected_options: Optional[List[str]] = None
+    interpretation_goal: Optional[str] = None
+
+
+class AccommodationSnapshot(AccommodationPatch):
+    """Stay-tab profile snapshot sent with accommodation agent and voice requests."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    propertyRulesComplete: Optional[bool] = None
+    agent_context: Optional[AccommodationAgentContext] = Field(
+        default=None,
+        alias="_agent_context",
+        validation_alias="_agent_context",
+        serialization_alias="_agent_context",
+    )
+
+    def to_agent_dict(self) -> Dict[str, Any]:
+        """Serialize for the onboarding service (includes _agent_context alias)."""
+        return self.model_dump(by_alias=True, exclude_none=True)
 
 
 class AccommodationSuggestionOption(BaseModel):
@@ -276,12 +476,21 @@ class AccommodationSuggestionOption(BaseModel):
     patch: AccommodationPatch
 
 
+class AccommodationAgentAction(BaseModel):
+    """A safe page-domain action requested by the accommodation agent."""
+    action: Literal["update_draft", "replace_draft", "move_focus", "open_fields", "ask_followup", "no_op"]
+    target_item_id: Optional[str] = None
+    field: Optional[str] = None
+    patch: Optional[AccommodationPatch] = None
+    reason: Optional[str] = None
+
+
 class AccommodationAgentMessageRequest(BaseModel):
     """Request for one turn of the Stay-tab onboarding agent."""
     message: str = Field(..., min_length=1, description="Host message or selected quick reply")
     focused_item_id: Optional[str] = Field(None, description="Checklist item currently being improved")
     checklist_state: List[ChecklistItemState] = Field(default_factory=list)
-    accommodation_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    accommodation_snapshot: AccommodationSnapshot = Field(default_factory=AccommodationSnapshot)
     conversation_history: List[AgentMessage] = Field(default_factory=list)
 
 
@@ -292,7 +501,21 @@ class AccommodationAgentMessageResponse(BaseModel):
     quick_replies: List[str] = Field(default_factory=list)
     suggested_patch: AccommodationPatch = Field(default_factory=AccommodationPatch)
     suggestion_options: List[AccommodationSuggestionOption] = Field(default_factory=list)
+    actions: List[AccommodationAgentAction] = Field(default_factory=list)
     checklist_updates: List[ChecklistItemState] = Field(default_factory=list)
     next_focus_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CompleteOnboardingResponse(BaseModel):
+    """POST /onboarding/complete-onboarding success envelope."""
+
+    success: bool
+    message: str
+    host_id: str
+    guest_access_code: str
+    attractions_generated: int
+    profile_updated: bool
+    guest_access_url: str
+    next_steps: List[str]
 

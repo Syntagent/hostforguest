@@ -28,9 +28,11 @@ from app.models.host import (
     HostProfileResponse
 )
 from app.models.settings import HostSettings
+from app.services.rls_service import RLSService
 from app.core.config import settings
 from app.services.session_service import SessionService
 from app.services.geocoding_service import GeocodingService
+from app.services.maintenance_service import haversine_km
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +56,38 @@ def _coerce_placeholder_gps_to_none(
 
 
 def _apply_geocode_if_needed(profile: HostProfile) -> None:
-    """Fill latitude/longitude from address when GPS was not provided."""
+    """Fill or refresh latitude/longitude from address when GPS missing or stale."""
     clat, clng = _coerce_placeholder_gps_to_none(profile.latitude, profile.longitude)
     profile.latitude, profile.longitude = clat, clng
-    if clat is not None and clng is not None:
-        return
+
     if not ((profile.address or "").strip() or (profile.city or "").strip()):
         return
+
     result = GeocodingService.geocode(
         address=profile.address,
         city=profile.city,
         county=profile.county,
     )
-    if result:
+    if not result:
+        return
+
+    if clat is None or clng is None:
         profile.latitude = result.latitude
         profile.longitude = result.longitude
         logger.info(
             "Geocoded host profile via %s (%s)",
+            result.matched_query,
+            result.precision,
+        )
+        return
+
+    drift_km = haversine_km(clat, clng, result.latitude, result.longitude)
+    if drift_km > 1.5:
+        profile.latitude = result.latitude
+        profile.longitude = result.longitude
+        logger.info(
+            "Refreshed host GPS by %.1f km using %s (%s)",
+            drift_km,
             result.matched_query,
             result.precision,
         )
@@ -167,26 +184,32 @@ class HostService:
             Dict with host data and session tokens, or None
         """
         try:
-            host = await self.get_host_by_email(email)
+            rls = RLSService(self.db)
+            async with rls.login_bypass(email):
+                host = await self.get_host_by_email(email)
             if not host:
                 logger.warning(f"Authentication failed: Host not found for email {email}")
                 return None
-            
+
             if not self.verify_password(password, host.hashed_password):
                 logger.warning(f"Authentication failed: Invalid password for email {email}")
                 return None
-            
+
+            await rls.set_host_context(host.id)
+
             # Create session
             session_data = await self.session_service.create_session(
                 host_id=host.id,
                 user_agent=user_agent,
                 ip_address=ip_address
             )
-            
+
             if not session_data:
                 logger.error(f"Failed to create session for host {host.id}")
                 return None
-            
+
+            await rls.set_host_context(host.id)
+
             # Update last login
             await self.update_last_login(host.id)
             
@@ -220,17 +243,21 @@ class HostService:
                 logger.warning("Host creation failed: empty email")
                 return None
 
-            # Check if email already exists (case-insensitive)
-            existing_host = await self.get_host_by_email(email_lc)
+            rls = RLSService(self.db)
+            # Email lookup uses login bypass; keep it outside register_bypass so nested
+            # bypass exit does not drop register mode before INSERT (RLS production).
+            async with rls.login_bypass(email_lc):
+                existing_host = await self.get_host_by_email(email_lc)
             if existing_host:
                 logger.warning(f"Host creation failed: Email already exists {email_lc}")
                 return None
-            
-            # Create new host
-            hashed_password = self.get_password_hash(host_data.password)
-            
-            # Create host record
-            host = Host(
+
+            async with rls.register_bypass():
+                # Create new host
+                hashed_password = self.get_password_hash(host_data.password)
+
+                # Create host record
+                host = Host(
                 email=email_lc,
                 hashed_password=hashed_password,
                 first_name=host_data.first_name,
@@ -249,18 +276,21 @@ class HostService:
                 languages=host_data.languages,
                 max_group_size=host_data.max_group_size,
                 description=host_data.description,
-                welcome_message=host_data.welcome_message
-            )
-            
-            self.db.add(host)
-            await self.db.commit()
-            await self.db.refresh(host)
-            
+                    welcome_message=host_data.welcome_message
+                )
+
+                self.db.add(host)
+                await self.db.commit()
+
+            # register_bypass allows INSERT only — set tenant context before follow-up reads.
+            await rls.set_host_context(host.id)
+            host_for_response = await self.get_host_by_id(host.id) or host
+
             # Create default host settings
             await self._create_default_host_settings(host.id)
-            
+
             logger.info(f"Host created successfully: {host.email}")
-            return HostResponse.model_validate(host)
+            return HostResponse.model_validate(host_for_response)
             
         except IntegrityError as e:
             await self.db.rollback()
@@ -372,6 +402,34 @@ class HostService:
             await self.db.rollback()
             logger.error(f"Error updating host {host_id}: {e}")
             return None
+
+    async def change_password(
+        self,
+        host_id: uuid.UUID,
+        current_password: str,
+        new_password: str,
+    ) -> bool:
+        """Verify current password and persist a new hash."""
+        try:
+            host = await self.get_host_by_id(host_id)
+            if not host:
+                return False
+            if not self.verify_password(current_password, host.hashed_password):
+                return False
+            hashed = self.get_password_hash(new_password)
+            stmt = (
+                update(Host)
+                .where(Host.id == host_id)
+                .values(hashed_password=hashed, updated_at=datetime.utcnow())
+            )
+            await self.db.execute(stmt)
+            await self.db.commit()
+            logger.info("Password changed for host %s", host_id)
+            return True
+        except Exception as e:
+            await self.db.rollback()
+            logger.error("Error changing password for host %s: %s", host_id, e)
+            return False
     
     async def delete_host(self, host_id: uuid.UUID) -> bool:
         """
@@ -619,15 +677,19 @@ class HostService:
             Host if valid session, None otherwise
         """
         try:
-            session = await self.session_service.validate_session(session_token)
+            rls = RLSService(self.db)
+            async with rls.session_bypass():
+                session = await self.session_service.validate_session(session_token)
             if not session:
                 return None
-            
+
+            await rls.set_host_context(session.host_id)
+
             # Get host data
             stmt = select(Host).where(Host.id == session.host_id, Host.is_active == True)
             result = await self.db.execute(stmt)
             host = result.scalar_one_or_none()
-            
+
             return host
             
         except Exception as e:
@@ -644,7 +706,8 @@ class HostService:
         Returns:
             bool: True if successful
         """
-        return await self.session_service.invalidate_session(session_token)
+        async with RLSService(self.db).session_bypass():
+            return await self.session_service.invalidate_session(session_token)
     
     async def logout_all_devices(self, host_id: uuid.UUID) -> bool:
         """
@@ -668,7 +731,9 @@ class HostService:
         Returns:
             Dict with new session data or None
         """
-        return await self.session_service.refresh_session(refresh_token)
+        rls = RLSService(self.db)
+        async with rls.session_bypass():
+            return await self.session_service.refresh_session(refresh_token)
     
     async def get_host_sessions(self, host_id: uuid.UUID) -> List[Dict[str, Any]]:
         """

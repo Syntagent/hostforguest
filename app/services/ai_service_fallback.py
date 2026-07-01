@@ -7,16 +7,49 @@ keys are not available, making development easier.
 
 import os
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
-import openai
-from app.services.ai_service import AIService, _import_google_generativeai
-from app.services.settings_service import SettingsService
+from app.services.ai_service import AIService, _import_google_genai, _import_openai
 
 # Ensure environment variables are loaded
 from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+class _GeminiModelAdapter:
+    """Adapter for old generate_content_async call sites using google.genai."""
+
+    def __init__(self, *, client: Any, model_name: str, genai_types: Any) -> None:
+        self.client = client
+        self.model_name = model_name
+        self.genai_types = genai_types
+
+    def _config(self, generation_config: Any = None) -> Any:
+        if generation_config is None:
+            return None
+        kwargs: dict[str, Any] = {}
+        for key in ("temperature", "max_output_tokens", "response_mime_type", "response_schema"):
+            value = getattr(generation_config, key, None)
+            if value is not None:
+                kwargs[key] = value
+        return self.genai_types.GenerateContentConfig(**kwargs)
+
+    async def generate_content_async(self, contents: Any, generation_config: Any = None) -> Any:
+        return await self.client.aio.models.generate_content(
+            model=self.model_name,
+            contents=contents,
+            config=self._config(generation_config),
+        )
+
+
+def _generation_config_factory(**kwargs: Any) -> Any:
+    return SimpleNamespace(**kwargs)
+
+
+class _GenerationTypesCompat:
+    GenerationConfig = staticmethod(_generation_config_factory)
 
 class AIServiceWithFallback(AIService):
     """
@@ -25,7 +58,7 @@ class AIServiceWithFallback(AIService):
     This makes it easier to test AI features without setting up database keys.
     """
     
-    async def _get_openai_client(self, host_id: str) -> Optional[openai.AsyncOpenAI]:
+    async def _get_openai_client(self, host_id: str) -> Optional[Any]:
         """Get configured OpenAI client with environment variable fallback."""
         try:
             # For onboarding flow, use environment variable directly
@@ -33,13 +66,16 @@ class AIServiceWithFallback(AIService):
                 api_key = os.getenv('OPENAI_API_KEY')
                 if api_key:
                     logger.info(f"Using OpenAI API key from environment for onboarding flow")
+                    openai = _import_openai()
                     return openai.AsyncOpenAI(api_key=api_key)
                 else:
                     logger.warning(f"No OpenAI API key found for onboarding flow")
                     return None
             
             # Try to get API key from database first
-            api_key = await self.settings_service.get_host_api_key(host_id, "openai")
+            api_key = None
+            if self.settings_service:
+                api_key = await self.settings_service.get_host_api_key(host_id, "openai")
             
             # Fallback to environment variable
             if not api_key:
@@ -50,6 +86,7 @@ class AIServiceWithFallback(AIService):
                     logger.warning(f"No OpenAI API key found for host {host_id}")
                     return None
                 
+            openai = _import_openai()
             return openai.AsyncOpenAI(api_key=api_key)
             
         except Exception as e:
@@ -68,7 +105,9 @@ class AIServiceWithFallback(AIService):
                 logger.info(f"Using Google AI API key from environment for onboarding flow")
             else:
                 # Try to get API key from database first
-                api_key = await self.settings_service.get_host_api_key(host_id, "google_ai")
+                api_key = None
+                if self.settings_service:
+                    api_key = await self.settings_service.get_host_api_key(host_id, "google_ai")
                 
                 # Fallback to environment variable
                 if not api_key:
@@ -79,25 +118,12 @@ class AIServiceWithFallback(AIService):
                         logger.warning(f"No Google AI API key found for host {host_id}")
                         return None
             
-            genai, HarmCategory, HarmBlockThreshold = _import_google_generativeai()
-
-            # Configure Gemini with the API key
-            genai.configure(api_key=api_key)
-            
-            # Configure safety settings for tourism content - DISABLE ALL FILTERS
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
-            
-            model = genai.GenerativeModel(
+            genai, genai_types = _import_google_genai()
+            return _GeminiModelAdapter(
+                client=genai.Client(api_key=api_key),
                 model_name=model_name,
-                safety_settings=safety_settings
+                genai_types=genai_types,
             )
-            
-            return model
             
         except Exception as e:
             logger.error(f"Failed to initialize Gemini model {model_name}: {e}")
@@ -120,7 +146,9 @@ class AIServiceWithFallback(AIService):
                 }
             
             # Try to get from database first
-            ai_config = await self.settings_service.get_ai_config_for_host(host_id)
+            ai_config = {}
+            if self.settings_service:
+                ai_config = await self.settings_service.get_ai_config_for_host(host_id)
             
             # Apply environment variable defaults if not set
             defaults = {
@@ -338,7 +366,7 @@ class AIServiceWithFallback(AIService):
             content_payload = self._gemini_structured_content_payload(gemini_messages, image_parts)
 
             # Generate response with structured output
-            genai, _, _ = _import_google_generativeai()
+            genai = SimpleNamespace(types=_GenerationTypesCompat)
             import json
 
             # ATTEMPT 1: Try native Pydantic structured output
@@ -699,7 +727,7 @@ Include every top-level key listed under "required" when present; use sensible d
             gemini_messages = self._convert_to_gemini_format(messages)
             
             # Generate response
-            genai, _, _ = _import_google_generativeai()
+            genai = SimpleNamespace(types=_GenerationTypesCompat)
             response = await model.generate_content_async(
                 gemini_messages,
                 generation_config=genai.types.GenerationConfig(

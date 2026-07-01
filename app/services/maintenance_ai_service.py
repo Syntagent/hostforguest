@@ -51,12 +51,17 @@ class MaintenanceAIService:
         host: Host,
         issue: MaintenanceIssue,
     ) -> Dict[str, Any]:
-        candidates = await self._maint.fetch_partner_candidates(host, issue.category, limit=20)
+        candidates = await self._maint.fetch_partner_candidates(
+            host, issue.category, limit=20, linked_only=True
+        )
         if not candidates:
             return {
                 "ranked": [],
                 "ai_used": False,
-                "disclaimer": "No partners in database match this category. Add trades partners or widen location.",
+                "disclaimer": (
+                    "No linked partners match this category. "
+                    "Link maintenance partners to your account first."
+                ),
             }
 
         payload = []

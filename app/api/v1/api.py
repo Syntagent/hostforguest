@@ -4,8 +4,11 @@ Main API router for HostForGuest v1.
 Includes all API endpoints for the Croatian tourist host platform.
 """
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 
+from app.core.config import settings as app_settings
 from app.api.v1 import (
     hosts,
     maintenance,
@@ -33,9 +36,23 @@ from app.api.v1 import (
     channel_integrations,
     channel_webhooks,
     accommodation_voice,
+    compliance,
+    a2a,
 )
 
 api_router = APIRouter()
+
+
+@api_router.get("/health")
+async def api_v1_health_check():
+    """Monitorable health probe under the versioned API prefix (tunnel/proxy friendly)."""
+    return {
+        "status": "healthy",
+        "app": app_settings.app_name,
+        "version": app_settings.app_version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
 
 # Include all endpoint modules
 api_router.include_router(hosts.router, prefix="/hosts", tags=["hosts"])
@@ -48,6 +65,7 @@ api_router.include_router(settings.router, prefix="/settings", tags=["settings"]
 api_router.include_router(itineraries.router, prefix="/itineraries", tags=["itineraries"])
 api_router.include_router(host_onboarding.router, prefix="/onboarding", tags=["host-onboarding"])
 api_router.include_router(accommodation_voice.router)
+api_router.include_router(compliance.router, prefix="/compliance", tags=["compliance"])
 
 # Real-time data endpoints
 api_router.include_router(realtime_data.router, prefix="/realtime", tags=["real-time-data"])
@@ -100,3 +118,6 @@ api_router.include_router(
     prefix="/channel-webhooks",
     tags=["channel-webhooks"],
 )
+
+# A2A Telegram orchestrator
+api_router.include_router(a2a.router, prefix="/a2a", tags=["a2a"])

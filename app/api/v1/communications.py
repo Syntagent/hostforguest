@@ -13,15 +13,34 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
+from app.models.communications_api import (
+    CommunicationSuccessResponse,
+    WelcomeKitGenerateResponse,
+)
 from app.core.database import get_db
 from app.core.auth import require_host_session
 from app.services.communication_service import CommunicationService
-from app.services.host_service import HostService
-from app.services.guest_group_service import GuestGroupService
+from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
 from app.models.host import Host
+from app.models.guest_group import GuestGroup
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _require_owned_guest_group(
+    guest_group_service: GuestGroupService,
+    guest_group_id: str,
+    current_host: Host,
+) -> GuestGroup:
+    """Return guest group only when it belongs to the authenticated host."""
+    guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(guest_group_id))
+    if not guest_group or not host_owns_guest_group(guest_group, current_host.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Guest group not found",
+        )
+    return guest_group
 
 
 # Request Models
@@ -47,13 +66,13 @@ class SendFollowUpRequest(BaseModel):
 
 
 class SendSMSRequest(BaseModel):
-    """Request for sending SMS."""
-    phone_number: str
+    """Request for sending SMS to a guest group's lead phone."""
+    guest_group_id: str
     message: str
     language: str = "en"
 
 
-@router.post("/pre-arrival-email")
+@router.post("/pre-arrival-email", response_model=CommunicationSuccessResponse)
 async def send_pre_arrival_email(
     request: SendPreArrivalEmailRequest,
     current_host: Host = Depends(require_host_session),
@@ -71,27 +90,11 @@ async def send_pre_arrival_email(
     """
     try:
         communication_service = CommunicationService(db)
-        host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
-        
-        # Get guest group
-        guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-        if not guest_group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Guest group not found"
-            )
-        
-        # Get host
-        host = await host_service.get_host_by_id(guest_group.host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Send email
-        success = await communication_service.send_pre_arrival_email(host, guest_group)
+        guest_group = await _require_owned_guest_group(
+            guest_group_service, request.guest_group_id, current_host
+        )
+        success = await communication_service.send_pre_arrival_email(current_host, guest_group)
         
         if success:
             return {"success": True, "message": "Pre-arrival email sent successfully"}
@@ -111,7 +114,7 @@ async def send_pre_arrival_email(
         )
 
 
-@router.post("/welcome-kit/generate")
+@router.post("/welcome-kit/generate", response_model=WelcomeKitGenerateResponse)
 async def generate_welcome_kit(
     request: GenerateWelcomeKitRequest,
     current_host: Host = Depends(require_host_session),
@@ -129,27 +132,11 @@ async def generate_welcome_kit(
     """
     try:
         communication_service = CommunicationService(db)
-        host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
-        
-        # Get guest group
-        guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-        if not guest_group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Guest group not found"
-            )
-        
-        # Get host
-        host = await host_service.get_host_by_id(guest_group.host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Generate welcome kit
-        welcome_kit = await communication_service.generate_welcome_kit(host, guest_group)
+        guest_group = await _require_owned_guest_group(
+            guest_group_service, request.guest_group_id, current_host
+        )
+        welcome_kit = await communication_service.generate_welcome_kit(current_host, guest_group)
         
         if welcome_kit:
             return {"success": True, "welcome_kit": welcome_kit}
@@ -169,7 +156,7 @@ async def generate_welcome_kit(
         )
 
 
-@router.post("/welcome-kit/send")
+@router.post("/welcome-kit/send", response_model=CommunicationSuccessResponse)
 async def send_welcome_kit(
     request: SendWelcomeKitRequest,
     current_host: Host = Depends(require_host_session),
@@ -187,28 +174,12 @@ async def send_welcome_kit(
     """
     try:
         communication_service = CommunicationService(db)
-        host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
-        
-        # Get guest group
-        guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-        if not guest_group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Guest group not found"
-            )
-        
-        # Get host
-        host = await host_service.get_host_by_id(guest_group.host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Send welcome kit
+        guest_group = await _require_owned_guest_group(
+            guest_group_service, request.guest_group_id, current_host
+        )
         success = await communication_service.send_welcome_kit(
-            host, guest_group, request.delivery_method
+            current_host, guest_group, request.delivery_method
         )
         
         if success:
@@ -232,7 +203,7 @@ async def send_welcome_kit(
         )
 
 
-@router.post("/follow-up")
+@router.post("/follow-up", response_model=CommunicationSuccessResponse)
 async def send_follow_up(
     request: SendFollowUpRequest,
     current_host: Host = Depends(require_host_session),
@@ -250,27 +221,11 @@ async def send_follow_up(
     """
     try:
         communication_service = CommunicationService(db)
-        host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
-        
-        # Get guest group
-        guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-        if not guest_group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Guest group not found"
-            )
-        
-        # Get host
-        host = await host_service.get_host_by_id(guest_group.host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Send follow-up
-        success = await communication_service.send_post_stay_follow_up(host, guest_group)
+        guest_group = await _require_owned_guest_group(
+            guest_group_service, request.guest_group_id, current_host
+        )
+        success = await communication_service.send_post_stay_follow_up(current_host, guest_group)
         
         if success:
             return {"success": True, "message": "Follow-up email sent successfully"}
@@ -290,7 +245,7 @@ async def send_follow_up(
         )
 
 
-@router.post("/sms")
+@router.post("/sms", response_model=CommunicationSuccessResponse)
 async def send_sms(
     request: SendSMSRequest,
     current_host: Host = Depends(require_host_session),
@@ -308,11 +263,20 @@ async def send_sms(
     """
     try:
         communication_service = CommunicationService(db)
-        
+        guest_group_service = GuestGroupService(db)
+        guest_group = await _require_owned_guest_group(
+            guest_group_service, request.guest_group_id, current_host
+        )
+        if not guest_group.lead_guest_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Guest group has no lead guest phone number",
+            )
+
         success = await communication_service.send_sms(
-            phone_number=request.phone_number,
+            phone_number=guest_group.lead_guest_phone,
             message=request.message,
-            language=request.language
+            language=request.language,
         )
         
         if success:

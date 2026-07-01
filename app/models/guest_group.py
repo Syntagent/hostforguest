@@ -5,14 +5,14 @@ Defines guest groups, access codes, and preference collection for
 the B2B SaaS platform where hosts provide AI-powered local guide services.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timedelta
 from enum import Enum
 import uuid
 import secrets
 import string
 
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 
 from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
@@ -273,6 +273,18 @@ class GuestGroupAccommodationSummary(SQLModel):
     longitude: Optional[float] = None
 
 
+class GuestGroupAccommodationGuestSummary(SQLModel):
+    """Guest-safe accommodation snapshot — omits host_profile_id."""
+
+    property_name: Optional[str] = None
+    property_type: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    county: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
 class GuestGroupCreate(GuestGroupBase):
     """Guest group creation model."""
     age_groups: List[str] = Field(default_factory=list)
@@ -325,6 +337,7 @@ class GuestGroupResponse(GuestGroupBase):
     access_code: Optional[str] = Field(default=None, max_length=32)
     # Current accommodation/property for this group (from host_profiles)
     accommodation: Optional[GuestGroupAccommodationSummary] = None
+    saved_event_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
 
     @field_validator(
         "age_groups",
@@ -336,6 +349,98 @@ class GuestGroupResponse(GuestGroupBase):
     @classmethod
     def _coerce_json_lists(cls, value: Any) -> List[str]:
         return value if isinstance(value, list) else []
+
+    @field_validator("supported_languages", mode="before")
+    @classmethod
+    def _coerce_supported_languages(cls, value: Any) -> List[str]:
+        return value if isinstance(value, list) else ["en", "hr"]
+
+    @field_validator("preferred_language", mode="before")
+    @classmethod
+    def _coerce_preferred_language(cls, value: Any) -> str:
+        return value if value else "en"
+
+    @field_validator("budget_level", mode="before")
+    @classmethod
+    def _coerce_budget_level(cls, value: Any) -> str:
+        return value if value else "moderate"
+
+    @field_validator("travel_style", mode="before")
+    @classmethod
+    def _coerce_travel_style(cls, value: Any) -> str:
+        return value if value else "balanced"
+
+    @field_validator("group_dynamics", mode="before")
+    @classmethod
+    def _coerce_group_dynamics(cls, value: Any) -> str:
+        return value if value else "family"
+
+    class Config:
+        from_attributes = True
+
+
+class GuestGroupGuestBase(SQLModel):
+    """Guest-safe group fields — no lead contact PII (email/phone)."""
+
+    group_name: Optional[str] = Field(default=None, max_length=100)
+    group_size: int = Field(ge=1, le=50)
+    check_in_date: Optional[datetime] = None
+    check_out_date: Optional[datetime] = None
+    lead_guest_name: Optional[str] = Field(default=None, max_length=100)
+    preferred_language: str = Field(default="en", max_length=10)
+    supported_languages: List[str] = Field(default_factory=lambda: ["en", "hr"])
+    budget_level: str = Field(default="moderate", max_length=20)
+    travel_style: str = Field(default="balanced", max_length=50)
+    group_dynamics: str = Field(default="family", max_length=50)
+
+
+class GuestGroupGuestResponse(GuestGroupGuestBase):
+    """Guest access-code response — omits host/internal tenant IDs and lead contact PII."""
+
+    id: uuid.UUID
+    age_groups: List[str]
+    interests: List[str]
+    mobility_requirements: List[str]
+    dietary_restrictions: List[str]
+    access_code: Optional[str] = Field(default=None, max_length=32)
+    accommodation: Optional[GuestGroupAccommodationGuestSummary] = None
+    saved_event_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator(
+        "age_groups",
+        "interests",
+        "mobility_requirements",
+        "dietary_restrictions",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_json_lists_guest(cls, value: Any) -> List[str]:
+        return value if isinstance(value, list) else []
+
+    @field_validator("supported_languages", mode="before")
+    @classmethod
+    def _coerce_supported_languages_guest(cls, value: Any) -> List[str]:
+        return value if isinstance(value, list) else ["en", "hr"]
+
+    @field_validator("preferred_language", mode="before")
+    @classmethod
+    def _coerce_preferred_language_guest(cls, value: Any) -> str:
+        return value if value else "en"
+
+    @field_validator("budget_level", mode="before")
+    @classmethod
+    def _coerce_budget_level_guest(cls, value: Any) -> str:
+        return value if value else "moderate"
+
+    @field_validator("travel_style", mode="before")
+    @classmethod
+    def _coerce_travel_style_guest(cls, value: Any) -> str:
+        return value if value else "balanced"
+
+    @field_validator("group_dynamics", mode="before")
+    @classmethod
+    def _coerce_group_dynamics_guest(cls, value: Any) -> str:
+        return value if value else "family"
 
     class Config:
         from_attributes = True
@@ -393,6 +498,15 @@ class GuestPreferenceCreate(SQLModel):
     language_preference: str = Field(default="en", max_length=10)
     cultural_interests: List[str] = Field(default_factory=list)
     food_interests: List[str] = Field(default_factory=list)
+
+
+class GuestPreferenceGuestResponse(GuestPreferenceCreate):
+    """Guest access-code preference response — omits guest_group_id and lifecycle timestamps."""
+
+    id: uuid.UUID
+
+    class Config:
+        from_attributes = True
 
 
 class GuestPreferenceResponse(GuestPreferenceCreate):
@@ -488,6 +602,11 @@ class GuestEVisitorDataCreate(GuestEVisitorDataBase):
     pass
 
 
+class EVisitorRegisterRequest(SQLModel):
+    """Request body for marking e-visitor data as registered."""
+    confirmation_number: str = Field(..., max_length=100)
+
+
 class GuestEVisitorDataUpdate(SQLModel):
     """E-visitor data update model - all fields optional."""
     first_name: Optional[str] = Field(default=None, max_length=100)
@@ -520,4 +639,166 @@ class GuestEVisitorDataResponse(GuestEVisitorDataBase):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True} 
+    model_config = {"from_attributes": True}
+
+
+class HostGroupBroadcastRecord(SQLModel):
+    """Single host broadcast stored on guest group seasonal_preferences."""
+
+    message: str
+    host_name: str
+    sent_at: str
+
+
+class HostGroupBroadcastDelivery(SQLModel):
+    """Delivery channels attempted for a host group broadcast."""
+
+    in_app: bool
+    sms: bool
+
+
+class HostGroupBroadcastResponse(SQLModel):
+    """POST /guest-groups/{id}/message success envelope."""
+
+    success: bool
+    message: str
+    delivery: HostGroupBroadcastDelivery
+    broadcast: HostGroupBroadcastRecord
+
+
+class HostSavedEventRecord(SQLModel):
+    """Host-visible saved event row (guest fields + host workflow)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str
+    title: Optional[str] = None
+    host_status: Optional[str] = None
+    host_action_at: Optional[str] = None
+    host_note: Optional[str] = None
+
+
+class HostSavedEventsResponse(SQLModel):
+    """PUT /guest-groups/{id}/saved-events/{event_id} success envelope."""
+
+    success: bool
+    saved_event_ids: List[str]
+    saved_events: List[HostSavedEventRecord]
+
+
+class HostSavedEventItineraryActivityResponse(SQLModel):
+    """POST .../saved-events/{event_id}/itinerary-activity success envelope."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    success: bool
+    saved_event_ids: List[str]
+    saved_events: List[HostSavedEventRecord]
+    activity: Dict[str, Any]
+    already_added: bool
+
+
+class GuestSavedEventRecord(SQLModel):
+    """Guest-visible saved event row (mirrors frontend GuestSavedEventRecord)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    event_type: Optional[str] = None
+    cities: Optional[List[str]] = None
+    regions: Optional[List[str]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    schedule_label: Optional[str] = None
+    venue_name: Optional[str] = None
+    admission_info: Optional[str] = None
+    booking_required: Optional[Union[bool, str]] = None
+    distance_km: Optional[Union[float, str]] = None
+    why_recommended: Optional[str] = None
+    plan_hint: Optional[str] = None
+    saved_at: Optional[str] = None
+    in_itinerary: Optional[bool] = None
+    guest_action: Optional[str] = None
+    guest_note: Optional[str] = None
+    guest_action_at: Optional[str] = None
+    preferred_day_plan_id: Optional[str] = None
+    preferred_day_number: Optional[Union[int, str]] = None
+    preferred_day_title: Optional[str] = None
+    itinerary_activity_title: Optional[str] = None
+    itinerary_activity_start_time: Optional[str] = None
+    itinerary_activity_end_time: Optional[str] = None
+
+
+class GuestSavedEventsResponse(SQLModel):
+    """Guest saved-events list/mutation success envelope."""
+
+    success: bool
+    saved_event_ids: List[str]
+    saved_events: List[GuestSavedEventRecord]
+
+
+class GuestHostOfferingsApiResponse(SQLModel):
+    """GET /guest-groups/access/{access_code}/host-offerings success envelope."""
+
+    success: bool
+    host_offerings: Dict[str, Any]
+    access_code: str
+    valid_access: bool
+
+
+class GuestEventRecommendation(SQLModel):
+    """Single guest-facing event recommendation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: str
+    title: str
+    description: Optional[str] = None
+    url: Optional[str] = None
+    event_type: Optional[str] = None
+    cities: Optional[List[str]] = None
+    regions: Optional[List[str]] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    schedule_label: Optional[str] = None
+    admission_info: Optional[str] = None
+    booking_required: Optional[bool] = None
+    distance_km: Optional[float] = None
+    venue_name: Optional[str] = None
+    why_recommended: Optional[str] = None
+    plan_hint: Optional[str] = None
+
+
+class GuestEventStayWindow(SQLModel):
+    """Stay window metadata on event recommendations."""
+
+    check_in: Optional[str] = None
+    check_out: Optional[str] = None
+
+
+class GuestEventRecommendationsResponse(SQLModel):
+    """GET /guest-groups/access/{access_code}/event-recommendations payload."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    recommendations: List[GuestEventRecommendation] = Field(default_factory=list)
+    city: Optional[str] = None
+    access_code: Optional[str] = None
+    stay_window: Optional[GuestEventStayWindow] = None
+    personalization: Optional[Dict[str, Any]] = None
+
+
+class GuestConciergeMessageResponse(SQLModel):
+    """POST host-message and assistant routes for guest access code."""
+
+    success: bool
+    message: Optional[str] = None
+    suggestions: Optional[List[str]] = None
+    can_contact_host: Optional[bool] = None

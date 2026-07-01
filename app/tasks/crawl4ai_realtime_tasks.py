@@ -13,6 +13,7 @@ from typing import Dict, Any, List
 from app.core.database import get_async_session
 from app.services.crawl4ai_scraper_service import Crawl4AIScraperService
 from app.services.ai_service import AIService
+from app.services.rls_service import RLSService
 from app.models.content_source import ContentSource, SourceStatus, CROATIAN_TOURISM_SOURCES, ContentSourceCreate
 from sqlalchemy import select, and_
 
@@ -29,60 +30,57 @@ async def initialize_crawl4ai_sources():
     logger.info("Initializing Crawl4AI Croatian tourism sources...")
 
     async for db in get_async_session():
-        ai_service = AIService()
+        async with RLSService(db).worker_bypass():
+            ai_service = AIService()
 
-        async with Crawl4AIScraperService(db, ai_service) as scraper:
-            created_sources = []
+            async with Crawl4AIScraperService(db, ai_service) as scraper:
+                created_sources = []
 
-            # Enhanced source configurations for Crawl4AI
-            enhanced_sources = [
-                {
-                    **source_config,
-                    "headers": {
-                        "User-Agent": "TouristGuideLocal/1.0 Crawl4AI Croatian Tourism Monitor",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "hr,en;q=0.9",
-                        "Accept-Encoding": "gzip, deflate",
-                        "DNT": "1",
-                        "Connection": "keep-alive",
-                        "Upgrade-Insecure-Requests": "1"
-                    },
-                    "rate_limit_delay": 2,  # Respectful crawling
-                    "timeout_seconds": 45,   # Allow for dynamic content loading
-                    "max_retries": 3,
-                    "quality_threshold": 0.8,  # Higher quality threshold for Crawl4AI
-                    "requires_human_review": False  # Crawl4AI provides better extraction
-                }
-                for source_config in CROATIAN_TOURISM_SOURCES
-            ]
+                enhanced_sources = [
+                    {
+                        **source_config,
+                        "headers": {
+                            "User-Agent": "HostForGuest/1.0 Crawl4AI Croatian Tourism Monitor",
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "hr,en;q=0.9",
+                            "Accept-Encoding": "gzip, deflate",
+                            "DNT": "1",
+                            "Connection": "keep-alive",
+                            "Upgrade-Insecure-Requests": "1"
+                        },
+                        "rate_limit_delay": 2,
+                        "timeout_seconds": 45,
+                        "max_retries": 3,
+                        "quality_threshold": 0.8,
+                        "requires_human_review": False
+                    }
+                    for source_config in CROATIAN_TOURISM_SOURCES
+                ]
 
-            for source_config in enhanced_sources:
-                try:
-                    # Create ContentSourceCreate object
-                    source_data = ContentSourceCreate(**source_config)
+                for source_config in enhanced_sources:
+                    try:
+                        source_data = ContentSourceCreate(**source_config)
 
-                    # Check if source already exists
-                    existing_source = await db.execute(
-                        select(ContentSource).where(ContentSource.url == source_data.url)
-                    )
-                    if existing_source.scalar_one_or_none():
-                        logger.info(f"Source already exists: {source_data.name}")
-                        continue
+                        existing_source = await db.execute(
+                            select(ContentSource).where(ContentSource.url == source_data.url)
+                        )
+                        if existing_source.scalar_one_or_none():
+                            logger.info(f"Source already exists: {source_data.name}")
+                            continue
 
-                    # Create the content source
-                    source = await scraper.create_content_source(source_data)
+                        source = await scraper.create_content_source(source_data)
 
-                    if source:
-                        created_sources.append(source)
-                        logger.info(f"Initialized Crawl4AI source: {source.name}")
-                    else:
-                        logger.error(f"Failed to create Crawl4AI source: {source_config['name']}")
+                        if source:
+                            created_sources.append(source)
+                            logger.info(f"Initialized Crawl4AI source: {source.name}")
+                        else:
+                            logger.error(f"Failed to create Crawl4AI source: {source_config['name']}")
 
-                except Exception as e:
-                    logger.error(f"Error initializing Crawl4AI source {source_config['name']}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error initializing Crawl4AI source {source_config['name']}: {e}")
 
-            logger.info(f"Successfully initialized {len(created_sources)} Crawl4AI tourism sources")
-            return created_sources
+                logger.info(f"Successfully initialized {len(created_sources)} Crawl4AI tourism sources")
+                return created_sources
 
 
 async def run_real_time_monitoring() -> Dict[str, Any]:
@@ -113,65 +111,61 @@ async def run_real_time_monitoring() -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            # Initialize AI service
-            ai_service = AIService()
+            async with RLSService(db).worker_bypass():
+                ai_service = AIService()
 
-            # Get active sources ready for real-time monitoring
-            stmt = select(ContentSource).where(
-                and_(
-                    ContentSource.scraping_enabled == True,
-                    ContentSource.status == SourceStatus.ACTIVE,
-                    ContentSource.next_scrape <= datetime.utcnow()
-                )
-            )
-
-            result = await db.execute(stmt)
-            active_sources = result.scalars().all()
-
-            if not active_sources:
-                logger.info("No sources ready for real-time monitoring")
-                results['success'] = True
-                return results
-
-            logger.info(f"Found {len(active_sources)} sources for real-time monitoring")
-
-            async with Crawl4AIScraperService(db, ai_service) as scraper:
-                # Monitor sources concurrently for better real-time performance
-                monitoring_tasks = []
-                for source in active_sources:
-                    task = asyncio.create_task(
-                        monitor_source_real_time(scraper, source),
-                        name=f"monitor_{source.name}"
+                stmt = select(ContentSource).where(
+                    and_(
+                        ContentSource.scraping_enabled == True,
+                        ContentSource.status == SourceStatus.ACTIVE,
+                        ContentSource.next_scrape <= datetime.utcnow()
                     )
-                    monitoring_tasks.append(task)
+                )
 
-                # Wait for all monitoring tasks
-                monitoring_results = await asyncio.gather(*monitoring_tasks, return_exceptions=True)
+                result = await db.execute(stmt)
+                active_sources = result.scalars().all()
 
-                # Process results
-                total_updates = 0
-                strategies_used = set()
+                if not active_sources:
+                    logger.info("No sources ready for real-time monitoring")
+                    results['success'] = True
+                    return results
 
-                for i, monitor_result in enumerate(monitoring_results):
-                    source = active_sources[i]
+                logger.info(f"Found {len(active_sources)} sources for real-time monitoring")
 
-                    if isinstance(monitor_result, Exception):
-                        error_msg = f"Error monitoring {source.name}: {monitor_result}"
-                        logger.error(error_msg)
-                        results['errors'].append(error_msg)
-                    else:
-                        updates_count, strategies = monitor_result
-                        total_updates += updates_count
-                        strategies_used.update(strategies)
-                        results['sources_monitored'] += 1
+                async with Crawl4AIScraperService(db, ai_service) as scraper:
+                    monitoring_tasks = []
+                    for source in active_sources:
+                        task = asyncio.create_task(
+                            monitor_source_real_time(scraper, source),
+                            name=f"monitor_{source.name}"
+                        )
+                        monitoring_tasks.append(task)
 
-                results.update({
-                    'updates_extracted': total_updates,
-                    'extraction_strategies_used': list(strategies_used),
-                    'success': len(results['errors']) == 0
-                })
+                    monitoring_results = await asyncio.gather(*monitoring_tasks, return_exceptions=True)
 
-                logger.info(f"Real-time monitoring completed: {results}")
+                    total_updates = 0
+                    strategies_used = set()
+
+                    for i, monitor_result in enumerate(monitoring_results):
+                        source = active_sources[i]
+
+                        if isinstance(monitor_result, Exception):
+                            error_msg = f"Error monitoring {source.name}: {monitor_result}"
+                            logger.error(error_msg)
+                            results['errors'].append(error_msg)
+                        else:
+                            updates_count, strategies = monitor_result
+                            total_updates += updates_count
+                            strategies_used.update(strategies)
+                            results['sources_monitored'] += 1
+
+                    results.update({
+                        'updates_extracted': total_updates,
+                        'extraction_strategies_used': list(strategies_used),
+                        'success': len(results['errors']) == 0
+                    })
+
+                    logger.info(f"Real-time monitoring completed: {results}")
 
     except Exception as e:
         error_msg = f"Critical error in real-time monitoring: {e}"
@@ -257,36 +251,35 @@ async def run_hourly_stream_update() -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            ai_service = AIService()
+            async with RLSService(db).worker_bypass():
+                ai_service = AIService()
 
-            # Get high-priority sources for streaming
-            stmt = select(ContentSource).where(
-                and_(
-                    ContentSource.scraping_enabled == True,
-                    ContentSource.status == SourceStatus.ACTIVE,
-                    ContentSource.city.in_(["Lovran", "Opatija", "Pula", "Rovinj"])  # Focus on key tourist areas
+                stmt = select(ContentSource).where(
+                    and_(
+                        ContentSource.scraping_enabled == True,
+                        ContentSource.status == SourceStatus.ACTIVE,
+                        ContentSource.city.in_(["Lovran", "Opatija", "Pula", "Rovinj"])
+                    )
                 )
-            )
 
-            result = await db.execute(stmt)
-            stream_sources = result.scalars().all()
+                result = await db.execute(stmt)
+                stream_sources = result.scalars().all()
 
-            if not stream_sources:
-                logger.warning("No sources available for streaming update")
-                results['success'] = True
-                return results
+                if not stream_sources:
+                    logger.warning("No sources available for streaming update")
+                    results['success'] = True
+                    return results
 
-            async with Crawl4AIScraperService(db, ai_service) as scraper:
-                # Stream live updates
-                stream_data = await scraper.stream_live_updates(stream_sources)
+                async with Crawl4AIScraperService(db, ai_service) as scraper:
+                    stream_data = await scraper.stream_live_updates(stream_sources)
 
-                results.update({
-                    'stream_updates': len(stream_data),
-                    'sources_streamed': len(stream_sources),
-                    'success': True
-                })
+                    results.update({
+                        'stream_updates': len(stream_data),
+                        'sources_streamed': len(stream_sources),
+                        'success': True
+                    })
 
-                logger.info(f"Hourly streaming update completed: {results}")
+                    logger.info(f"Hourly streaming update completed: {results}")
 
     except Exception as e:
         error_msg = f"Error in hourly streaming update: {e}"
@@ -325,32 +318,31 @@ async def cleanup_old_real_time_data(days_to_keep: int = 7) -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            from sqlalchemy import delete
-            from app.models.content_source import ContentUpdate, HostNotification
+            async with RLSService(db).worker_bypass():
+                from sqlalchemy import delete
+                from app.models.content_source import ContentUpdate, HostNotification
 
-            cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+                cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
 
-            # Delete old real-time content updates
-            delete_updates_stmt = delete(ContentUpdate).where(
-                and_(
-                    ContentUpdate.created_at < cutoff_date,
-                    ContentUpdate.status != "approved"  # Keep approved content longer
+                delete_updates_stmt = delete(ContentUpdate).where(
+                    and_(
+                        ContentUpdate.created_at < cutoff_date,
+                        ContentUpdate.status != "approved"
+                    )
                 )
-            )
-            update_result = await db.execute(delete_updates_stmt)
-            results['updates_deleted'] = update_result.rowcount
+                update_result = await db.execute(delete_updates_stmt)
+                results['updates_deleted'] = update_result.rowcount
 
-            # Delete old real-time notifications
-            delete_notifications_stmt = delete(HostNotification).where(
-                HostNotification.created_at < cutoff_date
-            )
-            notification_result = await db.execute(delete_notifications_stmt)
-            results['notifications_deleted'] = notification_result.rowcount
+                delete_notifications_stmt = delete(HostNotification).where(
+                    HostNotification.created_at < cutoff_date
+                )
+                notification_result = await db.execute(delete_notifications_stmt)
+                results['notifications_deleted'] = notification_result.rowcount
 
-            await db.commit()
-            results['success'] = True
+                await db.commit()
+                results['success'] = True
 
-            logger.info(f"Real-time data cleanup completed: {results}")
+                logger.info(f"Real-time data cleanup completed: {results}")
 
     except Exception as e:
         logger.error(f"Error in real-time data cleanup: {e}")

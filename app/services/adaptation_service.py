@@ -43,7 +43,7 @@ async def fetch_image_bytes_for_adaptation_vision(urls: List[str]) -> List[Tuple
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=_ADAPT_VISION_FETCH_TIMEOUT,
-        headers={"User-Agent": "TouristGuideLocal-AdaptationVision/1.0"},
+        headers={"User-Agent": "HostForGuest-AdaptationVision/1.0"},
     ) as client:
         for url in urls[:_ADAPT_VISION_MAX_IMAGES]:
             if not url or not (url.startswith("http://") or url.startswith("https://")):
@@ -127,9 +127,14 @@ class AdaptationProjectService:
         if not p:
             return None
         doc_notes = fields.pop("documentation_notes", None)
-        for k in ("title", "brief", "style_tags", "budget_band", "status", "assumptions_json", "roi_inputs_json"):
+        assumptions_patch = fields.pop("assumptions_json", None)
+        for k in ("title", "brief", "style_tags", "budget_band", "status", "roi_inputs_json"):
             if k in fields and fields[k] is not None:
                 setattr(p, k, fields[k])
+        if assumptions_patch is not None:
+            merged = dict(p.assumptions_json or {})
+            merged.update(assumptions_patch)
+            p.assumptions_json = merged
         if doc_notes is not None:
             merged = dict(p.assumptions_json or {})
             merged["project_documentation"] = doc_notes
@@ -567,7 +572,9 @@ class AdaptationAIService:
             "epoxy": "paint",
         }
         mc = cat_map.get(bom_category.lower(), "other")
-        candidates = await self._maint.fetch_partner_candidates(host, mc, limit=15)
+        candidates = await self._maint.fetch_partner_candidates(
+            host, mc, limit=15, linked_only=True
+        )
         ranked = [
             {
                 "partner_id": str(p.id),
@@ -587,11 +594,12 @@ class AdaptationAIService:
             "discovery": {
                 "host_has_coordinates": host_has_coordinates,
                 "any_distance_unknown": any_distance_unknown,
+                "linked_only": True,
                 "sort_explanation": (
-                    "Partners come from your directory (active listings). Order: linked to you first, "
-                    "then same city as your property, then by distance when both your address and the "
-                    "partner listing have coordinates. A missing distance (km) means it could not be "
-                    "computed—not “infinitely far.”"
+                    "Partners come from your linked directory listings for this trade. "
+                    "Link suppliers in Partners before running suggest-suppliers. "
+                    "Order: same city as your property, then by distance when coordinates exist. "
+                    "A missing distance (km) means it could not be computed—not “infinitely far.”"
                 ),
             },
         }

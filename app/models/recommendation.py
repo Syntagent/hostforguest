@@ -116,7 +116,7 @@ class Recommendation(Base):
     
     # Relationships
     request_id = Column(UUID(as_uuid=True), ForeignKey("recommendation_requests.id"), nullable=False)
-    attraction_id = Column(UUID(as_uuid=True), ForeignKey("attractions.id"), nullable=True)
+    attraction_id = Column(UUID(as_uuid=True), ForeignKey("attractions.id", ondelete="SET NULL"), nullable=True)
     seasonal_event_id = Column(UUID(as_uuid=True), ForeignKey("seasonal_events.id"), nullable=True)
     
     # Recommendation Details
@@ -236,6 +236,9 @@ class RecommendationRequestAPI(SQLModel):
     excluded_categories: List[str] = Field(default_factory=list)
     accessibility_requirements: List[str] = Field(default_factory=list)
     language: str = Field(default="en", max_length=10)
+    max_price_level: Optional[int] = Field(default=None, ge=0, le=4)
+    food_type: Optional[str] = Field(default=None, max_length=50)
+    query_terms: Optional[str] = Field(default=None, max_length=100)
 
 
 class RecommendationRequestCreate(SQLModel):
@@ -253,6 +256,23 @@ class RecommendationRequestCreate(SQLModel):
     excluded_categories: List[str] = Field(default_factory=list)
     accessibility_requirements: List[str] = Field(default_factory=list)
     response_language: str = Field(default="en", max_length=10)
+
+
+class ExplorerRecommendationPublicResponse(SQLModel):
+    """Public weather/seasonal explorer row without internal ranking metadata."""
+
+    id: uuid.UUID
+    title: str
+    description: str
+    recommendation_type: str
+    why_recommended: Optional[str] = None
+    estimated_duration: Optional[str] = None
+    best_time_to_visit: Optional[str] = None
+    estimated_cost: Optional[str] = None
+    booking_required: bool
+
+    class Config:
+        from_attributes = True
 
 
 class RecommendationResponse(SQLModel):
@@ -407,23 +427,41 @@ class GuestAttractionSummary(SQLModel):
     admission_fee: Optional[str] = None
     seasonal_availability: Optional[str] = None
     seasonal_notes: Optional[str] = None
+    google_place_id: Optional[str] = None
+    google_rating: Optional[float] = None
+    google_user_ratings_total: Optional[int] = None
+    google_price_level: Optional[int] = None
+    google_photos: List[str] = Field(default_factory=list)
+    google_website: Optional[str] = None
+    google_phone: Optional[str] = None
+    google_maps_url: Optional[str] = None
+    static_map_image_url: Optional[str] = None
+    created_by_host_id: Optional[uuid.UUID] = None
+    short_description: Optional[str] = None
+    category_tags: List[str] = Field(default_factory=list)
+    age_suitability: List[str] = Field(default_factory=list)
+    status: Optional[str] = None
+    guest_rating: Optional[float] = None
+    total_ratings: Optional[int] = None
+    accessibility_info: Dict[str, Any] = Field(default_factory=dict)
+    contact_info: Dict[str, Any] = Field(default_factory=dict)
+    difficulty_level: Optional[str] = None
+    duration_hours: Optional[float] = None
+    host_story: Optional[str] = None
+    recommendation_count: Optional[int] = None
+    view_count: Optional[int] = None
 
 
 class GuestRecommendationItem(SQLModel):
-    """Guest UI recommendation row: score/reason aliases + embedded attraction."""
+    """Guest UI recommendation row with embedded attraction (no ranking internals)."""
     id: uuid.UUID
-    guest_group_id: uuid.UUID
     attraction_id: Optional[uuid.UUID] = None
-    score: float
     reason: str
     personalization_factors: List[str] = Field(default_factory=list)
-    created_at: datetime
-    feedback_rating: Optional[int] = Field(default=None, ge=1, le=5)
     attraction: Optional[GuestAttractionSummary] = None
     title: Optional[str] = None
     description: Optional[str] = None
     why_recommended: Optional[str] = None
-    relevance_score: Optional[float] = None
     host_insight: Optional[str] = None
     host_tip: Optional[str] = None
 
@@ -432,9 +470,6 @@ class GuestRecommendationBatch(SQLModel):
     """Guest-facing recommendation batch with embedded attractions."""
     recommendations: List[GuestRecommendationItem]
     total_count: int
-    generated_at: datetime
-    guest_group_id: Optional[uuid.UUID] = None
-    request_context: Dict[str, Any] = Field(default_factory=dict)
     personalization_factors: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -447,6 +482,18 @@ class RecommendationAnalytics(SQLModel):
     performance_metrics: Dict[str, Any] = Field(default_factory=dict)
     time_period: Dict[str, Any] = Field(default_factory=dict)
     host_contribution_impact: float = 0.0
+
+
+class GuestGroupRecommendationAnalytics(SQLModel):
+    """Per-guest-group recommendation analytics for host dashboard."""
+
+    guest_group_id: str
+    recommendations_given: int = 0
+    recommendations_accepted: int = 0
+    acceptance_rate: float = 0.0
+    satisfaction_rating: Optional[float] = None
+    group_name: Optional[str] = None
+    status: Optional[str] = None
 
 
 class RecommendationFeedbackCreate(SQLModel):
@@ -466,4 +513,13 @@ class RecommendationFeedbackResponse(RecommendationFeedbackCreate):
     created_at: datetime
     
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+
+class GuestRecommendationFeedbackResponse(RecommendationFeedbackCreate):
+    """Guest access-code feedback response — omits guest_group_id and lifecycle timestamps."""
+
+    id: uuid.UUID
+
+    class Config:
+        from_attributes = True

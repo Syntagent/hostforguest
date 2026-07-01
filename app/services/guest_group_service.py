@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, and_, or_
 from sqlalchemy.exc import IntegrityError
 
+from app.services.rls_service import RLSService
 from app.models.guest_group import (
     GuestGroup,
     AccessCode,
@@ -30,6 +31,7 @@ from app.models.guest_group import (
     AccessCodeResponse,
     AccessCodeActivation,
     GuestPreferenceCreate,
+    GuestPreferenceUpdate,
     GuestPreferenceResponse,
     GuestEVisitorDataCreate,
     GuestEVisitorDataUpdate,
@@ -161,8 +163,96 @@ class GuestGroupService:
         code = await self._usable_access_code_for_group(group.id)
         prof = await self._profile_for_guest_group(group, profile)
         acc = _accommodation_summary_from_profile(prof) if prof else None
+        from app.services.guest_saved_events_service import GuestSavedEventsService
+
+        saved_payload = await GuestSavedEventsService(self.db).list_for_group(
+            group.id, for_host=True
+        )
         base = GuestGroupResponse.model_validate(group)
-        return base.model_copy(update={"access_code": code, "accommodation": acc})
+        return base.model_copy(
+            update={
+                "access_code": code,
+                "accommodation": acc,
+                "saved_event_recommendations": saved_payload.get("saved_events") or [],
+            }
+        )
+
+    async def guest_group_to_guest_response(
+        self,
+        group: GuestGroup,
+        *,
+        profile: Optional[HostProfile] = None,
+    ) -> "GuestGroupGuestResponse":
+        """Guest-safe API response (access-code routes) — strips host/internal IDs."""
+        from app.models.guest_group import GuestGroupGuestResponse, GuestGroupAccommodationGuestSummary
+
+        full = await self.guest_group_to_response(group, profile=profile)
+        from app.services.guest_saved_events_service import GuestSavedEventsService
+
+        guest_saved = await GuestSavedEventsService(self.db).list_for_group(
+            group.id, for_host=False
+        )
+        payload = full.model_dump(
+            exclude={
+                "host_id",
+                "host_profile_id",
+                "lead_guest_email",
+                "lead_guest_phone",
+                "recommendations_given",
+                "recommendations_accepted",
+                "satisfaction_rating",
+                "status",
+                "created_at",
+                "updated_at",
+                "activated_at",
+            }
+        )
+        payload["saved_event_recommendations"] = guest_saved.get("saved_events") or []
+        from app.services.host_offerings_for_guest import scrub_contact_from_text, _scrub_safe_value
+
+        for key in ("group_name", "lead_guest_name", "travel_style", "group_dynamics"):
+            if payload.get(key):
+                payload[key] = scrub_contact_from_text(payload[key])
+        for key in ("interests", "mobility_requirements", "dietary_restrictions", "age_groups"):
+            if payload.get(key):
+                payload[key] = _scrub_safe_value(payload[key])
+        if payload.get("supported_languages"):
+            payload["supported_languages"] = _scrub_safe_value(payload["supported_languages"])
+        if payload.get("preferred_language"):
+            original = str(payload["preferred_language"])
+            scrubbed = scrub_contact_from_text(original)
+            if (
+                scrubbed != original
+                and scrubbed
+                and "[contact removed]" in scrubbed
+            ) or len(scrubbed) > 10:
+                payload["preferred_language"] = "en"
+            else:
+                payload["preferred_language"] = scrubbed
+        if payload.get("budget_level"):
+            original = str(payload["budget_level"])
+            scrubbed = scrub_contact_from_text(original)
+            if (
+                scrubbed != original
+                and scrubbed
+                and "[contact removed]" in scrubbed
+            ):
+                payload["budget_level"] = "moderate"
+            else:
+                payload["budget_level"] = scrubbed
+        if payload.get("accommodation"):
+            acc = payload["accommodation"]
+            if isinstance(acc, dict):
+                acc.pop("host_profile_id", None)
+                if acc.get("address"):
+                    acc["address"] = scrub_contact_from_text(acc["address"])
+                if acc.get("property_name"):
+                    acc["property_name"] = scrub_contact_from_text(acc["property_name"])
+                for acc_key in ("city", "county", "property_type"):
+                    if acc.get(acc_key):
+                        acc[acc_key] = scrub_contact_from_text(acc[acc_key])
+                payload["accommodation"] = GuestGroupAccommodationGuestSummary.model_validate(acc)
+        return GuestGroupGuestResponse.model_validate(payload)
     
     # Guest Group CRUD Operations
     async def create_guest_group(self, host_id: uuid.UUID, group_data: GuestGroupCreate) -> Optional[GuestGroupResponse]:
@@ -328,9 +418,21 @@ class GuestGroupService:
             
             # Update only provided fields
             update_data = group_data.model_dump(exclude_unset=True)
+            for field in ("check_in_date", "check_out_date", "actual_arrival", "actual_departure"):
+                if field in update_data:
+                    update_data[field] = _naive_utc(update_data[field])
+
+            if group.host_profile_id is None:
+                prof = await self._profile_for_host_id(group.host_id)
+                if prof:
+                    update_data["host_profile_id"] = prof.id
+
+            allowed = {c.key for c in GuestGroup.__table__.columns}
+            update_data = {k: v for k, v in update_data.items() if k in allowed}
+
             if update_data:
-                update_data['updated_at'] = datetime.utcnow()
-                
+                update_data["updated_at"] = datetime.utcnow()
+
                 stmt = update(GuestGroup).where(GuestGroup.id == group_id).values(**update_data)
                 await self.db.execute(stmt)
                 await self.db.commit()
@@ -350,33 +452,115 @@ class GuestGroupService:
             await self.db.rollback()
             logger.error(f"Error updating guest group {group_id}: {e}")
             return None
+
+    async def append_host_broadcast_message(
+        self,
+        group_id: uuid.UUID,
+        message: str,
+        host_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Store a host broadcast on the guest group for in-app guest delivery."""
+        try:
+            group = await self.get_guest_group_by_id(group_id)
+            if not group:
+                return None
+
+            prefs = dict(group.seasonal_preferences or {})
+            messages = list(prefs.get("host_broadcast_messages") or [])
+            record = {
+                "message": message,
+                "host_name": host_name,
+                "sent_at": datetime.utcnow().isoformat() + "Z",
+            }
+            messages.append(record)
+            prefs["host_broadcast_messages"] = messages
+
+            stmt = (
+                update(GuestGroup)
+                .where(GuestGroup.id == group_id)
+                .values(seasonal_preferences=prefs, updated_at=datetime.utcnow())
+            )
+            await self.db.execute(stmt)
+            await self.db.commit()
+            return record
+        except Exception as e:
+            await self.db.rollback()
+            logger.error("Error appending host broadcast for group %s: %s", group_id, e)
+            return None
+
+    def host_broadcast_messages(self, group: GuestGroup) -> List[Dict[str, Any]]:
+        """Return stored host broadcast messages for a guest group."""
+        prefs = group.seasonal_preferences if isinstance(group.seasonal_preferences, dict) else {}
+        raw = prefs.get("host_broadcast_messages")
+        return list(raw) if isinstance(raw, list) else []
     
+    async def _purge_guest_group_dependencies(self, group_id: uuid.UUID) -> None:
+        """Remove rows that reference guest_group_id before deleting the group."""
+        from app.models.recommendation import Recommendation, RecommendationRequest, RecommendationSet
+        from app.models.itinerary import Itinerary, DayPlan, ItineraryActivity, ActivityVote
+        from app.models.maintenance import MaintenanceIssue, MaintenanceIssueEvent
+        from app.models.attraction import AttractionReview
+        from app.models.partner import PartnerBooking
+
+        req_ids = select(RecommendationRequest.id).where(
+            RecommendationRequest.guest_group_id == group_id
+        )
+        await self.db.execute(
+            delete(Recommendation).where(Recommendation.request_id.in_(req_ids))
+        )
+        await self.db.execute(
+            delete(RecommendationSet).where(RecommendationSet.guest_group_id == group_id)
+        )
+        await self.db.execute(
+            delete(RecommendationRequest).where(RecommendationRequest.guest_group_id == group_id)
+        )
+
+        itin_ids = select(Itinerary.id).where(Itinerary.guest_group_id == group_id)
+        day_ids = select(DayPlan.id).where(DayPlan.itinerary_id.in_(itin_ids))
+        act_ids = select(ItineraryActivity.id).where(ItineraryActivity.day_plan_id.in_(day_ids))
+
+        await self.db.execute(delete(ActivityVote).where(ActivityVote.guest_group_id == group_id))
+        await self.db.execute(
+            delete(ActivityVote).where(ActivityVote.itinerary_activity_id.in_(act_ids))
+        )
+        await self.db.execute(
+            delete(ItineraryActivity).where(ItineraryActivity.day_plan_id.in_(day_ids)),
+        )
+        await self.db.execute(delete(DayPlan).where(DayPlan.itinerary_id.in_(itin_ids)))
+        await self.db.execute(delete(Itinerary).where(Itinerary.guest_group_id == group_id))
+
+        issue_ids = select(MaintenanceIssue.id).where(MaintenanceIssue.guest_group_id == group_id)
+        await self.db.execute(
+            delete(MaintenanceIssueEvent).where(MaintenanceIssueEvent.issue_id.in_(issue_ids))
+        )
+        await self.db.execute(delete(MaintenanceIssue).where(MaintenanceIssue.guest_group_id == group_id))
+        await self.db.execute(delete(PartnerBooking).where(PartnerBooking.guest_group_id == group_id))
+        await self.db.execute(delete(AttractionReview).where(AttractionReview.guest_group_id == group_id))
+        await self.db.execute(delete(GuestPreference).where(GuestPreference.guest_group_id == group_id))
+        await self.db.execute(delete(GuestEVisitorData).where(GuestEVisitorData.guest_group_id == group_id))
+        await self._revoke_group_access_codes(group_id)
+        await self.db.execute(delete(AccessCode).where(AccessCode.guest_group_id == group_id))
+
     async def delete_guest_group(self, group_id: uuid.UUID) -> bool:
         """
-        Delete a guest group and associated access codes.
-        
-        Args:
-            group_id: Guest group UUID
-            
-        Returns:
-            bool: True if successful
+        Delete a guest group and all dependent records.
         """
         try:
-            # First revoke all access codes for this group
-            await self._revoke_group_access_codes(group_id)
-            
-            # Delete the group
-            stmt = delete(GuestGroup).where(GuestGroup.id == group_id)
-            result = await self.db.execute(stmt)
+            existing = await self.get_guest_group_by_id(group_id)
+            if not existing:
+                logger.warning(f"Guest group not found for deletion: {group_id}")
+                return False
+
+            await self._purge_guest_group_dependencies(group_id)
+            result = await self.db.execute(delete(GuestGroup).where(GuestGroup.id == group_id))
             await self.db.commit()
-            
+
             if result.rowcount > 0:
                 logger.info(f"Guest group deleted successfully: {group_id}")
                 return True
-            else:
-                logger.warning(f"Guest group not found for deletion: {group_id}")
-                return False
-                
+            logger.warning(f"Guest group not deleted (rowcount=0): {group_id}")
+            return False
+
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error deleting guest group {group_id}: {e}")
@@ -521,37 +705,53 @@ class GuestGroupService:
             if not is_access_code_valid(access_code):
                 logger.warning(f"Invalid access code format: {access_code}")
                 return None
-            
-            # Get access code
-            code_upper = access_code.upper()
-            stmt = select(AccessCode).where(AccessCode.code == code_upper)
-            result = await self.db.execute(stmt)
-            access_code_obj = result.scalar_one_or_none()
-            
-            if not access_code_obj:
-                logger.warning(f"Access code not found: {access_code}")
-                return None
-            
-            # Check if code is still valid
-            if not _access_code_status_equals(access_code_obj.status, AccessCodeStatus.ACTIVE):
-                logger.warning(f"Access code not active: {access_code} (status: {access_code_obj.status})")
-                return None
 
-            if access_code_obj.expires_at < datetime.utcnow():
-                # Auto-expire the code
-                await self._expire_access_code(access_code_obj.id)
-                logger.warning(f"Access code expired: {access_code}")
-                return None
-            
-            if access_code_obj.usage_count >= access_code_obj.max_usage_count:
-                logger.warning(f"Access code usage limit exceeded: {access_code}")
-                return None
-            
-            # Get the associated guest group
-            group = await self.get_guest_group_by_id(access_code_obj.guest_group_id)
-            
-            logger.info(f"Access code validated successfully: {access_code} for group {access_code_obj.guest_group_id}")
-            
+            rls = RLSService(self.db)
+            async with rls.guest_bypass(access_code):
+                # Get access code
+                code_upper = access_code.upper()
+                stmt = select(AccessCode).where(AccessCode.code == code_upper)
+                result = await self.db.execute(stmt)
+                access_code_obj = result.scalar_one_or_none()
+
+                if not access_code_obj:
+                    logger.warning(f"Access code not found: {access_code}")
+                    return None
+
+                # Check if code is still valid
+                if not _access_code_status_equals(access_code_obj.status, AccessCodeStatus.ACTIVE):
+                    logger.warning(f"Access code not active: {access_code} (status: {access_code_obj.status})")
+                    return None
+
+                if access_code_obj.expires_at < datetime.utcnow():
+                    # Auto-expire the code (host context required — guest bypass is SELECT-only)
+                    await self._expire_access_code(
+                        access_code_obj.id, host_id=access_code_obj.host_id
+                    )
+                    logger.warning(f"Access code expired: {access_code}")
+                    return None
+
+                if access_code_obj.usage_count >= access_code_obj.max_usage_count:
+                    logger.warning(f"Access code usage limit exceeded: {access_code}")
+                    return None
+
+                # Get the associated guest group
+                group = await self.get_guest_group_by_id(access_code_obj.guest_group_id)
+
+            if group:
+                await rls.set_host_context(group.host_id)
+                await rls.set_bypass(
+                    "guest",
+                    guest_access_code=access_code,
+                    guest_group_id=group.id,
+                )
+
+            logger.info(
+                "Access code validated successfully: %s for group %s",
+                access_code,
+                group.id if group else None,
+            )
+
             return group
             
         except Exception as e:
@@ -594,8 +794,8 @@ class GuestGroupService:
                 return None
 
             if access_code.expires_at < datetime.utcnow():
-                # Auto-expire the code
-                await self._expire_access_code(access_code.id)
+                # Auto-expire the code (host context required — guest bypass is SELECT-only)
+                await self._expire_access_code(access_code.id, host_id=access_code.host_id)
                 logger.warning(f"Access code expired: {activation_data.code}")
                 return None
 
@@ -806,6 +1006,52 @@ class GuestGroupService:
         except Exception as e:
             logger.error(f"Error getting guest preferences for group {group_id}: {e}")
             return []
+
+    async def get_guest_preference_by_id(self, preference_id: uuid.UUID) -> Optional[GuestPreference]:
+        """Get a single guest preference row by ID."""
+        try:
+            stmt = select(GuestPreference).where(GuestPreference.id == preference_id)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting guest preference {preference_id}: {e}")
+            return None
+
+    async def update_guest_preference(
+        self,
+        preference_id: uuid.UUID,
+        preference_data: GuestPreferenceUpdate,
+    ) -> Optional[GuestPreferenceResponse]:
+        """Update an existing guest preference without creating a duplicate row."""
+        try:
+            values = preference_data.model_dump(exclude_unset=True)
+            values["updated_at"] = datetime.utcnow()
+            stmt = (
+                update(GuestPreference)
+                .where(GuestPreference.id == preference_id)
+                .values(**values)
+                .returning(GuestPreference)
+            )
+            result = await self.db.execute(stmt)
+            updated = result.scalar_one_or_none()
+            await self.db.commit()
+            return GuestPreferenceResponse.model_validate(updated) if updated else None
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Error updating guest preference {preference_id}: {e}")
+            return None
+
+    async def delete_guest_preference(self, preference_id: uuid.UUID) -> bool:
+        """Delete a guest preference row."""
+        try:
+            stmt = delete(GuestPreference).where(GuestPreference.id == preference_id)
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+            return (result.rowcount or 0) > 0
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Error deleting guest preference {preference_id}: {e}")
+            return False
     
     # Analytics and Reporting
     async def update_recommendation_stats(self, group_id: uuid.UUID, given: int = 0, accepted: int = 0) -> bool:
@@ -844,9 +1090,14 @@ class GuestGroupService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none() is None
     
-    async def _expire_access_code(self, code_id: uuid.UUID) -> None:
+    async def _expire_access_code(
+        self, code_id: uuid.UUID, *, host_id: Optional[uuid.UUID] = None
+    ) -> None:
         """Mark an access code as expired."""
         try:
+            rls = RLSService(self.db)
+            if host_id is not None:
+                await rls.set_host_context(host_id)
             stmt = update(AccessCode).where(AccessCode.id == code_id).values(
                 status=AccessCodeStatus.EXPIRED.value,
                 updated_at=datetime.utcnow(),
@@ -990,14 +1241,16 @@ class GuestGroupService:
             return []
     
     async def update_guest_evisitor_data(
-        self, 
-        evisitor_id: uuid.UUID, 
-        update_data: GuestEVisitorDataUpdate
+        self,
+        guest_group_id: uuid.UUID,
+        evisitor_id: uuid.UUID,
+        update_data: GuestEVisitorDataUpdate,
     ) -> Optional[GuestEVisitorDataResponse]:
         """
         Update e-visitor data for a guest.
         
         Args:
+            guest_group_id: Guest group that must own the e-visitor record
             evisitor_id: E-visitor data UUID
             update_data: Update data model
             
@@ -1010,8 +1263,8 @@ class GuestGroupService:
             result = await self.db.execute(stmt)
             evisitor_data = result.scalar_one_or_none()
             
-            if not evisitor_data:
-                logger.error(f"E-visitor data {evisitor_id} not found")
+            if not evisitor_data or evisitor_data.guest_group_id != guest_group_id:
+                logger.error(f"E-visitor data {evisitor_id} not found for group {guest_group_id}")
                 return None
             
             # Update fields
@@ -1038,21 +1291,30 @@ class GuestGroupService:
             return None
     
     async def mark_evisitor_registered(
-        self, 
-        evisitor_id: uuid.UUID, 
-        confirmation_number: str
-    ) -> bool:
+        self,
+        guest_group_id: uuid.UUID,
+        evisitor_id: uuid.UUID,
+        confirmation_number: str,
+    ) -> Optional[GuestEVisitorDataResponse]:
         """
         Mark e-visitor data as registered with Croatian authorities.
         
         Args:
+            guest_group_id: Guest group that must own the e-visitor record
             evisitor_id: E-visitor data UUID
             confirmation_number: E-visitor confirmation number
             
         Returns:
-            bool: True if successful
+            GuestEVisitorDataResponse: Updated e-visitor data, or None if not found
         """
         try:
+            stmt = select(GuestEVisitorData).where(GuestEVisitorData.id == evisitor_id)
+            result = await self.db.execute(stmt)
+            evisitor_data = result.scalar_one_or_none()
+            if not evisitor_data or evisitor_data.guest_group_id != guest_group_id:
+                logger.error(f"E-visitor data {evisitor_id} not found for group {guest_group_id}")
+                return None
+
             stmt = update(GuestEVisitorData).where(
                 GuestEVisitorData.id == evisitor_id
             ).values(
@@ -1062,32 +1324,42 @@ class GuestGroupService:
                 updated_at=datetime.utcnow()
             )
             
-            result = await self.db.execute(stmt)
+            await self.db.execute(stmt)
             await self.db.commit()
-            
-            success = result.rowcount > 0
-            if success:
-                logger.info(f"E-visitor data {evisitor_id} marked as registered")
-            
-            return success
+            await self.db.refresh(evisitor_data)
+
+            logger.info(f"E-visitor data {evisitor_id} marked as registered")
+            return GuestEVisitorDataResponse.model_validate(evisitor_data)
             
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error marking e-visitor data {evisitor_id} as registered: {e}")
-            return False
+            return None
     
-    async def delete_guest_evisitor_data(self, evisitor_id: uuid.UUID) -> bool:
+    async def delete_guest_evisitor_data(
+        self, guest_group_id: uuid.UUID, evisitor_id: uuid.UUID
+    ) -> bool:
         """
         Delete e-visitor data for a guest.
         
         Args:
+            guest_group_id: Guest group that must own the e-visitor record
             evisitor_id: E-visitor data UUID
             
         Returns:
             bool: True if successful
         """
         try:
-            stmt = delete(GuestEVisitorData).where(GuestEVisitorData.id == evisitor_id)
+            stmt = select(GuestEVisitorData).where(GuestEVisitorData.id == evisitor_id)
+            result = await self.db.execute(stmt)
+            evisitor_data = result.scalar_one_or_none()
+            if not evisitor_data or evisitor_data.guest_group_id != guest_group_id:
+                return False
+
+            stmt = delete(GuestEVisitorData).where(
+                GuestEVisitorData.id == evisitor_id,
+                GuestEVisitorData.guest_group_id == guest_group_id,
+            )
             result = await self.db.execute(stmt)
             await self.db.commit()
             

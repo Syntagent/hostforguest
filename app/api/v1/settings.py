@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.auth import get_current_host
 from app.services.settings_service import SettingsService
 from app.services.host_service import HostService
 from app.models.settings import (
@@ -27,34 +28,17 @@ from app.models.settings import (
     SettingsCategory,
     HostSettings
 )
+from app.models.settings_api import (
+    SettingsBackupResponse,
+    SettingsApiKeyValidationResponse,
+    SettingsCategoryResponse,
+    SettingsIntegrationsTestResponse,
+    SystemSettingsListResponse,
+)
 from app.models.host import Host
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> Host:
-    """
-    Resolve the current host from the same session header as /hosts and /guest-groups.
-    """
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required",
-        )
-
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-    return host
 
 
 # Host settings endpoints
@@ -150,7 +134,7 @@ async def update_host_settings(
         )
 
 
-@router.get("/category/{category}", response_model=Dict[str, Any])
+@router.get("/category/{category}", response_model=SettingsCategoryResponse)
 async def get_settings_by_category(
     category: SettingsCategory,
     current_host: Host = Depends(get_current_host),
@@ -185,7 +169,7 @@ async def get_settings_by_category(
         )
 
 
-@router.put("/category/{category}", response_model=Dict[str, Any])
+@router.put("/category/{category}", response_model=SettingsCategoryResponse)
 async def update_settings_category(
     category: SettingsCategory,
     category_data: Dict[str, Any],
@@ -420,7 +404,7 @@ async def get_api_key_by_service(
 
 
 # System settings endpoints (read-only for hosts)
-@router.get("/system", response_model=SystemSettingsResponse)
+@router.get("/system", response_model=SystemSettingsListResponse)
 async def get_system_settings(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
@@ -451,7 +435,7 @@ async def get_system_settings(
 
 
 # Backup and restore endpoints
-@router.post("/backup", response_model=Dict[str, Any])
+@router.post("/backup", response_model=SettingsBackupResponse)
 async def backup_host_settings(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
@@ -517,7 +501,7 @@ async def restore_host_settings(
 
 
 # Validation endpoints
-@router.post("/validate/api-key", response_model=Dict[str, Any])
+@router.post("/validate/api-key", response_model=SettingsApiKeyValidationResponse)
 async def validate_api_key(
     service_name: str,
     api_key_value: str,
@@ -554,7 +538,7 @@ async def validate_api_key(
         )
 
 
-@router.get("/test/integrations", response_model=Dict[str, Any])
+@router.get("/test/integrations", response_model=SettingsIntegrationsTestResponse)
 async def test_integrations(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)

@@ -5,10 +5,10 @@ Defines the Host entity and related models for B2B SaaS platform
 where Croatian tourist hosts can manage their guest services.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import re
 from datetime import datetime
-from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey
+from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlmodel import SQLModel, Field
@@ -85,6 +85,12 @@ class Host(Base):
     # Guest Access
     guest_access_code = Column(String(10), nullable=True, unique=True, index=True)
     onboarding_completed = Column(Boolean, default=False)
+
+    # Telegram A2A bot binding
+    telegram_id = Column(BigInteger, nullable=True, unique=True, index=True)
+    telegram_pairing_code = Column(String(6), nullable=True, index=True)
+    telegram_pairing_expires = Column(DateTime, nullable=True)
+    telegram_linked_at = Column(DateTime, nullable=True)
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -158,6 +164,7 @@ class HostProfile(Base):
     onboarding_completed = Column(Boolean, default=False)  # Onboarding completion status
     onboarding_completed_at = Column(String(50), nullable=True)  # ISO timestamp
     ai_generated_content = Column(Boolean, default=False)  # Has AI-generated content
+    property_rules = Column(JSON, default={})  # check-in/out, house rules, wifi, emergency notes
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -283,6 +290,35 @@ class HostResponse(HostBase):
         return f"{self.first_name} {self.last_name}".strip()
 
 
+class HostPublicResponse(SQLModel):
+    """Public host profile without PII (email, phone, street address)."""
+    id: uuid.UUID
+    first_name: str
+    last_name: str
+    business_name: Optional[str] = None
+    business_type: str
+    city: str
+    county: Optional[str] = None
+    country: str = "Croatia"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    local_specialties: List[str] = Field(default_factory=list)
+    languages: List[str] = Field(default_factory=list)
+    max_group_size: int = 12
+    description: Optional[str] = None
+    welcome_message: Optional[str] = None
+    average_rating: float
+
+    class Config:
+        from_attributes = True
+
+    @computed_field
+    @property
+    def full_name(self) -> str:
+        """Computed full name from first and last name."""
+        return f"{self.first_name} {self.last_name}".strip()
+
+
 class HostLogin(SQLModel):
     """Host login credentials."""
     email: str = Field(max_length=255)
@@ -297,6 +333,28 @@ class HostLogin(SQLModel):
         if not _HOST_EMAIL_RE.match(s):
             raise ValueError("Invalid email address")
         return s.lower()
+
+
+class HostPasswordChange(SQLModel):
+    """Change password for the authenticated host."""
+    current_password: str = Field(min_length=1, max_length=100)
+    new_password: str = Field(min_length=8, max_length=100)
+
+
+class TelegramPairingResponse(SQLModel):
+    """Telegram pairing status for the authenticated host."""
+    linked: bool
+    code: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    expires_in_seconds: Optional[int] = None
+    linked_at: Optional[datetime] = None
+    telegram_id: Optional[int] = None
+
+
+class HostTelegramUnlinkResponse(SQLModel):
+    """DELETE /hosts/me/telegram-link success envelope."""
+    success: bool = True
+    message: str
 
 
 class HostProfileCreate(SQLModel):
@@ -337,8 +395,9 @@ class HostProfileUpdate(SQLModel):
     availability_calendar: Optional[Dict[str, Any]] = None
     typical_guest_profile: Optional[Dict[str, Any]] = None
     success_stories: Optional[List[Dict[str, Any]]] = None
-    trusted_partners: Optional[List[str]] = None
-    special_offers: Optional[List[str]] = None
+    trusted_partners: Optional[List[Any]] = None
+    special_offers: Optional[List[Any]] = None
+    property_rules: Optional[Dict[str, Any]] = None
 
 
 class HostProfileResponse(SQLModel):
@@ -358,6 +417,10 @@ class HostProfileResponse(SQLModel):
     expertise_areas: Optional[List[str]] = None
     favorite_local_spots: Optional[List[Dict[str, Any]]] = None
     location_story: Optional[str] = None
+    google_verified: Optional[bool] = None
+    onboarding_completed: Optional[bool] = None
+    onboarding_completed_at: Optional[str] = None
+    ai_generated_content: Optional[bool] = None
     
     # Location fields
     city: Optional[str] = None
@@ -375,8 +438,135 @@ class HostProfileResponse(SQLModel):
     availability_calendar: Optional[Dict[str, Any]] = None
     typical_guest_profile: Optional[Dict[str, Any]] = None
     success_stories: Optional[List[Dict[str, Any]]] = None
-    trusted_partners: Optional[List[str]] = None
-    special_offers: Optional[List[str]] = None
+    trusted_partners: Optional[List[Any]] = None
+    special_offers: Optional[List[Any]] = None
+    property_rules: Optional[Dict[str, Any]] = None
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+
+class HostAnalyticsGuestGroups(SQLModel):
+    """Guest group counts for host dashboard analytics."""
+    total: int
+    active: int
+    in_stay: int
+    activated: int
+    inactive: int
+
+
+class HostAnalyticsAttractions(SQLModel):
+    """Attraction counts for host dashboard analytics."""
+    total: int
+    categories: Dict[str, int]
+
+
+class HostAnalyticsRecommendations(SQLModel):
+    """Recommendation counts for host dashboard analytics."""
+    total_given: int
+    this_month: int
+
+
+class HostAnalyticsSatisfaction(SQLModel):
+    """Review satisfaction summary for host dashboard analytics."""
+    average_rating: float
+    total_reviews: int
+
+
+class HostAnalytics(SQLModel):
+    """Shared analytics payload for /analytics and /dashboard/stats."""
+    guest_groups: HostAnalyticsGuestGroups
+    attractions: HostAnalyticsAttractions
+    recommendations: HostAnalyticsRecommendations
+    satisfaction: HostAnalyticsSatisfaction
+
+
+class DashboardRealtimeSnippet(SQLModel):
+    """Realtime event snippet embedded in dashboard stats bundle."""
+    id: str
+    title: str
+    content: str
+    description: Optional[str] = None
+    created_at: Optional[str] = None
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+    source: Optional[str] = None
+
+
+if TYPE_CHECKING:
+    from app.models.guest_group import GuestGroupResponse
+    from app.models.attraction import AttractionResponse
+
+
+class HostSessionItem(SQLModel):
+    """Active session row for GET /hosts/sessions (no tokens)."""
+    id: str
+    user_agent: Optional[str] = None
+    ip_address: Optional[str] = None
+    created_at: datetime
+    last_activity: datetime
+    expires_at: datetime
+
+
+class HostSessionsResponse(SQLModel):
+    """GET /hosts/sessions envelope."""
+    success: bool = True
+    sessions: List[HostSessionItem] = Field(default_factory=list)
+
+
+class HostAuthSuccessResponse(SQLModel):
+    """POST logout, logout-all, change-password success envelope."""
+    success: bool = True
+    message: str
+
+
+class HostSessionRefreshResponse(SQLModel):
+    """POST /hosts/refresh success envelope."""
+    success: bool = True
+    session_token: str
+    expires_at: datetime
+
+
+class HostLoginResponse(SQLModel):
+    """POST /hosts/login success envelope."""
+    success: bool = True
+    host: HostResponse
+    session_token: str
+    refresh_token: str
+    expires_at: datetime
+    refresh_expires_at: datetime
+
+
+class HostGeocodeResponse(SQLModel):
+    """GET /hosts/me/geocode — accommodation address geocode (host auth)."""
+
+    latitude: float
+    longitude: float
+    matched_query: str
+    precision: str
+
+
+class HostDashboardStatsResponse(SQLModel):
+    """Single-call dashboard bundle for host dashboard UI."""
+    analytics: HostAnalytics
+    profile: Optional[HostProfileResponse] = None
+    guest_groups: List["GuestGroupResponse"]
+    attractions: List["AttractionResponse"]
+    realtime_updates: List[DashboardRealtimeSnippet]
+    cached_at: str
+
+
+def _resolve_dashboard_stats_types() -> None:
+    """Late-bind nested response types to avoid import cycles at module load."""
+    from app.models.guest_group import GuestGroupResponse as _GuestGroupResponse
+    from app.models.attraction import AttractionResponse as _AttractionResponse
+
+    HostDashboardStatsResponse.model_rebuild(
+        _types_namespace={
+            "GuestGroupResponse": _GuestGroupResponse,
+            "AttractionResponse": _AttractionResponse,
+        }
+    )
+
+
+_resolve_dashboard_stats_types()

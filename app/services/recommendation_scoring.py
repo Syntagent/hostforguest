@@ -8,6 +8,51 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import numpy as np
+import math
+import json
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+def _distance_penalty(km):
+    if km is None:
+        return 1.0
+    if km <= 2:
+        return 1.0
+    elif km <= 5:
+        return 0.85
+    elif km <= 10:
+        return 0.7
+    elif km <= 20:
+        return 0.5
+    elif km <= 40:
+        return 0.3
+    return 0.15
+
+def _wow_multiplier(attraction):
+    mult = 1.0
+    rating = getattr(attraction, "guest_rating", None) or 0
+    if rating >= 4.5:
+        mult *= 1.5
+    elif rating >= 4.0:
+        mult *= 1.2
+    tags = getattr(attraction, "category_tags", None) or []
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except Exception:
+            tags = []
+    unique = ["wine", "wine_bar", "michelin", "degustacij", "cave", "island"]
+    if any(kw in str(tags).lower() for kw in unique):
+        mult *= 1.2
+    return mult
+
 
 from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
@@ -41,40 +86,47 @@ class RecommendationScoring:
         
         # Match interests
         if group.interests:
-            for interest in group.interests:
-                if interest.lower() in [tag.lower() for tag in attraction.category_tags]:
+            for interest in (group.interests or []):
+                if interest.lower() in [tag.lower() for tag in (attraction.category_tags or [])]:
                     score += 0.2
         
         # Match age groups
         if group.age_groups and attraction.age_suitability:
-            common_ages = set(group.age_groups) & set(attraction.age_suitability)
+            common_ages = set(group.age_groups or []) & set(attraction.age_suitability or [])
             if common_ages:
                 score += 0.3
         
         # Match travel style
-        if group.travel_style == "active" and "adventure" in attraction.category_tags:
+        if group.travel_style == "active" and "adventure" in (attraction.category_tags or []):
             score += 0.2
-        elif group.travel_style == "relaxed" and "relaxation" in attraction.category_tags:
+        elif group.travel_style == "relaxed" and "relaxation" in (attraction.category_tags or []):
             score += 0.2
         
         # Match group dynamics
-        if group.group_dynamics == "family" and "family_friendly" in attraction.category_tags:
+        if group.group_dynamics == "family" and "family_friendly" in (attraction.category_tags or []):
             score += 0.2
-        elif group.group_dynamics == "romantic" and "romantic" in attraction.category_tags:
+        elif group.group_dynamics == "romantic" and "romantic" in (attraction.category_tags or []):
             score += 0.2
         
         # Check request-specific preferences
         if request.preferred_categories:
             for category in request.preferred_categories:
-                if category.lower() in [tag.lower() for tag in attraction.category_tags]:
+                if category.lower() in [tag.lower() for tag in (attraction.category_tags or [])]:
                     score += 0.1
         
         # Penalize excluded categories
         if request.excluded_categories:
             for category in request.excluded_categories:
-                if category.lower() in [tag.lower() for tag in attraction.category_tags]:
+                if category.lower() in [tag.lower() for tag in (attraction.category_tags or [])]:
                     score -= 0.3
         
+        # Strong category boost: first category match = +0.6, second = +0.3
+        if request.preferred_categories:
+            atype = (getattr(attraction, 'attraction_type', '') or '').lower()
+            for i, cat in enumerate(request.preferred_categories):
+                if cat.lower() == atype:
+                    score += 0.6 if i == 0 else 0.3
+                    break
         return min(1.0, max(0.0, score))
     
     @staticmethod
@@ -100,7 +152,7 @@ class RecommendationScoring:
     @staticmethod
     def calculate_popularity_score(attraction: Attraction) -> float:
         """Calculate score based on attraction popularity."""
-        rec_score = min(1.0, attraction.recommendation_count / 100.0)
+        rec_score = min(1.0, (attraction.recommendation_count or 0) / 100.0)
         
         rating_score = 0.0
         if attraction.guest_rating and attraction.total_ratings > 0:
@@ -125,7 +177,7 @@ class RecommendationScoring:
             score += 0.8
         
         tags = attraction.category_tags or []
-        highlights = seasonal_factors.get('highlights', [])
+        highlights = seasonal_factors.get("highlights") or []
         for highlight in highlights:
             if highlight in tags:
                 score += 0.2
@@ -145,6 +197,13 @@ class RecommendationScoring:
                 if "outdoor" in tags:
                     score += 0.3
         
+        # Strong category boost: first category match = +0.6, second = +0.3
+        if request.preferred_categories:
+            atype = (getattr(attraction, 'attraction_type', '') or '').lower()
+            for i, cat in enumerate(request.preferred_categories):
+                if cat.lower() == atype:
+                    score += 0.6 if i == 0 else 0.3
+                    break
         return min(1.0, max(0.0, score))
     
     @staticmethod
@@ -156,12 +215,20 @@ class RecommendationScoring:
         """Calculate location convenience score."""
         score = 0.5
         
+        host_area = getattr(host, "county", None) or getattr(host, "region", None)
         if host.city and attraction.city:
             if host.city.lower() == attraction.city.lower():
                 score = 1.0
-            elif attraction.region and host.region == attraction.region:
+            elif attraction.region and host_area and host_area == attraction.region:
                 score = 0.7
         
+        # Strong category boost: first category match = +0.6, second = +0.3
+        if request.preferred_categories:
+            atype = (getattr(attraction, 'attraction_type', '') or '').lower()
+            for i, cat in enumerate(request.preferred_categories):
+                if cat.lower() == atype:
+                    score += 0.6 if i == 0 else 0.3
+                    break
         return min(1.0, max(0.0, score))
     
     @staticmethod
@@ -183,7 +250,15 @@ class RecommendationScoring:
             
             if not guest_embedding or not attraction_embedding:
                 return 0.5
-            
+
+            if len(guest_embedding) != len(attraction_embedding):
+                logger.warning(
+                    "Embedding dimension mismatch: guest=%s attraction=%s",
+                    len(guest_embedding),
+                    len(attraction_embedding),
+                )
+                return 0.5
+
             similarity = RecommendationScoring.cosine_similarity(guest_embedding, attraction_embedding)
             return float(similarity)
             
@@ -213,21 +288,35 @@ class RecommendationScoring:
             return 0.5
     
     @staticmethod
+    def calculate_location_score_with_distance(attraction, request, host):
+        host_lat = getattr(host, "latitude", None)
+        host_lon = getattr(host, "longitude", None)
+        attr_lat = getattr(attraction, "latitude", None)
+        attr_lon = getattr(attraction, "longitude", None)
+        km = _haversine_km(host_lat, host_lon, attr_lat, attr_lon)
+        if km is None:
+            return 0.5, None
+        return _distance_penalty(km), km
+
+    @staticmethod
     def calculate_total_score(
         preference_score: float,
         host_insight_score: float,
         popularity_score: float,
         seasonal_score: float,
         location_score: float,
-        vector_score: float
+        vector_score: float = 0.0,
+        distance_penalty: float = 1.0,
+        wow_factor: float = 1.0,
     ) -> float:
-        """Calculate weighted total score."""
-        return (
-            preference_score * RECOMMENDATION_WEIGHTS.get("guest_preferences", 0.25) +
-            host_insight_score * RECOMMENDATION_WEIGHTS.get("host_insights", 0.20) +
-            popularity_score * RECOMMENDATION_WEIGHTS.get("popularity", 0.15) +
-            seasonal_score * RECOMMENDATION_WEIGHTS.get("seasonal_relevance", 0.15) +
-            location_score * RECOMMENDATION_WEIGHTS.get("location_proximity", 0.10) +
-            vector_score * RECOMMENDATION_WEIGHTS.get("vector_similarity", 0.15)
+        weights = RECOMMENDATION_WEIGHTS
+        total = (
+            preference_score * weights.get("guest_preferences", 0.35) +
+            host_insight_score * weights.get("host_insights", 0.25) +
+            popularity_score * weights.get("popularity", 0.15) +
+            seasonal_score * weights.get("seasonal", 0.10) +
+            location_score * weights.get("location", 0.10) +
+            vector_score * weights.get("vector_similarity", 0.05)
         )
-
+        total *= distance_penalty * wow_factor
+        return min(1.0, total)

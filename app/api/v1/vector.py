@@ -9,12 +9,15 @@ import logging
 from typing import List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.api.v1.hosts import get_current_host
+from app.models.host import Host
 from app.services.vector_service import VectorService
 from app.services.ai_service import AIService
+from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
 from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
 from pydantic import BaseModel
@@ -55,6 +58,7 @@ class SimilarAttractionResponse(BaseModel):
 @router.post("/generate-embedding", response_model=EmbeddingResponse)
 async def generate_embedding(
     request: EmbeddingRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -99,6 +103,7 @@ async def generate_embedding(
 @router.post("/attractions/{attraction_id}/update-embedding")
 async def update_attraction_embedding(
     attraction_id: str,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -112,6 +117,17 @@ async def update_attraction_embedding(
         Success status
     """
     try:
+        from sqlalchemy import select
+
+        stmt = select(Attraction).where(Attraction.id == uuid.UUID(attraction_id))
+        result = await db.execute(stmt)
+        attraction = result.scalar_one_or_none()
+        if not attraction or attraction.created_by_host_id != current_host.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attraction not found",
+            )
+
         ai_service = AIService()
         vector_service = VectorService(db, ai_service)
         
@@ -136,6 +152,7 @@ async def update_attraction_embedding(
 @router.post("/guest-groups/{guest_group_id}/update-embedding")
 async def update_guest_group_embedding(
     guest_group_id: str,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -149,6 +166,14 @@ async def update_guest_group_embedding(
         Success status
     """
     try:
+        guest_service = GuestGroupService(db)
+        guest_group = await guest_service.get_by_id(uuid.UUID(guest_group_id))
+        if not guest_group or not host_owns_guest_group(guest_group, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Guest group not found",
+            )
+
         ai_service = AIService()
         vector_service = VectorService(db, ai_service)
         
@@ -162,6 +187,8 @@ async def update_guest_group_embedding(
                 detail="Failed to update embedding"
             )
             
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating guest group embedding: {e}")
         raise HTTPException(
@@ -173,6 +200,7 @@ async def update_guest_group_embedding(
 @router.post("/find-similar", response_model=List[SimilarAttractionResponse])
 async def find_similar_attractions(
     request: SimilarAttractionsRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -186,6 +214,13 @@ async def find_similar_attractions(
         List of similar attractions with similarity scores
     """
     try:
+        effective_host_id = request.host_id or str(current_host.id)
+        if effective_host_id != str(current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden",
+            )
+
         ai_service = AIService()
         vector_service = VectorService(db, ai_service)
         
@@ -204,7 +239,7 @@ async def find_similar_attractions(
         similar_attractions = await vector_service.find_similar_attractions(
             query_embedding=query_embedding,
             limit=request.limit,
-            host_id=request.host_id,
+            host_id=effective_host_id,
             min_similarity=request.min_similarity
         )
         
@@ -231,8 +266,9 @@ async def find_similar_attractions(
 
 @router.post("/batch-update-embeddings")
 async def batch_update_embeddings(
-    attraction_ids: Optional[List[str]] = None,
-    guest_group_ids: Optional[List[str]] = None,
+    attraction_ids: Optional[List[str]] = Query(None),
+    guest_group_ids: Optional[List[str]] = Query(None),
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -247,6 +283,31 @@ async def batch_update_embeddings(
         Update results
     """
     try:
+        guest_service = GuestGroupService(db)
+        if guest_group_ids:
+            for guest_group_id in guest_group_ids:
+                guest_group = await guest_service.get_by_id(uuid.UUID(guest_group_id))
+                if not guest_group or not host_owns_guest_group(guest_group, current_host.id):
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Guest group not found",
+                    )
+
+        if attraction_ids:
+            from sqlalchemy import select
+            for attraction_id in attraction_ids:
+                stmt = select(Attraction).where(Attraction.id == uuid.UUID(attraction_id))
+                result = await db.execute(stmt)
+                attraction = result.scalar_one_or_none()
+                if (
+                    not attraction
+                    or attraction.created_by_host_id != current_host.id
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Attraction not found",
+                    )
+
         ai_service = AIService()
         vector_service = VectorService(db, ai_service)
         
@@ -260,6 +321,8 @@ async def batch_update_embeddings(
             "results": results
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in batch update: {e}")
         raise HTTPException(

@@ -289,7 +289,8 @@ class BookingService:
         self,
         partner_id: uuid.UUID,
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
+        host_id: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
         """
         Calculate total commission payout for a partner.
@@ -319,6 +320,8 @@ class BookingService:
                 stmt = stmt.where(PartnerBooking.confirmed_at >= start_date)
             if end_date:
                 stmt = stmt.where(PartnerBooking.confirmed_at <= end_date)
+            if host_id:
+                stmt = stmt.where(PartnerBooking.host_id == host_id)
             
             stmt = stmt.group_by(PartnerBooking.currency)
             

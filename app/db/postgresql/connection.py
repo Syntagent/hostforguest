@@ -51,10 +51,22 @@ Base = declarative_base()
 def import_models():
     """Import all models to ensure they are registered with SQLAlchemy."""
     try:
+        # Core tables first — maintenance/adaptation reference partners and hosts.
+        import app.models.host  # noqa: F401
+        import app.models.partner  # noqa: F401
+        import app.models.guest_group  # noqa: F401
+        import app.models.attraction  # noqa: F401
+        import app.models.recommendation  # noqa: F401
+        import app.models.itinerary  # noqa: F401
+        import app.models.content_source  # noqa: F401
+        import app.models.local_event  # noqa: F401
+        import app.models.event_source_proposal  # noqa: F401
         from app.models.settings import HostSettings, SystemSettings, APIKeyTemplate  # noqa: F401
         from app.models import channel_integration  # noqa: F401
         from app.models import maintenance  # noqa: F401
         from app.models import adaptation  # noqa: F401
+        from app.models import host_compliance  # noqa: F401
+        import app.models.subscription  # noqa: F401
         logger.info("Models imported successfully")
     except ImportError as e:
         logger.warning(f"Could not import some models: {e}")
@@ -104,6 +116,70 @@ def _apply_partner_booking_channel_migrations(connection: Connection, dialect: s
             )
         except Exception as e:
             logger.debug("Partial unique index creation skipped: %s", e)
+
+
+async def ensure_attraction_host_contributions_schema() -> None:
+    """Table for host tips/stories (raw SQL in attraction routes; not an ORM model)."""
+
+    def _run(sync_conn: Connection) -> None:
+        dialect = sync_conn.dialect.name
+        if dialect == "postgresql":
+            sync_conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS attraction_host_contributions (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        attraction_id UUID NOT NULL REFERENCES attractions (id) ON DELETE CASCADE,
+                        host_id UUID NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
+                        contribution_type VARCHAR(50) NOT NULL,
+                        title VARCHAR(200) NOT NULL,
+                        content TEXT NOT NULL,
+                        is_public BOOLEAN NOT NULL DEFAULT TRUE,
+                        language VARCHAR(10) NOT NULL DEFAULT 'en',
+                        created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+            sync_conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_attraction_host_contributions_attraction "
+                    "ON attraction_host_contributions (attraction_id)"
+                )
+            )
+            sync_conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_attraction_host_contributions_host "
+                    "ON attraction_host_contributions (host_id)"
+                )
+            )
+        else:
+            sync_conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS attraction_host_contributions (
+                        id TEXT PRIMARY KEY,
+                        attraction_id TEXT NOT NULL,
+                        host_id TEXT NOT NULL,
+                        contribution_type VARCHAR(50) NOT NULL,
+                        title VARCHAR(200) NOT NULL,
+                        content TEXT NOT NULL,
+                        is_public BOOLEAN NOT NULL DEFAULT 1,
+                        language VARCHAR(10) NOT NULL DEFAULT 'en',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(_run)
+        logger.info("attraction_host_contributions schema checks applied")
+    except Exception as e:
+        logger.warning("attraction_host_contributions schema migration non-fatal: %s", e)
 
 
 async def ensure_channel_integration_schema() -> None:
@@ -218,6 +294,44 @@ async def ensure_cleaning_partner_schema() -> None:
         logger.warning("Cleaning partner schema migration non-fatal: %s", e)
 
 
+async def ensure_host_telegram_schema() -> None:
+    """Add telegram_id column on hosts for A2A bot binding (idempotent)."""
+
+    def _run(sync_conn: Connection) -> None:
+        dialect = sync_conn.dialect.name
+        if dialect == "postgresql":
+            stmts = [
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_id BIGINT",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_hosts_telegram_id ON hosts (telegram_id) WHERE telegram_id IS NOT NULL",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_pairing_code VARCHAR(6)",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_pairing_expires TIMESTAMP",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_linked_at TIMESTAMP",
+                (
+                    "CREATE INDEX IF NOT EXISTS ix_hosts_telegram_pairing_code "
+                    "ON hosts (telegram_pairing_code) WHERE telegram_pairing_code IS NOT NULL"
+                ),
+            ]
+        else:
+            stmts = [
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_id INTEGER",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_pairing_code VARCHAR(6)",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_pairing_expires TIMESTAMP",
+                "ALTER TABLE hosts ADD COLUMN IF NOT EXISTS telegram_linked_at TIMESTAMP",
+            ]
+        for stmt in stmts:
+            try:
+                sync_conn.execute(text(stmt))
+            except Exception as e:
+                logger.debug("Host telegram schema migration skipped: %s — %s", stmt, e)
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(_run)
+        logger.info("Host telegram_id schema checks applied")
+    except Exception as e:
+        logger.warning("Host telegram schema migration non-fatal: %s", e)
+
+
 async def ensure_guest_preference_age_category_length() -> None:
     """Widen age_category for multi-select (comma-separated keys)."""
     if not USE_POSTGRESQL:
@@ -232,11 +346,45 @@ async def ensure_guest_preference_age_category_length() -> None:
         logger.debug("guest_preferences.age_category alter skipped: %s", e)
 
 
+async def ensure_local_events_metadata_columns() -> None:
+    """Add rich metadata columns to local_events (Gemma4 extraction v2)."""
+    pg_stmts = [
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS event_type VARCHAR(30)",
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS age_group VARCHAR(20)",
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS price VARCHAR(20)",
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS address VARCHAR(300)",
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS is_recurring BOOLEAN DEFAULT false",
+        "ALTER TABLE local_events ADD COLUMN IF NOT EXISTS recurrence JSONB",
+        "CREATE INDEX IF NOT EXISTS ix_local_events_event_type ON local_events (event_type)",
+        "CREATE INDEX IF NOT EXISTS ix_local_events_age_group ON local_events (age_group)",
+    ]
+    sqlite_stmts = [
+        "ALTER TABLE local_events ADD COLUMN event_type VARCHAR(30)",
+        "ALTER TABLE local_events ADD COLUMN age_group VARCHAR(20)",
+        "ALTER TABLE local_events ADD COLUMN price VARCHAR(20)",
+        "ALTER TABLE local_events ADD COLUMN address VARCHAR(300)",
+        "ALTER TABLE local_events ADD COLUMN is_recurring BOOLEAN DEFAULT 0",
+        "ALTER TABLE local_events ADD COLUMN recurrence TEXT",
+    ]
+    stmts = pg_stmts if USE_POSTGRESQL else sqlite_stmts
+    try:
+        async with engine.begin() as conn:
+            for stmt in stmts:
+                try:
+                    await conn.execute(text(stmt))
+                except Exception as e:
+                    logger.debug("local_events metadata column skipped: %s — %s", stmt, e)
+        logger.info("local_events metadata columns ensured")
+    except Exception as e:
+        logger.warning("local_events metadata migration non-fatal: %s", e)
+
+
 async def ensure_embedding_columns() -> None:
     """Add embedding columns that create_all won't add to existing tables."""
     stmts = [
         "ALTER TABLE attractions ADD COLUMN IF NOT EXISTS embedding TEXT",
         "ALTER TABLE guest_groups ADD COLUMN IF NOT EXISTS preference_embedding TEXT",
+        "ALTER TABLE partners ADD COLUMN IF NOT EXISTS embedding TEXT",
     ]
     try:
         async with engine.begin() as conn:
@@ -313,9 +461,11 @@ async def init_postgresql() -> None:
                         await ensure_channel_integration_schema()
                         await ensure_itinerary_template_schema()
                         await ensure_embedding_columns()
+                        await ensure_local_events_metadata_columns()
                         await ensure_guest_preference_age_category_length()
                         await ensure_cleaning_partner_schema()
                         await ensure_partner_trade_schema()
+                        await ensure_host_telegram_schema()
                         return
 
                     # Try to enable pgvector extension (PostgreSQL only) - optional
@@ -346,9 +496,12 @@ async def init_postgresql() -> None:
         await ensure_channel_integration_schema()
         await ensure_itinerary_template_schema()
         await ensure_embedding_columns()
+        await ensure_local_events_metadata_columns()
         await ensure_guest_preference_age_category_length()
         await ensure_cleaning_partner_schema()
         await ensure_partner_trade_schema()
+        await ensure_attraction_host_contributions_schema()
+        await ensure_host_telegram_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise

@@ -18,6 +18,7 @@ from app.models.channel_integration import ChannelAccount
 from app.models.host import Host
 from app.services.channel_integration_service import ChannelIntegrationService
 from app.services.channel_sync_service import ChannelSyncService
+from app.services.partner_service import PartnerService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +90,38 @@ class SyncHealthResponse(BaseModel):
     consecutive_errors: int
 
 
+class ChannelSyncResult(BaseModel):
+    """Response from poll_reservations / full_sync (service-layer dict shape)."""
+
+    ok: bool
+    error: Optional[str] = None
+    fetched: Optional[int] = None
+    processed: Optional[int] = None
+    errors: Optional[List[str]] = None
+    last_full_sync_at: Optional[str] = None
+
+
+class ChannelReplayResult(BaseModel):
+    """Response from replay_event_log (service-layer dict shape)."""
+
+    ok: bool
+    error: Optional[str] = None
+    outcome: Optional[str] = None
+
+
+class ChannelDisconnectResponse(BaseModel):
+    """DELETE /booking-com/disconnect."""
+
+    ok: bool
+    disconnected: bool
+
+
+class ChannelPushOkResponse(BaseModel):
+    """POST push/availability and push/rates success envelope."""
+
+    ok: bool
+
+
 def _to_account_resp(acc: ChannelAccount) -> ChannelAccountResponse:
     return ChannelAccountResponse(
         id=str(acc.id),
@@ -115,14 +148,14 @@ async def connect_booking_com(
     return _to_account_resp(acc)
 
 
-@router.delete("/booking-com/disconnect")
+@router.delete("/booking-com/disconnect", response_model=ChannelDisconnectResponse)
 async def disconnect_booking_com(
     db: AsyncSession = Depends(get_db),
     host: Host = Depends(get_current_host),
 ):
     svc = ChannelIntegrationService(db)
     disconnected = await svc.disconnect(host.id)
-    return {"ok": True, "disconnected": disconnected}
+    return ChannelDisconnectResponse(ok=True, disconnected=disconnected)
 
 
 @router.get("/status", response_model=ChannelStatusResponse)
@@ -146,6 +179,14 @@ async def create_mapping(
     acc = await db.get(ChannelAccount, account_id)
     if not acc or acc.host_id != host.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel account not found")
+    local_entity_id = uuid.UUID(body.local_entity_id)
+    if body.local_entity_type == "host":
+        if local_entity_id != host.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Local entity not found")
+    else:
+        partner_svc = PartnerService(db)
+        if not await partner_svc.host_has_partner_link(host.id, local_entity_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Partner not found")
     try:
         m = await svc.add_mapping(
             account_id,
@@ -173,6 +214,9 @@ async def list_mappings(
     db: AsyncSession = Depends(get_db),
     host: Host = Depends(get_current_host),
 ):
+    acc = await db.get(ChannelAccount, account_id)
+    if not acc or acc.host_id != host.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel account not found")
     svc = ChannelIntegrationService(db)
     rows = await svc.list_mappings(account_id, host.id)
     return [
@@ -188,7 +232,7 @@ async def list_mappings(
     ]
 
 
-@router.post("/{account_id}/sync/full")
+@router.post("/{account_id}/sync/full", response_model=ChannelSyncResult)
 async def sync_full(
     account_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -201,7 +245,7 @@ async def sync_full(
     return await sync.full_sync(account_id)
 
 
-@router.post("/{account_id}/sync/reservations")
+@router.post("/{account_id}/sync/reservations", response_model=ChannelSyncResult)
 async def sync_reservations(
     account_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -214,7 +258,7 @@ async def sync_reservations(
     return await sync.poll_reservations(account_id)
 
 
-@router.post("/{account_id}/push/availability")
+@router.post("/{account_id}/push/availability", response_model=ChannelPushOkResponse)
 async def push_availability(
     account_id: uuid.UUID,
     body: PushAvailabilityRequest,
@@ -234,10 +278,10 @@ async def push_availability(
     )
     if not ok:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Availability push failed")
-    return {"ok": True}
+    return ChannelPushOkResponse(ok=True)
 
 
-@router.post("/{account_id}/push/rates")
+@router.post("/{account_id}/push/rates", response_model=ChannelPushOkResponse)
 async def push_rates(
     account_id: uuid.UUID,
     body: PushRatesRequest,
@@ -258,7 +302,7 @@ async def push_rates(
     )
     if not ok:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Rates push failed")
-    return {"ok": True}
+    return ChannelPushOkResponse(ok=True)
 
 
 @router.get("/{account_id}/health", response_model=SyncHealthResponse)
@@ -288,7 +332,7 @@ async def sync_health(
     )
 
 
-@router.post("/events/{event_id}/replay")
+@router.post("/events/{event_id}/replay", response_model=ChannelReplayResult)
 async def replay_event(
     event_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -302,7 +346,13 @@ class OtaOverrideBody(BaseModel):
     local_sync_override: bool
 
 
-@router.patch("/bookings/{booking_id}/ota-override")
+class OtaOverrideResponse(BaseModel):
+    ok: bool
+    booking_id: str
+    local_sync_override: bool
+
+
+@router.patch("/bookings/{booking_id}/ota-override", response_model=OtaOverrideResponse)
 async def set_booking_ota_override(
     booking_id: uuid.UUID,
     body: OtaOverrideBody,
@@ -316,4 +366,8 @@ async def set_booking_ota_override(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Booking not found")
     b.local_sync_override = body.local_sync_override
     await db.commit()
-    return {"ok": True, "booking_id": str(booking_id), "local_sync_override": b.local_sync_override}
+    return OtaOverrideResponse(
+        ok=True,
+        booking_id=str(booking_id),
+        local_sync_override=bool(b.local_sync_override),
+    )

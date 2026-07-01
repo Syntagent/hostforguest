@@ -14,9 +14,22 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
+from app.models.booking_api import (
+    BookingAnalyticsResponse,
+    BookingMutationResponse,
+    BookingResponse,
+    BookingSummaryRow,
+    HostBookingsListResponse,
+    PartnerPayoutResponse,
+)
 from app.core.database import get_db
+from app.api.v1.hosts import get_current_host
+from app.models.host import Host
 from app.services.booking_service import BookingService
-from app.models.partner import BookingStatus
+from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
+from app.services.partner_service import PartnerService
+from app.models.partner import BookingStatus, PartnerBooking
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,25 +50,10 @@ class CreateBookingRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class BookingResponse(BaseModel):
-    """Booking response model."""
-    id: str
-    guest_group_id: str
-    partner_id: str
-    booking_amount: float
-    currency: str
-    commission_rate: float
-    commission_amount: float
-    status: str
-    booking_date: datetime
-    
-    class Config:
-        from_attributes = True
-
-
 @router.post("/", response_model=BookingResponse)
 async def create_booking(
     request: CreateBookingRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -69,10 +67,32 @@ async def create_booking(
         Created booking
     """
     try:
+        guest_service = GuestGroupService(db)
+        group = await guest_service.get_by_id(uuid.UUID(request.guest_group_id))
+        if not group or not host_owns_guest_group(group, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Guest group not found",
+            )
+        if request.host_id and str(current_host.id) != request.host_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden",
+            )
+
+        partner_svc = PartnerService(db)
+        if not await partner_svc.host_has_partner_link(
+            current_host.id, uuid.UUID(request.partner_id)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
+
         booking_service = BookingService(db)
         
         booking_data = {
-            "host_id": uuid.UUID(request.host_id) if request.host_id else None,
+            "host_id": current_host.id,
             "amount": request.amount,
             "currency": request.currency,
             "booking_reference": request.booking_reference,
@@ -116,9 +136,24 @@ async def create_booking(
         )
 
 
-@router.post("/{booking_id}/confirm")
+async def _booking_for_host(
+    db: AsyncSession, booking_id: str, current_host: Host
+) -> PartnerBooking:
+    stmt = select(PartnerBooking).where(PartnerBooking.id == uuid.UUID(booking_id))
+    result = await db.execute(stmt)
+    booking = result.scalar_one_or_none()
+    if not booking or booking.host_id != current_host.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Booking not found",
+        )
+    return booking
+
+
+@router.post("/{booking_id}/confirm", response_model=BookingMutationResponse)
 async def confirm_booking(
     booking_id: str,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -132,8 +167,9 @@ async def confirm_booking(
         Success status
     """
     try:
+        await _booking_for_host(db, booking_id, current_host)
         booking_service = BookingService(db)
-        
+
         success = await booking_service.confirm_booking(uuid.UUID(booking_id))
         
         if success:
@@ -154,10 +190,11 @@ async def confirm_booking(
         )
 
 
-@router.post("/{booking_id}/cancel")
+@router.post("/{booking_id}/cancel", response_model=BookingMutationResponse)
 async def cancel_booking(
     booking_id: str,
     cancellation_reason: Optional[str] = None,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -172,8 +209,9 @@ async def cancel_booking(
         Success status
     """
     try:
+        await _booking_for_host(db, booking_id, current_host)
         booking_service = BookingService(db)
-        
+
         success = await booking_service.cancel_booking(
             uuid.UUID(booking_id),
             cancellation_reason
@@ -197,11 +235,12 @@ async def cancel_booking(
         )
 
 
-@router.get("/host/{host_id}")
+@router.get("/host/{host_id}", response_model=HostBookingsListResponse)
 async def get_host_bookings(
     host_id: str,
-    status: Optional[str] = Query(None),
+    booking_status: Optional[str] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=100),
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -217,33 +256,39 @@ async def get_host_bookings(
         List of bookings
     """
     try:
+        if str(current_host.id) != host_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden",
+            )
+
         booking_service = BookingService(db)
-        
-        booking_status = BookingStatus(status) if status else None
-        
+
+        booking_status_enum = BookingStatus(booking_status) if booking_status else None
+
         bookings = await booking_service.get_bookings_for_host(
             uuid.UUID(host_id),
-            booking_status,
+            booking_status_enum,
             limit
         )
         
-        return {
-            "bookings": [
-                {
-                    "id": str(b.id),
-                    "guest_group_id": str(b.guest_group_id),
-                    "partner_id": str(b.partner_id),
-                    "booking_amount": b.booking_amount,
-                    "currency": b.currency,
-                    "commission_amount": b.commission_amount,
-                    "status": b.status,
-                    "booking_date": b.booking_date.isoformat() if b.booking_date else None
-                }
-                for b in bookings
-            ],
-            "count": len(bookings)
-        }
+        rows = [
+            BookingSummaryRow(
+                id=str(b.id),
+                guest_group_id=str(b.guest_group_id),
+                partner_id=str(b.partner_id),
+                booking_amount=b.booking_amount,
+                currency=b.currency,
+                commission_amount=b.commission_amount,
+                status=b.status,
+                booking_date=b.booking_date.isoformat() if b.booking_date else None,
+            )
+            for b in bookings
+        ]
+        return HostBookingsListResponse(bookings=rows, count=len(rows))
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting host bookings: {e}")
         raise HTTPException(
@@ -252,11 +297,12 @@ async def get_host_bookings(
         )
 
 
-@router.get("/partner/{partner_id}/payout")
+@router.get("/partner/{partner_id}/payout", response_model=PartnerPayoutResponse)
 async def get_partner_payout(
     partner_id: str,
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -272,16 +318,27 @@ async def get_partner_payout(
         Payout calculation
     """
     try:
+        partner_uuid = uuid.UUID(partner_id)
+        partner_svc = PartnerService(db)
+        if not await partner_svc.host_has_partner_link(current_host.id, partner_uuid):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Partner not found",
+            )
+
         booking_service = BookingService(db)
         
         payout = await booking_service.calculate_commission_payout(
-            uuid.UUID(partner_id),
+            partner_uuid,
             start_date,
-            end_date
+            end_date,
+            host_id=current_host.id,
         )
         
-        return payout
-        
+        return PartnerPayoutResponse.model_validate(payout)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error calculating payout: {e}")
         raise HTTPException(
@@ -290,11 +347,12 @@ async def get_partner_payout(
         )
 
 
-@router.get("/analytics")
+@router.get("/analytics", response_model=BookingAnalyticsResponse)
 async def get_booking_analytics(
     host_id: Optional[str] = Query(None),
     partner_id: Optional[str] = Query(None),
     period_days: int = Query(30, ge=1, le=365),
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -310,16 +368,24 @@ async def get_booking_analytics(
         Analytics data
     """
     try:
+        if host_id and str(current_host.id) != host_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden",
+            )
+
         booking_service = BookingService(db)
         
         analytics = await booking_service.get_booking_analytics(
-            uuid.UUID(host_id) if host_id else None,
+            current_host.id,
             uuid.UUID(partner_id) if partner_id else None,
             period_days
         )
         
-        return analytics
-        
+        return BookingAnalyticsResponse.model_validate(analytics)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting booking analytics: {e}")
         raise HTTPException(

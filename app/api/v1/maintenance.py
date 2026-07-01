@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import require_webhook_hmac_secret
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.host import Host
@@ -27,6 +28,7 @@ from app.api.v1.hosts import get_current_host
 from app.services.guest_group_service import GuestGroupService
 from app.services.maintenance_service import MaintenanceService, MAINTENANCE_CATEGORIES
 from app.services.maintenance_ai_service import MaintenanceAIService
+from app.services.partner_service import PartnerService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -85,6 +87,102 @@ class SaveDraftBody(BaseModel):
     host_edited: bool = True
 
 
+class MaintenanceIssueResponse(BaseModel):
+    id: str
+    host_id: str
+    guest_group_id: Optional[str] = None
+    category: str
+    title: str
+    description: Optional[str] = None
+    status: str
+    priority: str
+    photo_urls: List[str] = Field(default_factory=list)
+    due_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    source: str
+    source_metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class MaintenanceIssueListResponse(BaseModel):
+    issues: List[MaintenanceIssueResponse]
+
+
+class MaintenanceCategoriesResponse(BaseModel):
+    categories: List[str]
+
+
+class MaintenanceScheduleResponse(BaseModel):
+    id: str
+    title: str
+    category: str
+    interval_days: int
+    active: bool
+    last_run_at: Optional[str] = None
+    next_due_at: Optional[str] = None
+
+
+class MaintenanceScheduleListResponse(BaseModel):
+    schedules: List[MaintenanceScheduleResponse]
+
+
+class MaintenanceScheduleCreateResponse(BaseModel):
+    id: str
+    title: str
+    category: str
+    interval_days: int
+    next_due_at: Optional[str] = None
+
+
+class MaintenancePartnerRank(BaseModel):
+    partner_id: str
+    name: str
+    phone: Optional[str] = None
+    city: str
+    distance_km: Optional[float] = None
+    reason: str
+
+
+class MaintenancePartnerSuggestResponse(BaseModel):
+    ranked: List[MaintenancePartnerRank]
+    ai_used: bool
+    disclaimer: str
+
+
+class MaintenanceDraftMessageResponse(BaseModel):
+    message_hr: str
+    ai_used: bool
+
+
+class MaintenanceSaveDraftResponse(BaseModel):
+    id: str
+    created_at: Optional[str] = None
+
+
+class MaintenanceReplySuggestionsResponse(BaseModel):
+    suggestions: List[str]
+
+
+class MaintenancePreventiveRunResponse(BaseModel):
+    created_count: int
+    issues: List[MaintenanceIssueResponse]
+
+
+class GuestMaintenanceReportResponse(BaseModel):
+    """Guest maintenance report — omits host workflow and lifecycle fields."""
+
+    id: str
+    category: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    photo_urls: List[str] = Field(default_factory=list)
+
+
+class GuestMaintenanceReportsListResponse(BaseModel):
+    issues: List[GuestMaintenanceReportResponse]
+
+
 def _issue_dict(i: MaintenanceIssue) -> Dict[str, Any]:
     return {
         "id": str(i.id),
@@ -105,12 +203,30 @@ def _issue_dict(i: MaintenanceIssue) -> Dict[str, Any]:
     }
 
 
-@router.get("/categories")
+def _guest_issue_dict(i: MaintenanceIssue) -> Dict[str, Any]:
+    """Guest-facing issue payload — omits host/internal fields."""
+    from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+    photo_urls = [
+        scrub_contact_from_text(str(u), scrub_urls=True) or str(u)
+        for u in (i.photo_urls or [])
+    ]
+
+    return {
+        "id": str(i.id),
+        "category": scrub_contact_from_text(i.category),
+        "title": scrub_contact_from_text(i.title),
+        "description": scrub_contact_from_text(i.description),
+        "photo_urls": photo_urls,
+    }
+
+
+@router.get("/categories", response_model=MaintenanceCategoriesResponse)
 async def list_categories():
     return {"categories": MAINTENANCE_CATEGORIES}
 
 
-@router.get("/issues")
+@router.get("/issues", response_model=MaintenanceIssueListResponse)
 async def list_issues(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -120,7 +236,7 @@ async def list_issues(
     return {"issues": [_issue_dict(i) for i in issues]}
 
 
-@router.post("/issues", status_code=status.HTTP_201_CREATED)
+@router.post("/issues", status_code=status.HTTP_201_CREATED, response_model=MaintenanceIssueResponse)
 async def create_issue(
     body: MaintenanceIssueCreate,
     current_host: Host = Depends(get_current_host),
@@ -142,7 +258,7 @@ async def create_issue(
     return _issue_dict(issue)
 
 
-@router.get("/issues/{issue_id}")
+@router.get("/issues/{issue_id}", response_model=MaintenanceIssueResponse)
 async def get_issue(
     issue_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -155,7 +271,7 @@ async def get_issue(
     return _issue_dict(issue)
 
 
-@router.patch("/issues/{issue_id}")
+@router.patch("/issues/{issue_id}", response_model=MaintenanceIssueResponse)
 async def patch_issue(
     issue_id: uuid.UUID,
     body: MaintenanceIssueUpdate,
@@ -170,7 +286,11 @@ async def patch_issue(
     return _issue_dict(issue)
 
 
-@router.post("/guest-reports", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/guest-reports",
+    status_code=status.HTTP_201_CREATED,
+    response_model=GuestMaintenanceReportResponse,
+)
 async def guest_report(
     body: GuestMaintenanceReportCreate,
     db: AsyncSession = Depends(get_db),
@@ -187,10 +307,27 @@ async def guest_report(
         description=body.description,
         photo_urls=body.photo_urls,
     )
-    return _issue_dict(issue)
+    return _guest_issue_dict(issue)
 
 
-@router.get("/schedules")
+@router.get(
+    "/guest-reports/{access_code}",
+    response_model=GuestMaintenanceReportsListResponse,
+)
+async def list_guest_reports(
+    access_code: str,
+    db: AsyncSession = Depends(get_db),
+):
+    gsvc = GuestGroupService(db)
+    group = await gsvc.validate_access_code(access_code)
+    if not group:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invalid or expired access code")
+    svc = MaintenanceService(db)
+    issues = await svc.list_issues_for_guest_group(group.id)
+    return {"issues": [_guest_issue_dict(i) for i in issues]}
+
+
+@router.get("/schedules", response_model=MaintenanceScheduleListResponse)
 async def list_schedules(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -213,7 +350,11 @@ async def list_schedules(
     }
 
 
-@router.post("/schedules", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/schedules",
+    status_code=status.HTTP_201_CREATED,
+    response_model=MaintenanceScheduleCreateResponse,
+)
 async def create_schedule(
     body: MaintenanceScheduleCreate,
     current_host: Host = Depends(get_current_host),
@@ -236,7 +377,7 @@ async def create_schedule(
     }
 
 
-@router.post("/run-preventive")
+@router.post("/run-preventive", response_model=MaintenancePreventiveRunResponse)
 async def run_preventive(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -268,7 +409,10 @@ async def run_preventive_global_job(request: Request, db: AsyncSession = Depends
     return {"created_count": len(created), "issues": [_issue_dict(i) for i in created]}
 
 
-@router.post("/issues/{issue_id}/suggest-partners")
+@router.post(
+    "/issues/{issue_id}/suggest-partners",
+    response_model=MaintenancePartnerSuggestResponse,
+)
 async def suggest_partners(
     issue_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -282,7 +426,10 @@ async def suggest_partners(
     return await ai.suggest_partners_ranked(current_host, issue)
 
 
-@router.post("/issues/{issue_id}/draft-message")
+@router.post(
+    "/issues/{issue_id}/draft-message",
+    response_model=MaintenanceDraftMessageResponse,
+)
 async def draft_message(
     issue_id: uuid.UUID,
     body: DraftMessageBody,
@@ -297,6 +444,9 @@ async def draft_message(
     partner = pr.scalar_one_or_none()
     if not partner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Partner not found")
+    partner_svc = PartnerService(db)
+    if not await partner_svc.host_has_partner_link(current_host.id, body.partner_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Partner not found")
     ai = MaintenanceAIService(db)
     out = await ai.draft_message(
         current_host,
@@ -309,7 +459,10 @@ async def draft_message(
     return out
 
 
-@router.post("/issues/{issue_id}/save-draft")
+@router.post(
+    "/issues/{issue_id}/save-draft",
+    response_model=MaintenanceSaveDraftResponse,
+)
 async def save_draft(
     issue_id: uuid.UUID,
     body: SaveDraftBody,
@@ -320,6 +473,9 @@ async def save_draft(
     issue = await svc.get_issue(current_host.id, issue_id)
     if not issue:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Issue not found")
+    partner_svc = PartnerService(db)
+    if not await partner_svc.host_has_partner_link(current_host.id, body.partner_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Partner not found")
     d = await svc.save_outreach_draft(
         issue_id,
         body.partner_id,
@@ -330,7 +486,10 @@ async def save_draft(
     return {"id": str(d.id), "created_at": d.created_at.isoformat() if d.created_at else None}
 
 
-@router.post("/issues/{issue_id}/reply-suggestions")
+@router.post(
+    "/issues/{issue_id}/reply-suggestions",
+    response_model=MaintenanceReplySuggestionsResponse,
+)
 async def reply_suggestions(
     issue_id: uuid.UUID,
     body: ReplySuggestionsBody,
@@ -357,6 +516,7 @@ async def maintenance_webhook(request: Request, db: AsyncSession = Depends(get_d
     body = await request.body()
     sig = request.headers.get("X-Maintenance-Signature") or ""
     secret = (settings.maintenance_webhook_secret or "").strip()
+    require_webhook_hmac_secret(secret, "Maintenance")
     if secret and not _verify_maint_sig(body, sig, secret):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid signature")
     try:

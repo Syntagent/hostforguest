@@ -11,13 +11,30 @@ from datetime import datetime
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, or_, func, desc
+from sqlalchemy import select, update, and_, or_, func, desc, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import selectinload
 
 from app.models.partner import Partner, HostPartner, PartnerType, PartnerStatus, PartnerBooking, BookingStatus
 from app.models.host import Host
 
 logger = logging.getLogger(__name__)
+
+# Google Places types mapped to partner_type values used in recommendations.
+_GOOGLE_TO_PARTNER_TYPE: Dict[str, str] = {
+    "restaurant": "restaurant",
+    "cafe": "cafe",
+    "wine_bar": "wine_bar",
+}
+
+
+def _partner_type_from_google_types(types: List[str]) -> Optional[str]:
+    """Pick partner_type from Google place types (restaurant / wine_bar / cafe)."""
+    for gtype in types or []:
+        mapped = _GOOGLE_TO_PARTNER_TYPE.get(gtype)
+        if mapped:
+            return mapped
+    return None
 
 
 class PartnerService:
@@ -67,6 +84,52 @@ class PartnerService:
             await self.db.rollback()
             return None
     
+    async def host_has_partner_link(
+        self,
+        host_id: uuid.UUID,
+        partner_id: uuid.UUID,
+    ) -> bool:
+        """Return True when the host has an active link to the partner."""
+        try:
+            stmt = select(HostPartner.id).where(
+                and_(
+                    HostPartner.host_id == host_id,
+                    HostPartner.partner_id == partner_id,
+                )
+            )
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none() is not None
+        except Exception as e:
+            logger.error(f"Error checking host-partner link: {e}")
+            return False
+
+    async def get_partner_owner_host_id(
+        self,
+        partner_id: uuid.UUID,
+    ) -> Optional[uuid.UUID]:
+        """Host that first linked to the partner (creator on POST /partners/)."""
+        try:
+            stmt = (
+                select(HostPartner.host_id)
+                .where(HostPartner.partner_id == partner_id)
+                .order_by(HostPartner.created_at.asc())
+                .limit(1)
+            )
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error resolving partner owner: {e}")
+            return None
+
+    async def host_owns_partner_record(
+        self,
+        host_id: uuid.UUID,
+        partner_id: uuid.UUID,
+    ) -> bool:
+        """True when this host created the global partner row (first link)."""
+        owner_id = await self.get_partner_owner_host_id(partner_id)
+        return owner_id is not None and owner_id == host_id
+
     async def get_partner(self, partner_id: uuid.UUID) -> Optional[Partner]:
         """
         Get a partner by ID.
@@ -327,6 +390,19 @@ class PartnerService:
             return True
         return False
 
+    @staticmethod
+    def _cleaning_partner_sql_filter():
+        """SQL filter aligned with _is_cleaning_partner_row (incl. trade_categories)."""
+        tc = func.coalesce(cast(Partner.trade_categories, JSONB), cast([], JSONB))
+        return or_(
+            Partner.partner_type == PartnerType.CLEANING.value,
+            and_(
+                Partner.partner_type == PartnerType.SERVICE.value,
+                func.lower(Partner.category) == 'cleaning',
+            ),
+            tc.contains(['cleaning']),
+        )
+
     async def list_cleaning_partners(
         self,
         city: Optional[str] = None,
@@ -342,15 +418,7 @@ class PartnerService:
                 conds.append(func.lower(Partner.region) == region.strip().lower())
             if conds:
                 stmt = stmt.where(or_(*conds))
-            stmt = stmt.where(
-                or_(
-                    Partner.partner_type == PartnerType.CLEANING.value,
-                    and_(
-                        Partner.partner_type == PartnerType.SERVICE.value,
-                        func.lower(Partner.category) == 'cleaning',
-                    ),
-                )
-            )
+            stmt = stmt.where(self._cleaning_partner_sql_filter())
             stmt = stmt.order_by(desc(Partner.average_rating), desc(Partner.total_bookings))
             stmt = stmt.limit(limit)
             result = await self.db.execute(stmt)
@@ -507,3 +575,93 @@ class PartnerService:
             p.average_rating = round((float(old) * n + new_rating) / (n + 1), 2)
         p.total_reviews = n + 1
         await self.db.commit()
+
+    async def persist_google_places_results(
+        self,
+        places: List[Dict[str, Any]],
+        *,
+        city: str,
+        vector_service: Any,
+        google_svc: Any,
+    ) -> int:
+        """
+        Insert dining partners from Google Places nearby results (by google_place_id).
+
+        Skips existing rows; generates embedding for each new partner.
+        """
+        if not places:
+            return 0
+
+        created = 0
+        for place in places:
+            partner_type = _partner_type_from_google_types(place.get("types") or [])
+            if not partner_type:
+                continue
+
+            place_id = (place.get("place_id") or "").strip()
+            if not place_id:
+                continue
+
+            existing = await self.db.execute(
+                select(Partner.id).where(Partner.google_place_id == place_id).limit(1)
+            )
+            if existing.scalar_one_or_none():
+                continue
+
+            details: Dict[str, Any] = {}
+            if google_svc and hasattr(google_svc, "_get_place_details"):
+                try:
+                    details = await google_svc._get_place_details(place_id) or {}
+                except Exception as exc:
+                    logger.debug("Place details fetch failed for %s: %s", place_id, exc)
+
+            vicinity = (place.get("vicinity") or "").strip()
+            partner = Partner(
+                name=(place.get("name") or "Unknown").strip()[:200],
+                description=vicinity or None,
+                partner_type=partner_type,
+                city=(city or "Croatia").strip()[:100],
+                country="Croatia",
+                address=vicinity or None,
+                latitude=place.get("latitude"),
+                longitude=place.get("longitude"),
+                status=PartnerStatus.ACTIVE.value,
+                google_place_id=place_id,
+                google_rating=place.get("rating") if place.get("rating") is not None else details.get("rating"),
+                google_user_ratings_total=(
+                    place.get("user_ratings_total")
+                    if place.get("user_ratings_total") is not None
+                    else details.get("user_ratings_total")
+                ),
+                google_price_level=details.get("price_level"),
+                google_website=details.get("website"),
+                google_phone=details.get("formatted_phone_number"),
+                google_data_fetched_at=datetime.utcnow(),
+                discount_code=self._generate_discount_code(),
+            )
+            try:
+                async with self.db.begin_nested():
+                    self.db.add(partner)
+                    await self.db.flush()
+                    embedding = await vector_service.generate_partner_embedding(partner)
+                    if embedding:
+                        partner.embedding = "[" + ",".join(map(str, embedding)) + "]"
+            except Exception as exc:
+                logger.warning("Partner insert failed for %s: %s", place_id, exc)
+                await self.db.rollback()
+                continue
+
+            created += 1
+            logger.info(
+                "Persisted Google Places partner %s (%s) as %s",
+                partner.name,
+                place_id,
+                partner_type,
+            )
+
+        if created:
+            try:
+                await self.db.commit()
+            except Exception:
+                await self.db.flush()
+        return created

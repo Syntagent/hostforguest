@@ -13,23 +13,36 @@ import logging
 from datetime import datetime
 
 from app.core.database import get_db
+from app.core.auth import get_current_host
 from app.models import (
     Host,
     ItineraryCreate,
+    ItineraryUpdate,
     ItineraryResponse,
     ItineraryWithDetails,
+    ItineraryGuestWithDetails,
     ItineraryAssignFromTemplate,
     DayPlanCreate,
     DayPlanResponse,
     DayPlanWithActivities,
     ActivityCreate,
+    ActivityUpdate,
     ActivityResponse,
     ActivityVoteCreate,
     ActivityVoteResponse,
+    ActivityVoteGuestResponse,
+    RoutePointCreate,
+    RoutePointReorder,
+    RoutePointResponse,
     GoogleMapsDirectionsRequest,
     GoogleMapsDirectionsResponse,
     ItinerarySuggestionRequest,
     ItinerarySuggestionResponse,
+    ItineraryMapViewResponse,
+    GuestItineraryMapViewResponse,
+    GuestActivityCheckInResponse,
+    ItineraryRoutePointsReorderResponse,
+    ItineraryOptimizeRouteResponse,
 )
 from app.services.itinerary_service import ItineraryService
 from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
@@ -38,27 +51,6 @@ from app.services.host_service import HostService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> Host:
-    """Authenticate host via X-Session-Token (same as guest-groups and dashboard)."""
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required",
-        )
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-    return host
 
 
 # Host-facing endpoints for creating itineraries
@@ -106,7 +98,7 @@ async def assign_template_to_guest_group(
     return result
 
 
-@router.get("/host/day-plans/{day_plan_id}/map-view")
+@router.get("/host/day-plans/{day_plan_id}/map-view", response_model=ItineraryMapViewResponse)
 async def get_host_day_plan_map_view(
     day_plan_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -186,6 +178,107 @@ async def create_itinerary(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create itinerary",
         ) from e
+
+
+@router.put("/{itinerary_id}", response_model=ItineraryResponse)
+async def update_itinerary(
+    itinerary_id: uuid.UUID,
+    body: ItineraryUpdate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save route template / itinerary metadata (title, base location, etc.)."""
+    svc = ItineraryService(db)
+    updated = await svc.update_itinerary(itinerary_id, current_host.id, body)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Itinerary not found or access denied",
+        )
+    return updated
+
+
+@router.get("/{itinerary_id}/route-points", response_model=List[RoutePointResponse])
+async def list_route_points(
+    itinerary_id: uuid.UUID,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """List TNT / route stops for an itinerary (all days)."""
+    svc = ItineraryService(db)
+    points = await svc.list_route_points(itinerary_id, current_host.id)
+    if points is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Itinerary not found")
+    return points
+
+
+@router.post(
+    "/{itinerary_id}/route-points",
+    response_model=RoutePointResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_route_point(
+    itinerary_id: uuid.UUID,
+    body: RoutePointCreate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a TNT point to a day on this route."""
+    svc = ItineraryService(db)
+    point = await svc.add_route_point(itinerary_id, current_host.id, body)
+    if not point:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not add route point (invalid itinerary or day plan)",
+        )
+    return point
+
+
+@router.put("/route-points/{point_id}", response_model=RoutePointResponse)
+async def update_route_point(
+    point_id: uuid.UUID,
+    body: ActivityUpdate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a TNT point."""
+    svc = ItineraryService(db)
+    point = await svc.update_route_point(point_id, current_host.id, body)
+    if not point:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route point not found")
+    return point
+
+
+@router.delete("/route-points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_route_point(
+    point_id: uuid.UUID,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a TNT point."""
+    svc = ItineraryService(db)
+    ok = await svc.delete_route_point(point_id, current_host.id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Route point not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/{itinerary_id}/route-points/reorder", response_model=ItineraryRoutePointsReorderResponse)
+async def reorder_route_points(
+    itinerary_id: uuid.UUID,
+    body: RoutePointReorder,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reorder TNT points within a day."""
+    svc = ItineraryService(db)
+    ok = await svc.reorder_route_points(itinerary_id, current_host.id, body)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not reorder route points",
+        )
+    return ItineraryRoutePointsReorderResponse(success=True)
 
 
 @router.get("/{itinerary_id}", response_model=ItineraryWithDetails)
@@ -315,7 +408,12 @@ async def add_activity_to_day(
     """
     try:
         itinerary_service = ItineraryService(db)
-        
+        if not await itinerary_service.day_plan_owned_by_host(day_plan_id, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Day plan not found",
+            )
+
         activity = await itinerary_service.add_activity_to_day(
             day_plan_id=day_plan_id,
             activity_data=activity_data
@@ -340,7 +438,7 @@ async def add_activity_to_day(
         )
 
 
-@router.post("/day-plans/{day_plan_id}/optimize-route")
+@router.post("/day-plans/{day_plan_id}/optimize-route", response_model=ItineraryOptimizeRouteResponse)
 async def optimize_day_plan_route(
     day_plan_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -359,15 +457,20 @@ async def optimize_day_plan_route(
     """
     try:
         itinerary_service = ItineraryService(db)
-        
+        if not await itinerary_service.day_plan_owned_by_host(day_plan_id, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Day plan not found",
+            )
+
         success = await itinerary_service.optimize_day_plan_route(day_plan_id)
         
         if success:
-            return {
-                "success": True,
-                "message": "Route optimized successfully",
-                "day_plan_id": str(day_plan_id)
-            }
+            return ItineraryOptimizeRouteResponse(
+                success=True,
+                message="Route optimized successfully",
+                day_plan_id=str(day_plan_id),
+            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -479,12 +582,12 @@ async def generate_itinerary_suggestions(
 
 @router.get(
     "/guest/{access_code}/itinerary",
-    response_model=Optional[ItineraryWithDetails],
+    response_model=Optional[ItineraryGuestWithDetails],
 )
 async def get_guest_itinerary(
     access_code: str,
     db: AsyncSession = Depends(get_db)
-) -> Optional[ItineraryWithDetails]:
+) -> Optional[ItineraryGuestWithDetails]:
     """
     Get itinerary for guests using access code.
     
@@ -493,7 +596,7 @@ async def get_guest_itinerary(
         db: Database session
         
     Returns:
-        ItineraryWithDetails: Guest's itinerary
+        ItineraryGuestWithDetails: Guest's itinerary
     """
     try:
         guest_service = GuestGroupService(db)
@@ -515,9 +618,9 @@ async def get_guest_itinerary(
         
         # Get itinerary for this guest group
         itinerary_service = ItineraryService(db)
-        itinerary = await itinerary_service.get_itinerary_by_guest_group(
+        itinerary = await itinerary_service.get_guest_itinerary_response(
             guest_group_id=guest_group.id,
-            include_activities=True
+            stay_host_id=guest_group.host_id,
         )
         
         if not itinerary:
@@ -538,7 +641,7 @@ async def get_guest_itinerary(
 
 # Collaborative planning endpoints
 
-@router.post("/activities/{activity_id}/vote", response_model=ActivityVoteResponse)
+@router.post("/activities/{activity_id}/vote", response_model=ActivityVoteGuestResponse)
 async def vote_on_activity(
     activity_id: uuid.UUID,
     vote_data: ActivityVoteCreate,
@@ -582,10 +685,21 @@ async def vote_on_activity(
             )
         
         logger.info(f"Guest voted on activity {activity_id}: {vote_data.vote}")
-        return vote
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        vote_payload = vote.model_dump(exclude={"guest_group_id", "priority", "created_at"})
+        for key in ("guest_name", "reason"):
+            if vote_payload.get(key):
+                vote_payload[key] = scrub_contact_from_text(vote_payload[key])
+        return ActivityVoteGuestResponse.model_validate(vote_payload)
         
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"Failed to vote on activity: {str(e)}")
         raise HTTPException(
@@ -613,12 +727,19 @@ async def get_activity_votes(
     """
     try:
         itinerary_service = ItineraryService(db)
-        
+        if not await itinerary_service.activity_owned_by_host(activity_id, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found",
+            )
+
         votes = await itinerary_service.get_activity_votes(activity_id)
         
         logger.info(f"Retrieved {len(votes)} votes for activity {activity_id}")
         return votes
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get activity votes: {str(e)}")
         raise HTTPException(
@@ -629,7 +750,11 @@ async def get_activity_votes(
 
 # Utility endpoints for guest experience
 
-@router.get("/guest/{access_code}/day-plans/{day_plan_id}/map-view")
+@router.get(
+    "/guest/{access_code}/day-plans/{day_plan_id}/map-view",
+    response_model=GuestItineraryMapViewResponse,
+    response_model_exclude_none=True,
+)
 async def get_day_plan_map_view(
     access_code: str,
     day_plan_id: uuid.UUID,
@@ -657,9 +782,11 @@ async def get_day_plan_map_view(
                 detail="Invalid or expired access code"
             )
         
-        # Get map view data from service
+        # Get map view data from service (scoped to access-code guest group)
         itinerary_service = ItineraryService(db)
-        map_data = await itinerary_service.get_map_view_data(day_plan_id)
+        map_data = await itinerary_service.get_map_view_data_for_guest_group(
+            day_plan_id, guest_group.id
+        )
         
         if not map_data:
             raise HTTPException(
@@ -679,7 +806,10 @@ async def get_day_plan_map_view(
         )
 
 
-@router.post("/activities/{activity_id}/check-in")
+@router.post(
+    "/activities/{activity_id}/check-in",
+    response_model=GuestActivityCheckInResponse,
+)
 async def check_in_to_activity(
     activity_id: uuid.UUID,
     access_code: str = Query(..., description="Guest access code"),

@@ -14,12 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from app.core.database import get_db
+from app.api.v1.hosts import get_current_host
+from app.models.host import Host
 from app.services.content_generation_service import ContentGenerationService
 from app.services.ai_service import AIService
 from app.services.settings_service import SettingsService
 from app.services.attraction_service import AttractionService
-from app.services.host_service import HostService
-from app.models.attraction import Attraction
+from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -99,6 +100,7 @@ class GenerateEmailResponse(BaseModel):
 @router.post("/attractions/description", response_model=GenerateDescriptionResponse)
 async def generate_attraction_description(
     request: GenerateDescriptionRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -116,28 +118,17 @@ async def generate_attraction_description(
         ai_service = AIService(settings_service)
         content_service = ContentGenerationService(ai_service=ai_service, settings_service=settings_service)
         attraction_service = AttractionService(db)
-        host_service = HostService(db)
         
-        # Get attraction
         attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
-        if not attraction:
+        if not attraction or attraction.created_by_host_id != current_host.id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Attraction not found"
             )
         
-        # Get host
-        host = await host_service.get_host_by_id(attraction.created_by_host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Generate description
         description = await content_service.generate_attraction_description(
             attraction=attraction,
-            host=host,
+            host=current_host,
             language=request.language
         )
         
@@ -171,6 +162,7 @@ async def generate_attraction_description(
 @router.post("/tips", response_model=GenerateTipsResponse)
 async def generate_local_tips(
     request: GenerateTipsRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -187,25 +179,25 @@ async def generate_local_tips(
         settings_service = SettingsService(db)
         ai_service = AIService(settings_service)
         content_service = ContentGenerationService(ai_service=ai_service, settings_service=settings_service)
-        host_service = HostService(db)
         attraction_service = AttractionService(db)
         
-        # Get host
-        host = await host_service.get_host_by_id(uuid.UUID(request.host_id))
-        if not host:
+        if str(current_host.id) != request.host_id:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden"
             )
         
-        # Get attraction if provided
         attraction = None
         if request.attraction_id:
             attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
+            if not attraction or attraction.created_by_host_id != current_host.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Attraction not found"
+                )
         
-        # Generate tips
         tips = await content_service.generate_local_tips(
-            host=host,
+            host=current_host,
             attraction=attraction,
             language=request.language
         )
@@ -231,6 +223,7 @@ async def generate_local_tips(
 @router.post("/translate", response_model=TranslateContentResponse)
 async def translate_content(
     request: TranslateContentRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -270,6 +263,7 @@ async def translate_content(
 @router.post("/social-media", response_model=GenerateSocialMediaResponse)
 async def generate_social_media_post(
     request: GenerateSocialMediaRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -290,7 +284,7 @@ async def generate_social_media_post(
         
         # Get attraction
         attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
-        if not attraction:
+        if not attraction or attraction.created_by_host_id != current_host.id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Attraction not found"
@@ -328,6 +322,7 @@ async def generate_social_media_post(
 @router.post("/email", response_model=GenerateEmailResponse)
 async def generate_email_template(
     request: GenerateEmailRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -344,29 +339,28 @@ async def generate_email_template(
         settings_service = SettingsService(db)
         ai_service = AIService(settings_service)
         content_service = ContentGenerationService(ai_service=ai_service, settings_service=settings_service)
-        host_service = HostService(db)
-        
-        # Get host
-        host = await host_service.get_host_by_id(uuid.UUID(request.host_id))
-        if not host:
+        if str(current_host.id) != request.host_id:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden"
             )
         
-        # Get guest group if provided
         guest_group = None
         if request.guest_group_id:
-            from app.services.guest_group_service import GuestGroupService
             guest_group_service = GuestGroupService(db)
-            guest_group_obj = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-            if guest_group_obj:
-                guest_group = {"group": guest_group_obj}
+            guest_group_obj = await guest_group_service.get_guest_group_by_id(
+                uuid.UUID(request.guest_group_id)
+            )
+            if not guest_group_obj or not host_owns_guest_group(guest_group_obj, current_host.id):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Guest group not found"
+                )
+            guest_group = {"group": guest_group_obj}
         
-        # Generate email
         email_content = await content_service.generate_email_template(
             template_type=request.template_type,
-            host=host,
+            host=current_host,
             guest_group=guest_group,
             language=request.language
         )

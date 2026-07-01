@@ -8,32 +8,57 @@ preference collection, and CRUD operations.
 import logging
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.auth import get_current_host
 from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
-from app.services.host_offerings_for_guest import build_host_offerings_payload
+from app.services.host_offerings_for_guest import (
+    attach_host_broadcast_messages,
+    build_host_offerings_payload,
+    scrub_contact_from_text,
+)
 from app.services.host_service import HostService
+from app.services.event_recommendation_service import (
+    EventRecommendationService,
+    sanitize_event_recommendations_for_guest,
+)
+from app.services.guest_saved_events_service import GuestSavedEventsService
 from app.models.guest_group import (
     GuestGroupCreate,
     GuestGroupUpdate,
     GuestGroupResponse,
+    GuestGroupGuestResponse,
     HostGuestExperienceResponse,
     AccessCodeCreate,
     AccessCodeResponse,
     GuestPreferenceCreate,
     GuestPreferenceUpdate,
     GuestPreferenceResponse,
+    GuestPreferenceGuestResponse,
     GuestEVisitorDataCreate,
     GuestEVisitorDataUpdate,
     GuestEVisitorDataResponse,
+    EVisitorRegisterRequest,
     AccessCodeValidation,
-    GuestGroup
+    GuestGroup,
+    HostGroupBroadcastRecord,
+    HostGroupBroadcastDelivery,
+    HostGroupBroadcastResponse,
+    HostSavedEventRecord,
+    HostSavedEventsResponse,
+    HostSavedEventItineraryActivityResponse,
+    GuestSavedEventRecord,
+    GuestSavedEventsResponse,
+    GuestHostOfferingsApiResponse,
+    GuestEventRecommendationsResponse,
+    GuestConciergeMessageResponse,
 )
 from app.models.host import Host, HostProfile
 
@@ -41,42 +66,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-) -> Host:
-    """
-    Get current authenticated host from session token.
-    
-    Args:
-        request: FastAPI request object
-        db: Database session
-        
-    Returns:
-        Host: Current authenticated host
-        
-    Raises:
-        HTTPException: If not authenticated
-    """
-    # Get session token from header
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required"
-        )
-    
-    # Validate session and get host
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session"
-        )
-    
-    return host
+def _preference_for_guest(preference: GuestPreferenceResponse) -> GuestPreferenceGuestResponse:
+    """Strip guest_group_id and scrub contact patterns from preference payloads."""
+    from app.services.host_offerings_for_guest import scrub_contact_from_text, _scrub_safe_value
+
+    data = preference.model_dump(exclude={"guest_group_id", "created_at", "updated_at"})
+    for key in ("guest_name", "age_category", "mobility_notes"):
+        if data.get(key):
+            data[key] = scrub_contact_from_text(data[key])
+    if data.get("language_preference"):
+        original = str(data["language_preference"])
+        scrubbed = scrub_contact_from_text(original)
+        if (
+            scrubbed != original
+            and scrubbed
+            and "[contact removed]" in scrubbed
+        ) or len(scrubbed) > 10:
+            data["language_preference"] = "en"
+        else:
+            data["language_preference"] = scrubbed
+    for key in ("personal_interests", "dietary_needs", "cultural_interests", "food_interests"):
+        if data.get(key):
+            data[key] = _scrub_safe_value(data[key])
+    return GuestPreferenceGuestResponse.model_validate(data)
+
+
+class GuestAssistantRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    guest_name: Optional[str] = None
+
+
+class HostGroupBroadcastRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
 
 
 async def validate_access_code(
@@ -436,7 +457,7 @@ async def regenerate_access_code(
 
 
 # Guest endpoints (using access code authentication)
-@router.post("/access/validate", response_model=GuestGroupResponse)
+@router.post("/access/validate", response_model=GuestGroupGuestResponse)
 async def validate_guest_access(
     validation_data: AccessCodeValidation,
     db: AsyncSession = Depends(get_db)
@@ -449,7 +470,7 @@ async def validate_guest_access(
         db: Database session
         
     Returns:
-        GuestGroupResponse: Guest group details if valid
+        GuestGroupGuestResponse: Guest group details if valid
     """
     try:
         guest_service = GuestGroupService(db)
@@ -462,7 +483,7 @@ async def validate_guest_access(
             )
 
         logger.info(f"Access code validated for guest group {guest_group.id}")
-        return await guest_service.guest_group_to_response(guest_group)
+        return await guest_service.guest_group_to_guest_response(guest_group)
         
     except HTTPException:
         raise
@@ -474,7 +495,7 @@ async def validate_guest_access(
         )
 
 
-@router.get("/access/{access_code}", response_model=GuestGroupResponse)
+@router.get("/access/{access_code}", response_model=GuestGroupGuestResponse)
 async def get_guest_group_by_code(
     access_code: str,
     db: AsyncSession = Depends(get_db)
@@ -487,14 +508,17 @@ async def get_guest_group_by_code(
         db: Database session
         
     Returns:
-        GuestGroupResponse: Guest group details
+        GuestGroupGuestResponse: Guest group details
     """
     guest_group = await validate_access_code(access_code, db)
     guest_service = GuestGroupService(db)
-    return await guest_service.guest_group_to_response(guest_group)
+    return await guest_service.guest_group_to_guest_response(guest_group)
 
 
-@router.get("/access/{access_code}/host-offerings")
+@router.get(
+    "/access/{access_code}/host-offerings",
+    response_model=GuestHostOfferingsApiResponse,
+)
 async def get_host_offerings_by_guest_access_code(
     access_code: str,
     db: AsyncSession = Depends(get_db),
@@ -516,12 +540,14 @@ async def get_host_offerings_by_guest_access_code(
         profile_result = await db.execute(select(HostProfile).where(HostProfile.host_id == host.id))
         profile = profile_result.scalar_one_or_none()
         host_offerings = build_host_offerings_payload(host, profile, access_code)
-        return {
-            "success": True,
-            "host_offerings": host_offerings,
-            "access_code": access_code,
-            "valid_access": True,
-        }
+        prefs = guest_group.seasonal_preferences if isinstance(guest_group.seasonal_preferences, dict) else {}
+        attach_host_broadcast_messages(host_offerings, prefs)
+        return GuestHostOfferingsApiResponse(
+            success=True,
+            host_offerings=host_offerings,
+            access_code=access_code,
+            valid_access=True,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -532,7 +558,278 @@ async def get_host_offerings_by_guest_access_code(
         )
 
 
-@router.post("/access/{access_code}/host-message", response_model=Dict[str, Any])
+@router.get(
+    "/access/{access_code}/event-recommendations",
+    response_model=GuestEventRecommendationsResponse,
+)
+async def get_guest_event_recommendations(
+    access_code: str,
+    limit: int = Query(15, ge=1, le=30),
+    refresh: bool = Query(False, description="Bypass in-process recommendation cache"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Personalized local events for the guest stay window."""
+    try:
+        guest_group = await validate_access_code(access_code, db)
+        host_result = await db.execute(select(Host).where(Host.id == guest_group.host_id))
+        host = host_result.scalar_one_or_none()
+        if not host:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Host not found")
+        profile_result = await db.execute(select(HostProfile).where(HostProfile.host_id == host.id))
+        profile = profile_result.scalar_one_or_none()
+        guest_service = GuestGroupService(db)
+        preferences = await guest_service.get_guest_preferences(guest_group.id)
+        svc = EventRecommendationService(db)
+        payload = await svc.get_recommendations_for_access_code(
+            guest_group, host, profile, preferences, limit=limit, refresh=refresh
+        )
+        return GuestEventRecommendationsResponse.model_validate(
+            sanitize_event_recommendations_for_guest(payload)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("event-recommendations failed for %s: %s", access_code, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load event recommendations",
+        )
+
+
+def _guest_saved_events_response(data: Dict[str, Any]) -> GuestSavedEventsResponse:
+    return GuestSavedEventsResponse(
+        success=True,
+        saved_event_ids=data["saved_event_ids"],
+        saved_events=[
+            GuestSavedEventRecord.model_validate(row) for row in data["saved_events"]
+        ],
+    )
+
+
+@router.get(
+    "/access/{access_code}/saved-events",
+    response_model=GuestSavedEventsResponse,
+)
+async def get_guest_saved_events(
+    access_code: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """List events the guest saved to their plan."""
+    guest_group = await validate_access_code(access_code, db)
+    svc = GuestSavedEventsService(db)
+    return _guest_saved_events_response(await svc.list_for_group(guest_group.id))
+
+
+@router.post(
+    "/access/{access_code}/saved-events",
+    response_model=GuestSavedEventsResponse,
+)
+async def save_guest_event(
+    access_code: str,
+    body: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+):
+    """Save an event idea to the guest plan."""
+    guest_group = await validate_access_code(access_code, db)
+    svc = GuestSavedEventsService(db)
+    try:
+        data = await svc.upsert(guest_group.id, body)
+        return _guest_saved_events_response(data)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch(
+    "/access/{access_code}/saved-events/{event_id}",
+    response_model=GuestSavedEventsResponse,
+)
+async def patch_guest_saved_event(
+    access_code: str,
+    event_id: str,
+    body: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+):
+    guest_group = await validate_access_code(access_code, db)
+    svc = GuestSavedEventsService(db)
+    try:
+        data = await svc.patch(guest_group.id, event_id, body)
+        return _guest_saved_events_response(data)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved event not found")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.delete(
+    "/access/{access_code}/saved-events/{event_id}",
+    response_model=GuestSavedEventsResponse,
+)
+async def delete_guest_saved_event(
+    access_code: str,
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    guest_group = await validate_access_code(access_code, db)
+    svc = GuestSavedEventsService(db)
+    data = await svc.remove(guest_group.id, event_id)
+    return _guest_saved_events_response(data)
+
+
+@router.put(
+    "/{guest_group_id}/saved-events/{event_id}",
+    response_model=HostSavedEventsResponse,
+)
+async def host_update_saved_event(
+    guest_group_id: uuid.UUID,
+    event_id: str,
+    body: Dict[str, Any],
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host updates guest-saved event status (planned, notes, etc.)."""
+    guest_service = GuestGroupService(db)
+    group = await guest_service.get_guest_group_by_id(guest_group_id)
+    if not group or not host_owns_guest_group(group, current_host.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guest group not found")
+    svc = GuestSavedEventsService(db)
+    try:
+        patch = dict(body)
+        patch["host_action_at"] = patch.get("host_action_at") or datetime.utcnow().isoformat()
+        data = await svc.patch(guest_group_id, event_id, patch, for_host=True)
+        return HostSavedEventsResponse(
+            success=True,
+            saved_event_ids=data["saved_event_ids"],
+            saved_events=[
+                HostSavedEventRecord.model_validate(row) for row in data["saved_events"]
+            ],
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved event not found")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post(
+    "/{guest_group_id}/saved-events/{event_id}/itinerary-activity",
+    response_model=HostSavedEventItineraryActivityResponse,
+)
+async def host_convert_saved_event_to_activity(
+    guest_group_id: uuid.UUID,
+    event_id: str,
+    body: Dict[str, Any],
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Convert a guest-saved event into a scheduled itinerary activity."""
+    guest_service = GuestGroupService(db)
+    group = await guest_service.get_guest_group_by_id(guest_group_id)
+    if not group or not host_owns_guest_group(group, current_host.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guest group not found")
+    svc = GuestSavedEventsService(db)
+    try:
+        data = await svc.convert_to_itinerary_activity(
+            guest_group_id, event_id, current_host.id, body
+        )
+        return HostSavedEventItineraryActivityResponse(
+            success=True,
+            saved_event_ids=data["saved_event_ids"],
+            saved_events=[
+                HostSavedEventRecord.model_validate(row) for row in data["saved_events"]
+            ],
+            activity=data["activity"],
+            already_added=bool(data.get("already_added")),
+        )
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Saved event not found")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+def _message_asks_about_events(text: str) -> bool:
+    t = (text or "").lower()
+    return any(
+        w in t
+        for w in (
+            "event",
+            "festival",
+            "concert",
+            "dogad",
+            "week",
+            "weekend",
+            "happening",
+            "marunada",
+            "črešn",
+            "cresnj",
+        )
+    )
+
+
+@router.post("/{guest_group_id}/message", response_model=HostGroupBroadcastResponse)
+async def send_host_message_to_group(
+    guest_group_id: uuid.UUID,
+    body: HostGroupBroadcastRequest,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Host broadcasts a message to guests in a group (in-app + optional SMS)."""
+    try:
+        guest_service = GuestGroupService(db)
+        guest_group = await guest_service.get_guest_group_by_id(guest_group_id)
+        if not guest_group or not host_owns_guest_group(guest_group, current_host.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Guest group not found",
+            )
+
+        record = await guest_service.append_host_broadcast_message(
+            group_id=guest_group_id,
+            message=body.message.strip(),
+            host_name=f"{current_host.first_name or ''} {current_host.last_name or ''}".strip()
+            or "Your host",
+        )
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save message",
+            )
+
+        delivery = HostGroupBroadcastDelivery(in_app=True, sms=False)
+        if guest_group.lead_guest_phone:
+            from app.services.communication_service import CommunicationService
+
+            comm = CommunicationService(db)
+            delivery = HostGroupBroadcastDelivery(
+                in_app=True,
+                sms=await comm.send_sms(
+                    phone_number=guest_group.lead_guest_phone,
+                    message=body.message.strip(),
+                    language=guest_group.preferred_language or "en",
+                ),
+            )
+
+        logger.info(
+            "Host %s broadcast to group %s: %s...",
+            current_host.id,
+            guest_group_id,
+            body.message[:50],
+        )
+        return HostGroupBroadcastResponse(
+            success=True,
+            message="Message sent to the group.",
+            delivery=delivery,
+            broadcast=HostGroupBroadcastRecord.model_validate(record),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Host group broadcast error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send message to group",
+        )
+
+
+@router.post("/access/{access_code}/host-message", response_model=GuestConciergeMessageResponse)
 async def send_message_to_host_by_guest_access_code(
     access_code: str,
     message_data: Dict[str, Any],
@@ -554,8 +851,23 @@ async def send_message_to_host_by_guest_access_code(
         guest_name = message_data.get("guest_name", "Guest")
 
         if message_type == "question" or "recommend" in (message_text or "").lower():
-            specialties = host.local_specialties or []
-            top_specialties = ", ".join(specialties[:3]) if specialties else "local experiences"
+            from app.services.host_offerings_for_guest import _guest_safe_local_specialties
+
+            def _specialty_labels(raw: list) -> list[str]:
+                labels: list[str] = []
+                for item in _guest_safe_local_specialties(raw or [])[:3]:
+                    if isinstance(item, str):
+                        labels.append(item)
+                    elif isinstance(item, dict):
+                        labels.append(
+                            item.get("name")
+                            or item.get("title")
+                            or item.get("label")
+                            or "Specialty"
+                        )
+                return labels
+
+            top_specialties = ", ".join(_specialty_labels(host.local_specialties)) or "local experiences"
             ai_response = (
                 f"Hi {guest_name}! As {host.first_name or 'your host'}'s assistant, I'd be happy to help. "
                 f"Based on your question about {host.city or 'the area'}, I recommend exploring our local specialties: "
@@ -563,7 +875,6 @@ async def send_message_to_host_by_guest_access_code(
             )
             response: Dict[str, Any] = {
                 "success": True,
-                "response_type": "ai_assistant",
                 "message": ai_response,
                 "suggestions": [
                     "Tell me about local restaurants",
@@ -572,19 +883,23 @@ async def send_message_to_host_by_guest_access_code(
                     "Show me hidden local gems",
                 ],
                 "can_contact_host": True,
-                "response_time": "Immediate (AI) • Host usually responds within 2 hours",
             }
         else:
             response = {
                 "success": True,
-                "response_type": "queued_for_host",
                 "message": (
                     f"Thanks {guest_name}! Your message has been sent to {host.first_name or 'your host'}. "
                     f"They typically respond within 2 hours. In the meantime, feel free to browse Discover and Plan."
                 ),
-                "estimated_response_time": "Within 2 hours",
-                "ai_available": True,
             }
+
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        if response.get("message"):
+            response["message"] = (
+                scrub_contact_from_text(response["message"], scrub_urls=True)
+                or response["message"]
+            )
 
         logger.info("Guest message via group access %s: %s...", access_code, (message_text or "")[:50])
         return response
@@ -598,8 +913,158 @@ async def send_message_to_host_by_guest_access_code(
         )
 
 
+@router.post("/access/{access_code}/assistant", response_model=GuestConciergeMessageResponse)
+async def guest_assistant_chat(
+    access_code: str,
+    body: GuestAssistantRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Guest AI assistant using host stay context and optional provider keys."""
+    try:
+        guest_group = await validate_access_code(access_code, db)
+        host_result = await db.execute(select(Host).where(Host.id == guest_group.host_id))
+        host = host_result.scalar_one_or_none()
+        if not host:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Host not found")
+
+        profile_result = await db.execute(
+            select(HostProfile).where(HostProfile.host_id == guest_group.host_id)
+        )
+        profile = profile_result.scalar_one_or_none()
+        host_offerings = build_host_offerings_payload(host, profile, access_code)
+
+        guest_service = GuestGroupService(db)
+        prefs = await guest_service.get_guest_preferences(guest_group.id)
+        pref_summary = None
+        if prefs:
+            p = prefs[0]
+            pref_summary = {
+                "age_category": getattr(p, "age_category", None),
+                "personal_interests": getattr(p, "personal_interests", None) or [],
+                "dietary_needs": getattr(p, "dietary_needs", None) or [],
+                "cultural_interests": getattr(p, "cultural_interests", None) or [],
+                "food_interests": getattr(p, "food_interests", None) or [],
+                "mobility_notes": getattr(p, "mobility_notes", None),
+                "language_preference": getattr(p, "language_preference", None),
+            }
+            if guest_group.budget_level:
+                pref_summary["budget_level"] = guest_group.budget_level
+
+        stay = host_offerings.get("stay_info") or {}
+        context = {
+            "role": "guest_stay_assistant",
+            "property_name": stay.get("property_name"),
+            "city": stay.get("city"),
+            "amenities": stay.get("amenities") or [],
+            "services_offered": stay.get("services_offered") or [],
+            "property_rules": stay.get("property_rules") or {},
+            "local_tips": (host_offerings.get("recommendations") or {}).get("local_tips") or [],
+            "guest_preferences": pref_summary,
+            "group_name": guest_group.group_name,
+        }
+
+        if _message_asks_about_events(body.message):
+            rec_svc = EventRecommendationService(db)
+            rec_payload = await rec_svc.get_recommendations_for_access_code(
+                guest_group, host, profile, prefs, limit=5, refresh=False
+            )
+            rec_payload = sanitize_event_recommendations_for_guest(rec_payload)
+            context["nearby_events"] = [
+                {
+                    "title": r.get("title"),
+                    "start_date": r.get("start_date"),
+                    "distance_km": r.get("distance_km"),
+                    "plan_hint": r.get("plan_hint"),
+                    "cities": r.get("cities") or [],
+                }
+                for r in (rec_payload.get("recommendations") or [])[:5]
+            ]
+
+        guest_name = body.guest_name or guest_group.group_name or "Guest"
+        system_hint = (
+            f"You are a helpful local guide assistant for guests staying at "
+            f"{stay.get('property_name') or 'the property'} in {stay.get('city') or 'Croatia'}. "
+            "Answer briefly and practically. Prefer host-provided facts. "
+            "If nearby_events are listed in context, mention up to three with dates and distance. "
+            "If unsure, suggest the guest message their host."
+        )
+        messages = [
+            {"role": "user", "content": body.message.strip()},
+        ]
+
+        ai_response_text = None
+        ai_provider = "fallback"
+        try:
+            from app.services.ai_service import AIService
+
+            ai = AIService(db)
+            ai_result = await ai.generate_chat_response(
+                str(host.id),
+                messages,
+                context={**context, "system_hint": system_hint},
+            )
+            if ai_result.get("success") and ai_result.get("response"):
+                ai_response_text = str(ai_result["response"]).strip()
+                ai_provider = ai_result.get("provider") or "ai"
+        except Exception as ai_err:
+            logger.warning("Guest assistant AI unavailable: %s", ai_err)
+
+        if not ai_response_text:
+            city = stay.get("city") or host.city or "the area"
+            nearby = context.get("nearby_events") or []
+            if _message_asks_about_events(body.message):
+                if nearby:
+                    lines = []
+                    for ev in nearby[:3]:
+                        dist = ev.get("distance_km")
+                        dist_part = f" (~{dist} km)" if dist is not None else ""
+                        date_part = f" — {ev.get('start_date')}" if ev.get("start_date") else ""
+                        lines.append(f"• {ev.get('title')}{dist_part}{date_part}")
+                    ai_response_text = (
+                        f"Hi {guest_name}! Events near {city}:\n"
+                        + "\n".join(lines)
+                        + "\nOpen the Events tab for full details and to save ideas to your plan."
+                    )
+                else:
+                    ai_response_text = (
+                        f"Hi {guest_name}! Open the Events tab in your guide for festivals and happenings "
+                        f"near {city}. You can save ideas to Plan and ask your host to help with timing."
+                    )
+            else:
+                tips = (host_offerings.get("recommendations") or {}).get("local_tips") or []
+                tip_line = tips[0] if tips else "Explore Discover and Plan in your guide."
+                ai_response_text = (
+                    f"Hi {guest_name}! For {city}: {tip_line} "
+                    "Your host can help with property-specific questions — tap Message host anytime."
+                )
+
+        ai_response_text = scrub_contact_from_text(ai_response_text, scrub_urls=True)
+
+        suggestions = [
+            "What's good to do today?",
+            "What's on the events list this week?",
+            "Where should we eat nearby?",
+            "How do check-in and house rules work?",
+        ]
+
+        return {
+            "success": True,
+            "message": ai_response_text,
+            "suggestions": suggestions,
+            "can_contact_host": True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Guest assistant error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process assistant request",
+        )
+
+
 # Guest preference management
-@router.post("/access/{access_code}/preferences", response_model=GuestPreferenceResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/access/{access_code}/preferences", response_model=GuestPreferenceGuestResponse, status_code=status.HTTP_201_CREATED)
 async def add_guest_preference(
     access_code: str,
     preference_data: GuestPreferenceCreate,
@@ -614,7 +1079,7 @@ async def add_guest_preference(
         db: Database session
         
     Returns:
-        GuestPreferenceResponse: Created guest preference
+        GuestPreferenceGuestResponse: Created guest preference
     """
     try:
         guest_group = await validate_access_code(access_code, db)
@@ -626,7 +1091,7 @@ async def add_guest_preference(
         )
         
         logger.info(f"Added guest preference for group {guest_group.id}")
-        return preference
+        return _preference_for_guest(preference)
         
     except HTTPException:
         raise
@@ -638,7 +1103,7 @@ async def add_guest_preference(
         )
 
 
-@router.get("/access/{access_code}/preferences", response_model=List[GuestPreferenceResponse])
+@router.get("/access/{access_code}/preferences", response_model=List[GuestPreferenceGuestResponse])
 async def get_guest_preferences(
     access_code: str,
     db: AsyncSession = Depends(get_db)
@@ -651,7 +1116,7 @@ async def get_guest_preferences(
         db: Database session
         
     Returns:
-        List[GuestPreferenceResponse]: List of guest preferences
+        List[GuestPreferenceGuestResponse]: List of guest preferences
     """
     try:
         guest_group = await validate_access_code(access_code, db)
@@ -660,7 +1125,7 @@ async def get_guest_preferences(
         preferences = await guest_service.get_guest_preferences(guest_group.id)
         
         logger.info(f"Retrieved {len(preferences)} preferences for group {guest_group.id}")
-        return preferences
+        return [_preference_for_guest(p) for p in preferences]
         
     except HTTPException:
         raise
@@ -672,7 +1137,7 @@ async def get_guest_preferences(
         )
 
 
-@router.put("/access/{access_code}/preferences/{preference_id}", response_model=GuestPreferenceResponse)
+@router.put("/access/{access_code}/preferences/{preference_id}", response_model=GuestPreferenceGuestResponse)
 async def update_guest_preference(
     access_code: str,
     preference_id: uuid.UUID,
@@ -689,7 +1154,7 @@ async def update_guest_preference(
         db: Database session
         
     Returns:
-        GuestPreferenceResponse: Updated guest preference
+        GuestPreferenceGuestResponse: Updated guest preference
     """
     try:
         guest_group = await validate_access_code(access_code, db)
@@ -707,9 +1172,14 @@ async def update_guest_preference(
             preference_id=preference_id,
             preference_data=preference_data
         )
+        if not updated_preference:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update guest preference"
+            )
         
         logger.info(f"Updated guest preference {preference_id} for group {guest_group.id}")
-        return updated_preference
+        return _preference_for_guest(updated_preference)
         
     except HTTPException:
         raise
@@ -892,8 +1362,9 @@ async def update_guest_evisitor_data(
             )
         
         updated_evisitor = await guest_service.update_guest_evisitor_data(
+            guest_group_id=guest_group_id,
             evisitor_id=evisitor_id,
-            update_data=evisitor_data
+            update_data=evisitor_data,
         )
         
         if not updated_evisitor:
@@ -915,11 +1386,15 @@ async def update_guest_evisitor_data(
         )
 
 
-@router.post("/{guest_group_id}/evisitor-data/{evisitor_id}/register", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{guest_group_id}/evisitor-data/{evisitor_id}/register",
+    response_model=GuestEVisitorDataResponse,
+    status_code=status.HTTP_200_OK,
+)
 async def mark_evisitor_registered(
     guest_group_id: uuid.UUID,
     evisitor_id: uuid.UUID,
-    confirmation_number: str,
+    body: EVisitorRegisterRequest,
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
@@ -929,12 +1404,12 @@ async def mark_evisitor_registered(
     Args:
         guest_group_id: Guest group ID
         evisitor_id: E-visitor data ID
-        confirmation_number: E-visitor confirmation number
+        body: Registration payload with confirmation number
         current_host: Current authenticated host
         db: Database session
         
     Returns:
-        dict: Success message
+        GuestEVisitorDataResponse: Updated e-visitor data
     """
     try:
         guest_service = GuestGroupService(db)
@@ -947,19 +1422,20 @@ async def mark_evisitor_registered(
                 detail="Guest group not found"
             )
         
-        success = await guest_service.mark_evisitor_registered(
+        registered_evisitor = await guest_service.mark_evisitor_registered(
+            guest_group_id=guest_group_id,
             evisitor_id=evisitor_id,
-            confirmation_number=confirmation_number
+            confirmation_number=body.confirmation_number,
         )
         
-        if not success:
+        if not registered_evisitor:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to mark e-visitor as registered"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="E-visitor data not found"
             )
         
         logger.info(f"E-visitor data {evisitor_id} marked as registered for group {guest_group_id}")
-        return {"message": "E-visitor data marked as registered successfully"}
+        return registered_evisitor
         
     except HTTPException:
         raise
@@ -998,7 +1474,9 @@ async def delete_guest_evisitor_data(
                 detail="Guest group not found"
             )
         
-        success = await guest_service.delete_guest_evisitor_data(evisitor_id)
+        success = await guest_service.delete_guest_evisitor_data(
+            guest_group_id, evisitor_id
+        )
         
         if not success:
             raise HTTPException(

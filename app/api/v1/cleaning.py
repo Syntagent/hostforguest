@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.database import get_db
+from app.core.auth import get_current_host
 from app.models.host import Host, HostProfile
 from app.models.partner import Partner
 from app.services.guest_group_service import GuestGroupService
@@ -25,18 +26,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def get_current_host(request: Request, db: AsyncSession = Depends(get_db)) -> Host:
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session token required")
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    if not host:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
-    return host
-
-
-def _partner_card(p: Partner) -> Dict[str, Any]:
+def _partner_directory_card(p: Partner) -> Dict[str, Any]:
+    """Public directory listing — no contact PII until host links the partner."""
     return {
         "id": str(p.id),
         "name": p.name,
@@ -45,10 +36,6 @@ def _partner_card(p: Partner) -> Dict[str, Any]:
         "category": p.category,
         "city": p.city,
         "region": p.region,
-        "email": p.email,
-        "phone": p.phone,
-        "website": p.website,
-        "address": p.address,
         "price_range": p.price_range,
         "rate_card": p.rate_card or {},
         "price_notes": p.price_notes,
@@ -56,6 +43,17 @@ def _partner_card(p: Partner) -> Dict[str, Any]:
         "average_rating": p.average_rating,
         "total_reviews": p.total_reviews,
         "languages_spoken": p.languages_spoken or [],
+    }
+
+
+def _partner_card(p: Partner) -> Dict[str, Any]:
+    """Linked partner card — includes actionable contact fields."""
+    return {
+        **_partner_directory_card(p),
+        "email": p.email,
+        "phone": p.phone,
+        "website": p.website,
+        "address": p.address,
     }
 
 
@@ -97,7 +95,139 @@ class FeedbackBody(BaseModel):
     comment: Optional[str] = None
 
 
-@router.get("/message-context")
+class CleaningNextCheckoutHint(BaseModel):
+    guest_group_id: str
+    group_name: Optional[str] = None
+    check_out_date: str
+
+
+class CleaningMessageContextResponse(BaseModel):
+    """GET /cleaning/message-context — property hints for draft templates."""
+
+    property_name: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    county: Optional[str] = None
+    next_checkout: Optional[CleaningNextCheckoutHint] = None
+
+
+class CleaningUpcomingCheckoutItem(BaseModel):
+    guest_group_id: str
+    group_name: Optional[str] = None
+    check_in_date: Optional[str] = None
+    check_out_date: str
+    group_size: int
+
+
+class CleaningUpcomingCheckoutsResponse(BaseModel):
+    checkouts: List[CleaningUpcomingCheckoutItem] = Field(default_factory=list)
+
+
+class CleaningProviderDirectoryCard(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    partner_type: Optional[str] = None
+    category: Optional[str] = None
+    city: Optional[str] = None
+    region: Optional[str] = None
+    price_range: Optional[str] = None
+    rate_card: Dict[str, Any] = Field(default_factory=dict)
+    price_notes: Optional[str] = None
+    commission_rate: Optional[float] = None
+    average_rating: Optional[float] = None
+    total_reviews: Optional[int] = None
+    languages_spoken: List[str] = Field(default_factory=list)
+
+
+class CleaningProvidersResponse(BaseModel):
+    disclaimer_indicative_fees: str
+    providers: List[CleaningProviderDirectoryCard] = Field(default_factory=list)
+
+
+class CleaningProviderLinkedCard(CleaningProviderDirectoryCard):
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+
+
+class CleaningProviderRelationshipResponse(BaseModel):
+    priority: Optional[int] = None
+    status: Optional[str] = None
+    commission_rate: Optional[float] = None
+    partnership_notes: Optional[str] = None
+
+
+class CleaningMyCleanerRow(BaseModel):
+    partner: CleaningProviderLinkedCard
+    relationship: CleaningProviderRelationshipResponse
+
+
+class CleaningMyCleanersResponse(BaseModel):
+    cleaners: List[CleaningMyCleanerRow] = Field(default_factory=list)
+
+
+class CleaningLinkResponse(BaseModel):
+    success: bool = True
+    relationship_id: str
+
+
+class CleaningSuccessResponse(BaseModel):
+    success: bool = True
+
+
+class CleaningDiscoverRankedItem(CleaningProviderDirectoryCard):
+    ai_why: str = ""
+
+
+class CleaningDiscoverResponse(BaseModel):
+    disclaimer: Optional[str] = None
+    ai_used: Optional[bool] = None
+    fallback_reason: Optional[str] = None
+    ranked: List[CleaningDiscoverRankedItem] = Field(default_factory=list)
+
+
+class CleaningDraftMessageResponse(BaseModel):
+    draft: str
+    ai_used: bool = False
+    fallback_reason: Optional[str] = None
+    model: Optional[str] = None
+
+
+class CleaningBookingResponse(BaseModel):
+    id: str
+    partner_id: Optional[str] = None
+    guest_group_id: Optional[str] = None
+    service_date: Optional[str] = None
+    status: str
+    notes: Optional[str] = None
+    booking_amount: float
+    currency: str
+    booking_details: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+
+class CleaningBookingListResponse(BaseModel):
+    bookings: List[CleaningBookingResponse] = Field(default_factory=list)
+
+
+class CleaningBookingCreateResponse(BaseModel):
+    id: str
+    status: str
+
+
+class CleaningBookingStatusResponse(BaseModel):
+    id: str
+    status: str
+
+
+class CleaningBookingFeedbackResponse(BaseModel):
+    success: bool = True
+    booking_id: str
+
+
+@router.get("/message-context", response_model=CleaningMessageContextResponse)
 async def message_context(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -129,16 +259,18 @@ async def message_context(
                 "group_name": g.group_name,
                 "check_out_date": end.isoformat(),
             }
-    return {
-        "property_name": prof.property_name if prof else None,
-        "address": (prof.address if prof else None) or current_host.address,
-        "city": (prof.city if prof else None) or current_host.city,
-        "county": current_host.county,
-        "next_checkout": next_checkout,
-    }
+    return CleaningMessageContextResponse(
+        property_name=prof.property_name if prof else None,
+        address=(prof.address if prof else None) or current_host.address,
+        city=(prof.city if prof else None) or current_host.city,
+        county=current_host.county,
+        next_checkout=(
+            CleaningNextCheckoutHint(**next_checkout) if next_checkout else None
+        ),
+    )
 
 
-@router.get("/providers")
+@router.get("/providers", response_model=CleaningProvidersResponse)
 async def list_cleaning_providers(
     city: Optional[str] = Query(None),
     region: Optional[str] = Query(None),
@@ -149,40 +281,42 @@ async def list_cleaning_providers(
     loc_city = (city or current_host.city or "").strip() or None
     loc_region = (region or current_host.county or "").strip() or None
     partners = await svc.list_cleaning_partners(city=loc_city, region=loc_region, limit=80)
-    return {
-        "disclaimer_indicative_fees": "Fees and rate_card are indicative only. Always confirm price and scope with the provider.",
-        "providers": [_partner_card(p) for p in partners],
-    }
+    return CleaningProvidersResponse(
+        disclaimer_indicative_fees=(
+            "Fees and rate_card are indicative only. Always confirm price and scope with the provider."
+        ),
+        providers=[CleaningProviderDirectoryCard(**_partner_directory_card(p)) for p in partners],
+    )
 
 
-@router.get("/my-cleaners")
+@router.get("/my-cleaners", response_model=CleaningMyCleanersResponse)
 async def my_cleaners(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
 ):
     svc = PartnerService(db)
     rows = await svc.get_host_partners(current_host.id)
-    out: List[Dict[str, Any]] = []
+    out: List[CleaningMyCleanerRow] = []
     for row in rows:
         p: Partner = row["partner"]
         if not svc._is_cleaning_partner_row(p):
             continue
         rel = row.get("relationship")
         out.append(
-            {
-                "partner": _partner_card(p),
-                "relationship": {
-                    "priority": row.get("priority"),
-                    "status": rel.status if rel else None,
-                    "commission_rate": row.get("commission_rate"),
-                    "partnership_notes": rel.partnership_notes if rel else None,
-                },
-            }
+            CleaningMyCleanerRow(
+                partner=CleaningProviderLinkedCard(**_partner_card(p)),
+                relationship=CleaningProviderRelationshipResponse(
+                    priority=row.get("priority"),
+                    status=rel.status if rel else None,
+                    commission_rate=row.get("commission_rate"),
+                    partnership_notes=rel.partnership_notes if rel else None,
+                ),
+            )
         )
-    return {"cleaners": out}
+    return CleaningMyCleanersResponse(cleaners=out)
 
 
-@router.post("/my-cleaners", status_code=status.HTTP_201_CREATED)
+@router.post("/my-cleaners", status_code=status.HTTP_201_CREATED, response_model=CleaningLinkResponse)
 async def link_my_cleaner(
     body: LinkCleanerBody,
     current_host: Host = Depends(get_current_host),
@@ -203,10 +337,10 @@ async def link_my_cleaner(
     )
     if not rel:
         raise HTTPException(status_code=500, detail="Could not link cleaner")
-    return {"success": True, "relationship_id": str(rel.id)}
+    return CleaningLinkResponse(success=True, relationship_id=str(rel.id))
 
 
-@router.delete("/my-cleaners/{partner_id}")
+@router.delete("/my-cleaners/{partner_id}", response_model=CleaningSuccessResponse)
 async def unlink_my_cleaner(
     partner_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -216,10 +350,10 @@ async def unlink_my_cleaner(
     ok = await svc.remove_host_partner(current_host.id, partner_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Could not unlink")
-    return {"success": True}
+    return CleaningSuccessResponse(success=True)
 
 
-@router.get("/upcoming-checkouts")
+@router.get("/upcoming-checkouts", response_model=CleaningUpcomingCheckoutsResponse)
 async def upcoming_checkouts(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -254,10 +388,12 @@ async def upcoming_checkouts(
                 }
             )
     upcoming.sort(key=lambda x: x["check_out_date"] or "")
-    return {"checkouts": upcoming[:24]}
+    return CleaningUpcomingCheckoutsResponse(
+        checkouts=[CleaningUpcomingCheckoutItem(**row) for row in upcoming[:24]]
+    )
 
 
-@router.post("/discover")
+@router.post("/discover", response_model=CleaningDiscoverResponse)
 async def discover_cleaners(
     body: DiscoverBody,
     current_host: Host = Depends(get_current_host),
@@ -268,27 +404,34 @@ async def discover_cleaners(
     candidates = await svc.list_cleaning_partners(city=city, region=None, limit=25)
     ranked_meta = await cleaning_ai.rank_cleaning_partners_with_ai(db, current_host, candidates, body.intent)
     by_id = {str(p.id): p for p in candidates}
-    enriched: List[Dict[str, Any]] = []
+    enriched: List[CleaningDiscoverRankedItem] = []
     for row in ranked_meta.get("ranked") or []:
         pid = row.get("partner_id")
         p = by_id.get(str(pid))
         if p:
-            enriched.append({**_partner_card(p), "ai_why": row.get("why", "")})
-    return {
-        "disclaimer": ranked_meta.get("disclaimer"),
-        "ai_used": ranked_meta.get("ai_used"),
-        "fallback_reason": ranked_meta.get("fallback_reason"),
-        "ranked": enriched,
-    }
+            enriched.append(
+                CleaningDiscoverRankedItem(
+                    **_partner_directory_card(p),
+                    ai_why=row.get("why", "") or "",
+                )
+            )
+    return CleaningDiscoverResponse(
+        disclaimer=ranked_meta.get("disclaimer"),
+        ai_used=ranked_meta.get("ai_used"),
+        fallback_reason=ranked_meta.get("fallback_reason"),
+        ranked=enriched,
+    )
 
 
-@router.post("/draft-message")
+@router.post("/draft-message", response_model=CleaningDraftMessageResponse)
 async def draft_message(
     body: DraftMessageBody,
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
 ):
     svc = PartnerService(db)
+    if not await svc.host_has_partner_link(current_host.id, body.partner_id):
+        raise HTTPException(status_code=404, detail="Partner not found")
     p = await svc.get_partner(body.partner_id)
     if not p or not svc._is_cleaning_partner_row(p):
         raise HTTPException(status_code=400, detail="Not a cleaning partner")
@@ -309,47 +452,49 @@ async def draft_message(
         hint,
         body.language,
     )
-    return result
+    return CleaningDraftMessageResponse(**result)
 
 
-@router.get("/bookings")
+@router.get("/bookings", response_model=CleaningBookingListResponse)
 async def list_bookings(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
 ):
     svc = PartnerService(db)
     bookings = await svc.list_host_cleaning_bookings(current_host.id, limit=50)
-    out = []
+    out: List[CleaningBookingResponse] = []
     for b in bookings:
         out.append(
-            {
-                "id": str(b.id),
-                "partner_id": str(b.partner_id) if b.partner_id else None,
-                "guest_group_id": str(b.guest_group_id) if b.guest_group_id else None,
-                "service_date": b.service_date.isoformat() if b.service_date else None,
-                "status": b.status,
-                "notes": b.notes,
-                "booking_amount": b.booking_amount,
-                "currency": b.currency,
-                "booking_details": b.booking_details or {},
-                "created_at": b.created_at.isoformat() if b.created_at else None,
-            }
+            CleaningBookingResponse(
+                id=str(b.id),
+                partner_id=str(b.partner_id) if b.partner_id else None,
+                guest_group_id=str(b.guest_group_id) if b.guest_group_id else None,
+                service_date=b.service_date.isoformat() if b.service_date else None,
+                status=b.status,
+                notes=b.notes,
+                booking_amount=b.booking_amount,
+                currency=b.currency,
+                booking_details=b.booking_details or {},
+                created_at=b.created_at.isoformat() if b.created_at else None,
+            )
         )
-    return {"bookings": out}
+    return CleaningBookingListResponse(bookings=out)
 
 
-@router.post("/bookings", status_code=status.HTTP_201_CREATED)
+@router.post("/bookings", status_code=status.HTTP_201_CREATED, response_model=CleaningBookingCreateResponse)
 async def create_booking(
     body: CreateCleaningBookingBody,
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
 ):
+    svc = PartnerService(db)
+    if not await svc.host_has_partner_link(current_host.id, body.partner_id):
+        raise HTTPException(status_code=404, detail="Partner not found")
     if body.guest_group_id:
         gsvc = GuestGroupService(db)
         groups = await gsvc.get_host_guest_groups(current_host.id, include_completed=True)
         if not any(str(g.id) == str(body.guest_group_id) for g in groups):
             raise HTTPException(status_code=400, detail="guest_group_id not found for this host")
-    svc = PartnerService(db)
     b = await svc.create_cleaning_booking(
         current_host.id,
         body.partner_id,
@@ -362,10 +507,10 @@ async def create_booking(
     )
     if not b:
         raise HTTPException(status_code=400, detail="Could not create booking")
-    return {"id": str(b.id), "status": b.status}
+    return CleaningBookingCreateResponse(id=str(b.id), status=b.status)
 
 
-@router.patch("/bookings/{booking_id}/status")
+@router.patch("/bookings/{booking_id}/status", response_model=CleaningBookingStatusResponse)
 async def patch_booking_status(
     booking_id: uuid.UUID,
     body: BookingStatusBody,
@@ -376,10 +521,10 @@ async def patch_booking_status(
     b = await svc.update_cleaning_booking_status(booking_id, current_host.id, body.status)
     if not b:
         raise HTTPException(status_code=404, detail="Booking not found")
-    return {"id": str(b.id), "status": b.status}
+    return CleaningBookingStatusResponse(id=str(b.id), status=b.status)
 
 
-@router.post("/bookings/{booking_id}/feedback")
+@router.post("/bookings/{booking_id}/feedback", response_model=CleaningBookingFeedbackResponse)
 async def post_feedback(
     booking_id: uuid.UUID,
     body: FeedbackBody,
@@ -392,4 +537,4 @@ async def post_feedback(
     )
     if not b:
         raise HTTPException(status_code=400, detail="Feedback not allowed (must be completed booking, once only)")
-    return {"success": True, "booking_id": str(b.id)}
+    return CleaningBookingFeedbackResponse(success=True, booking_id=str(b.id))

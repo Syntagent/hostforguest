@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models import (
     Attraction, AttractionReview, ReviewModerationLog, SeasonalEvent,
     AttractionCreate, AttractionUpdate, AttractionResponse,
+    AttractionAnalyticsResponse,
     AttractionReviewCreate, AttractionReviewResponse, AttractionReviewUpdate,
     ReviewModerationRequest, ReviewModerationResponse, ReviewAnalytics,
     HostReviewStats, ReviewSearchRequest, ReviewSearchResponse,
@@ -96,7 +97,7 @@ class AttractionService:
                     "countrycodes": "hr",
                     "addressdetails": 0,
                 },
-                headers={"User-Agent": "TouristGuideLocal/1.0"},
+                headers={"User-Agent": "HostForGuest/1.0"},
                 timeout=8,
             )
             if response.status_code != 200:
@@ -145,7 +146,11 @@ class AttractionService:
         longitude: Optional[float],
     ) -> Tuple[Optional[float], Optional[float]]:
         if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
-            return float(latitude), float(longitude)
+            if latitude == 0 and longitude == 0:
+                latitude = None
+                longitude = None
+            else:
+                return float(latitude), float(longitude)
 
         query = self._build_geocode_query(address=address, city=city)
         if not query:
@@ -229,6 +234,7 @@ class AttractionService:
                 required_equipment=attraction_data.required_equipment,
                 name_translations=attraction_data.name_translations,
                 description_translations=attraction_data.description_translations,
+                featured_image_url=attraction_data.featured_image_url,
                 image_gallery=attraction_data.image_gallery,
                 status=AttractionStatus.DRAFT  # Start as draft
             )
@@ -440,7 +446,7 @@ class AttractionService:
                                host_id: Optional[uuid.UUID] = None,
                                only_approved: bool = True,
                                skip: int = 0,
-                               limit: int = 50) -> List[AttractionResponse]:
+                               limit: int = 50) -> List[Attraction]:
         """
         Search attractions with various filters.
         
@@ -456,7 +462,7 @@ class AttractionService:
             limit: Maximum results
             
         Returns:
-            List[AttractionResponse]: Matching attractions
+            List[Attraction]: Matching attraction rows (sanitize at API boundary)
         """
         try:
             stmt = select(Attraction)
@@ -498,7 +504,7 @@ class AttractionService:
             result = await self.db.execute(stmt)
             attractions = result.scalars().all()
             
-            return [AttractionResponse.model_validate(attraction) for attraction in attractions]
+            return list(attractions)
             
         except Exception as e:
             logger.error(f"Error searching attractions: {e}")
@@ -510,15 +516,27 @@ class AttractionService:
         skip: int = 0,
         limit: int = 100,
         language: Optional[str] = None,
-    ) -> List[AttractionResponse]:
-        """Public city listing (includes non-approved so host-created drafts appear in dev/tests)."""
+    ) -> List[Attraction]:
+        """Public city listing — approved attractions only."""
         _ = language
         return await self.search_attractions(
             city=city,
-            only_approved=False,
+            only_approved=True,
             skip=skip,
             limit=limit,
         )
+
+    @staticmethod
+    def is_attraction_visible(
+        attraction: Attraction,
+        viewer_host_id: Optional[uuid.UUID] = None,
+    ) -> bool:
+        """Approved attractions are public; hosts may view their own drafts."""
+        if attraction.status == AttractionStatus.APPROVED:
+            return True
+        if viewer_host_id and attraction.created_by_host_id == viewer_host_id:
+            return True
+        return False
 
     async def add_host_contribution(
         self,
@@ -568,17 +586,26 @@ class AttractionService:
             updated_at=now,
         )
 
-    async def get_host_contributions(self, attraction_id: uuid.UUID) -> List[HostContributionResponse]:
+    async def get_host_contributions(
+        self,
+        attraction_id: uuid.UUID,
+        viewer_host_id: Optional[uuid.UUID] = None,
+    ) -> List[HostContributionResponse]:
+        visibility = "is_public = true"
+        params: dict = {"aid": str(attraction_id)}
+        if viewer_host_id:
+            visibility = "(is_public = true OR host_id = CAST(:viewer AS uuid))"
+            params["viewer"] = str(viewer_host_id)
         q = text(
-            """
+            f"""
             SELECT id, attraction_id, host_id, contribution_type, title, content,
                    is_public, language, created_at, updated_at
             FROM attraction_host_contributions
-            WHERE attraction_id = CAST(:aid AS uuid)
+            WHERE attraction_id = CAST(:aid AS uuid) AND {visibility}
             ORDER BY created_at DESC
             """
         )
-        result = await self.db.execute(q, {"aid": str(attraction_id)})
+        result = await self.db.execute(q, params)
         rows = result.mappings().all()
         return [
             HostContributionResponse(
@@ -894,12 +921,17 @@ class AttractionService:
             logger.error(f"Error getting reviews for moderation by host {host_id}: {e}")
             return []
     
-    async def search_reviews(self, search_request: ReviewSearchRequest) -> ReviewSearchResponse:
+    async def search_reviews(
+        self,
+        search_request: ReviewSearchRequest,
+        host_id: Optional[uuid.UUID] = None,
+    ) -> ReviewSearchResponse:
         """
         Search and filter reviews with advanced criteria.
         
         Args:
             search_request: Search criteria
+            host_id: When set, limit to attractions the host has contributed to
             
         Returns:
             ReviewSearchResponse: Search results
@@ -907,6 +939,35 @@ class AttractionService:
         try:
             stmt = select(AttractionReview)
             filters_applied = {}
+
+            if host_id:
+                aid_result = await self.db.execute(
+                    text(
+                        """
+                        SELECT DISTINCT attraction_id FROM (
+                            SELECT attraction_id
+                            FROM attraction_host_contributions
+                            WHERE host_id = CAST(:hid AS uuid)
+                            UNION
+                            SELECT id AS attraction_id
+                            FROM attractions
+                            WHERE created_by_host_id = CAST(:hid AS uuid)
+                        ) scoped
+                        """
+                    ),
+                    {"hid": str(host_id)},
+                )
+                attraction_ids = [row[0] for row in aid_result.fetchall()]
+                filters_applied["host_id"] = str(host_id)
+                if not attraction_ids:
+                    return ReviewSearchResponse(
+                        reviews=[],
+                        total_count=0,
+                        page=1,
+                        per_page=search_request.limit,
+                        filters_applied=filters_applied,
+                    )
+                stmt = stmt.where(AttractionReview.attraction_id.in_(attraction_ids))
             
             # Apply filters
             if search_request.attraction_id:
@@ -1503,26 +1564,38 @@ class AttractionService:
 
     async def get_attraction_analytics(
         self, attraction_id: uuid.UUID
-    ) -> Dict[str, Any]:
+    ) -> AttractionAnalyticsResponse:
         """Summary metrics for host dashboard (used by GET .../analytics)."""
         attraction = await self.get_attraction_by_id(attraction_id)
         if not attraction:
-            return {
-                "views": 0,
-                "recommendations": 0,
-                "average_rating": 0.0,
-                "review_count": 0,
-                "guest_feedback": [],
-            }
-        return {
-            "views": int(attraction.view_count or 0),
-            "recommendations": int(attraction.recommendation_count or 0),
-            "average_rating": float(attraction.guest_rating or 0.0),
-            "review_count": int(attraction.total_ratings or 0),
-            "guest_feedback": [],
-        }
+            return AttractionAnalyticsResponse()
+        return AttractionAnalyticsResponse(
+            views=int(attraction.view_count or 0),
+            recommendations=int(attraction.recommendation_count or 0),
+            average_rating=float(attraction.guest_rating or 0.0),
+            review_count=int(attraction.total_ratings or 0),
+            guest_feedback=[],
+        )
     
     # Private Helper Methods
+    async def host_can_guest_review_attraction(
+        self, host_id: uuid.UUID, attraction: Attraction
+    ) -> bool:
+        """Guests may review attractions their host created or contributed to."""
+        if await self._host_can_edit_attraction(host_id, attraction):
+            return True
+        row = await self.db.execute(
+            text(
+                """
+                SELECT 1 FROM attraction_host_contributions
+                WHERE host_id = CAST(:hid AS uuid) AND attraction_id = CAST(:aid AS uuid)
+                LIMIT 1
+                """
+            ),
+            {"hid": str(host_id), "aid": str(attraction.id)},
+        )
+        return row.scalar_one_or_none() is not None
+
     async def _host_can_edit_attraction(self, host_id: uuid.UUID, attraction: Attraction) -> bool:
         """Check if host can edit an attraction."""
         # Host can edit if they created it or are in contributing_hosts

@@ -7,20 +7,21 @@ with the existing attraction database for optimal performance.
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from uuid import UUID
-import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
-from sqlalchemy.orm import selectinload
-
 from app.models.attraction import Attraction, AttractionStatus
 from app.models.guest_group import GuestGroup
 from app.models.host import Host
+from app.services.google_maps_utils import google_maps_link, place_photo_url
 
 logger = logging.getLogger(__name__)
+
+_PRICE_LEVEL_LABELS = {0: "Free", 1: "€", 2: "€€", 3: "€€€", 4: "€€€€"}
 
 
 class LocationCacheService:
@@ -57,18 +58,20 @@ class LocationCacheService:
         """
         locations = []
         
-        # Get guest group and host information
-        guest_group_query = select(GuestGroup).options(
-            selectinload(GuestGroup.host)
-        ).where(GuestGroup.id == guest_group_id)
-        
-        guest_group_result = await self.db.execute(guest_group_query)
+        guest_group_result = await self.db.execute(
+            select(GuestGroup).where(GuestGroup.id == guest_group_id)
+        )
         guest_group = guest_group_result.scalar_one_or_none()
-        
+
         if not guest_group:
             return locations
-        
-        host = guest_group.host
+
+        host_result = await self.db.execute(
+            select(Host).where(Host.id == guest_group.host_id)
+        )
+        host = host_result.scalar_one_or_none()
+        if not host:
+            return locations
         
         # 1. Get host-contributed attractions from database
         if include_host_attractions:
@@ -111,8 +114,8 @@ class LocationCacheService:
                 "description": attraction.description,
                 "category": attraction.attraction_type,
                 "location": attraction.city,
-                "rating": attraction.guest_rating or 4.0,
-                "price": attraction.admission_fee or "Free",
+                "rating": attraction.google_rating or attraction.guest_rating or 4.0,
+                "price": self._price_label(attraction),
                 "coordinates": {
                     "lat": attraction.latitude,
                     "lng": attraction.longitude
@@ -128,10 +131,26 @@ class LocationCacheService:
                 "duration_hours": attraction.duration_hours,
                 "accessibility_info": attraction.accessibility_info,
                 "seasonal_availability": attraction.seasonal_availability,
-                "best_months": attraction.best_months
+                "best_months": attraction.best_months,
+                "google_place_id": attraction.google_place_id,
+                "google_photos": list(attraction.google_photos or []),
+                "google_website": attraction.google_website,
+                "google_phone": attraction.google_phone,
+                "google_maps_url": google_maps_link(
+                    attraction.latitude, attraction.longitude, name=attraction.name
+                ),
             }
             for attraction in attractions
         ]
+
+    @staticmethod
+    def _price_label(attraction: Attraction) -> str:
+        if attraction.admission_fee:
+            return attraction.admission_fee
+        level = attraction.google_price_level
+        if level is not None:
+            return _PRICE_LEVEL_LABELS.get(level, "€€")
+        return "Free"
     
     async def _get_cached_google_places(
         self, 
@@ -140,85 +159,89 @@ class LocationCacheService:
         longitude: Optional[float]
     ) -> List[Dict[str, Any]]:
         """
-        Get cached Google Places data for the host's city.
-        
-        In a real implementation, this would:
-        1. Check cache for existing data
-        2. If cache miss, call Google Places API
-        3. Store results in cache
-        4. Return formatted data
+        Get cached Google Places data for the host's city (24h in-memory TTL).
         """
-        cache_key = f"google_places_{city.lower()}"
+        lat = latitude if latitude is not None else 45.1
+        lng = longitude if longitude is not None else 14.27
+        cache_key = f"google_places_{city.lower()}_{round(lat, 3)}_{round(lng, 3)}"
         
-        # Check if we have cached data
         if cache_key in self._cache:
             cached_data = self._cache[cache_key]
             if datetime.now() - cached_data["cached_at"] < self._cache_ttl:
                 return cached_data["locations"]
         
-        # In a real implementation, this would call Google Places API
-        # For now, return sample data
-        sample_places = await self._get_sample_google_places(city, latitude, longitude)
+        places = await self._fetch_nearby_google_places(city, lat, lng)
         
-        # Cache the results
         self._cache[cache_key] = {
-            "locations": sample_places,
+            "locations": places,
             "cached_at": datetime.now()
         }
         
-        return sample_places
-    
-    async def _get_sample_google_places(
-        self, 
-        city: str, 
-        latitude: Optional[float], 
-        longitude: Optional[float]
+        return places
+
+    async def _fetch_nearby_google_places(
+        self,
+        city: str,
+        latitude: float,
+        longitude: float,
     ) -> List[Dict[str, Any]]:
-        """Get sample Google Places data for development."""
-        # This would be replaced with actual Google Places API calls
-        sample_places = [
-            {
-                "id": f"google_place_1_{city}",
-                "title": f"Popular Restaurant in {city}",
-                "description": "Highly-rated local restaurant with traditional Croatian cuisine",
-                "category": "Food & Wine",
-                "location": city,
-                "rating": 4.5,
-                "price": "€€",
-                "coordinates": {
-                    "lat": (latitude or 45.1) + 0.01,
-                    "lng": (longitude or 15.2) + 0.01
-                },
-                "hostTip": "Try the local seafood specialties!",
-                "weatherDependent": False,
-                "source": "google_places",
-                "place_id": f"google_place_id_1_{city}",
-                "opening_hours": {"open_now": True},
-                "contact_info": {"phone": "+385 1 234 567"},
-                "website": f"https://example-restaurant-{city}.com"
-            },
-            {
-                "id": f"google_place_2_{city}",
-                "title": f"Historic Site in {city}",
-                "description": "Important historical landmark with guided tours available",
-                "category": "Culture & History",
-                "location": city,
-                "rating": 4.7,
-                "price": "€5-10",
-                "coordinates": {
-                    "lat": (latitude or 45.1) - 0.01,
-                    "lng": (longitude or 15.2) - 0.01
-                },
-                "hostTip": "Visit early morning to avoid crowds",
-                "weatherDependent": False,
-                "source": "google_places",
-                "place_id": f"google_place_id_2_{city}",
-                "opening_hours": {"open_now": True},
-                "contact_info": {"phone": "+385 1 234 568"}
-            }
-        ]
-        
-        return sample_places
+        """Call Google Places nearby search once per cache window."""
+        api_key = (os.environ.get("GOOGLE_MAPS_API_KEY") or "").strip()
+        if not api_key:
+            logger.debug("GOOGLE_MAPS_API_KEY missing; skipping nearby places fetch")
+            return []
+
+        try:
+            import googlemaps
+
+            client = googlemaps.Client(key=api_key)
+
+            def _search():
+                return client.places_nearby(
+                    location=(latitude, longitude),
+                    radius=5000,
+                    language="en",
+                )
+
+            result = await asyncio.to_thread(_search)
+        except Exception as exc:
+            logger.warning("Nearby Google Places failed for %s: %s", city, exc)
+            return []
+
+        formatted: List[Dict[str, Any]] = []
+        for place in (result or {}).get("results") or []:
+            loc = (place.get("geometry") or {}).get("location") or {}
+            lat = loc.get("lat")
+            lng = loc.get("lng")
+            if lat is None or lng is None:
+                continue
+            photos = place.get("photos") or []
+            photo_url = None
+            if photos and photos[0].get("photo_reference"):
+                photo_url = place_photo_url(photos[0]["photo_reference"], maxwidth=400)
+            price_level = place.get("price_level")
+            formatted.append(
+                {
+                    "id": f"google_{place.get('place_id', '')}",
+                    "title": place.get("name") or "Place",
+                    "description": place.get("vicinity") or city,
+                    "category": (place.get("types") or ["point_of_interest"])[0],
+                    "location": city,
+                    "rating": place.get("rating") or 4.0,
+                    "price": _PRICE_LEVEL_LABELS.get(price_level, "€€") if price_level is not None else "€€",
+                    "coordinates": {"lat": lat, "lng": lng},
+                    "hostTip": None,
+                    "weatherDependent": False,
+                    "source": "google_places",
+                    "place_id": place.get("place_id"),
+                    "opening_hours": {"open_now": (place.get("opening_hours") or {}).get("open_now")},
+                    "contact_info": {},
+                    "website": None,
+                    "image": photo_url,
+                    "google_maps_url": google_maps_link(lat, lng, name=place.get("name")),
+                }
+            )
+        return formatted[:20]
     
     def _is_weather_dependent(self, attraction: Attraction) -> bool:
         """Determine if an attraction is weather dependent."""

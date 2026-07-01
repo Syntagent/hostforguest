@@ -64,8 +64,11 @@ class RecommendationBuilders:
             )
             
             self.db.add(rec_set)
-            await self.db.commit()
-            await self.db.refresh(rec_set)
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
+            try:
+                await self.db.refresh(rec_set)
+            except Exception:
+                pass  # RLS may block SELECT after flush
             
             # Create individual recommendations
             recommendations = []
@@ -77,7 +80,7 @@ class RecommendationBuilders:
                     recommendations.append(recommendation)
             
             rec_set.delivered_at = datetime.utcnow()
-            await self.db.commit()
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
             
             response = RecommendationSetResponse(
                 id=rec_set.id,
@@ -109,9 +112,14 @@ class RecommendationBuilders:
         try:
             attraction = rec_data['attraction']
             
+            # Partner wrappers (SimpleNamespace) have different IDs - set attraction_id to None
+            from app.models.attraction import Attraction as AttractionModel
+            attraction_id = attraction.id if isinstance(attraction, AttractionModel) else None
+            rec_type = RecommendationType.ATTRACTION if isinstance(attraction, AttractionModel) else RecommendationType.ATTRACTION
+            
             recommendation = Recommendation(
                 request_id=request.id,
-                attraction_id=attraction.id,
+                attraction_id=attraction_id,
                 title=attraction.name,
                 description=attraction.description,
                 recommendation_type=RecommendationType.ATTRACTION,
@@ -128,13 +136,16 @@ class RecommendationBuilders:
                 distance_km=None,
                 travel_time_minutes=None,
                 weather_suitability=self._get_weather_suitability(attraction),
-                season_suitability=attraction.best_months or [],
-                group_suitability=attraction.age_suitability or []
+                season_suitability=(attraction.best_months or []) or [],
+                group_suitability=(attraction.age_suitability or []) or []
             )
             
             self.db.add(recommendation)
-            await self.db.commit()
-            await self.db.refresh(recommendation)
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
+            try:
+                await self.db.refresh(recommendation)
+            except Exception:
+                pass  # RLS may block SELECT after flush
             
             return RecommendationResponse.model_validate(recommendation)
             
@@ -180,11 +191,11 @@ class RecommendationBuilders:
         
         suitability = []
         
-        if "outdoor" in attraction.category_tags:
+        if "outdoor" in (attraction.category_tags or []):
             suitability.extend([WeatherContext.SUNNY, WeatherContext.CLOUDY])
-        if "indoor" in attraction.category_tags:
+        if "indoor" in (attraction.category_tags or []):
             suitability.extend([WeatherContext.RAINY, WeatherContext.COLD])
-        if "beach" in attraction.category_tags:
+        if "beach" in (attraction.category_tags or []):
             suitability.extend([WeatherContext.SUNNY, WeatherContext.HOT])
         
         return suitability

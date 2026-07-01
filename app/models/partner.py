@@ -111,7 +111,15 @@ class Partner(Base):
     total_commission = Column(Float, default=0.0)
     average_rating = Column(Float, nullable=True)
     total_reviews = Column(Integer, default=0)
-    
+    google_place_id = Column(String(200), nullable=True, index=True)
+    google_rating = Column(Float, nullable=True)
+    google_user_ratings_total = Column(Integer, nullable=True)
+    google_price_level = Column(Integer, nullable=True)
+    google_website = Column(String(500), nullable=True)
+    google_phone = Column(String(50), nullable=True)
+    google_data_fetched_at = Column(DateTime, nullable=True)
+    embedding = Column(Text, nullable=True)  # Stored as text, used for semantic partner search
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

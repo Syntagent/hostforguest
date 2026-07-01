@@ -142,6 +142,19 @@ class MaintenanceService:
         ev = MaintenanceIssueEvent(issue_id=issue_id, event_type=event_type, payload=payload)
         self.db.add(ev)
 
+    async def list_issues_for_guest_group(self, guest_group_id: uuid.UUID) -> List[MaintenanceIssue]:
+        r = await self.db.execute(
+            select(MaintenanceIssue)
+            .where(
+                and_(
+                    MaintenanceIssue.guest_group_id == guest_group_id,
+                    MaintenanceIssue.source == "guest",
+                )
+            )
+            .order_by(MaintenanceIssue.created_at.desc())
+        )
+        return list(r.scalars().all())
+
     async def create_guest_report_for_group(
         self,
         group: GuestGroup,
@@ -288,6 +301,8 @@ class MaintenanceService:
         host: Host,
         category: str,
         limit: int = 24,
+        *,
+        linked_only: bool = False,
     ) -> List[Tuple[Partner, Optional[float]]]:
         """Returns (partner, distance_km or None)."""
         linked_ids: List[uuid.UUID] = []
@@ -301,7 +316,12 @@ class MaintenanceService:
         )
         linked_ids = [row[0] for row in lr.all()]
 
+        if linked_only and not linked_ids:
+            return []
+
         stmt = select(Partner).where(Partner.status == PartnerStatus.ACTIVE.value)
+        if linked_only:
+            stmt = stmt.where(Partner.id.in_(linked_ids))
         pr = await self.db.execute(stmt)
         all_p = list(pr.scalars().all())
 

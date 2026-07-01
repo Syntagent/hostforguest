@@ -22,6 +22,16 @@ from app.models.settings import (
     APIKeyCreate,
     APIKeyResponse,
     APIKeyUpdate,
+    SettingsCategory,
+)
+from app.models.settings_api import (
+    SettingsApiKeySummary,
+    SettingsApiKeyValidationResponse,
+    SettingsBackupResponse,
+    SettingsCategoryResponse,
+    SettingsIntegrationTestResult,
+    SettingsIntegrationsTestResponse,
+    SystemSettingsListResponse,
 )
 from app.core.config import settings as app_settings
 
@@ -582,3 +592,252 @@ class SettingsService:
     ) -> Optional[APIKeyResponse]:
         _ = (api_key_id, api_key_data)
         return None
+
+    def _category_response(
+        self,
+        category: SettingsCategory,
+        host_response: HostSettingsResponse,
+        api_key_rows: Optional[List[APIKeyResponse]] = None,
+    ) -> SettingsCategoryResponse:
+        cat = category.value if isinstance(category, SettingsCategory) else str(category)
+        if cat == SettingsCategory.GENERAL.value:
+            return SettingsCategoryResponse(
+                category=cat,
+                language_preference=host_response.language_preference,
+                timezone=host_response.timezone,
+                currency=host_response.currency,
+            )
+        if cat == SettingsCategory.NOTIFICATIONS.value:
+            return SettingsCategoryResponse(
+                category=cat,
+                notification_preferences=host_response.notification_preferences,
+            )
+        if cat == SettingsCategory.RECOMMENDATIONS.value:
+            return SettingsCategoryResponse(
+                category=cat,
+                recommendation_settings=host_response.recommendation_settings,
+            )
+        if cat == SettingsCategory.PRIVACY.value:
+            return SettingsCategoryResponse(
+                category=cat,
+                privacy_settings=host_response.privacy_settings,
+            )
+        if cat == SettingsCategory.API_KEYS.value:
+            rows = api_key_rows or []
+            return SettingsCategoryResponse(
+                category=cat,
+                api_keys=[
+                    SettingsApiKeySummary(
+                        service_name=row.service_name,
+                        masked_value=row.masked_value,
+                        is_active=row.is_active,
+                    )
+                    for row in rows
+                ],
+            )
+        raise ValueError(f"Unsupported settings category: {cat}")
+
+    async def _ensure_host_settings_response(self, host_id: uuid.UUID) -> HostSettingsResponse:
+        hs = await self.get_host_settings(host_id)
+        if not hs:
+            return await self.create_host_settings(
+                HostSettingsCreate(
+                    host_id=host_id,
+                    language_preference="en",
+                    timezone="Europe/Zagreb",
+                    currency="EUR",
+                )
+            )
+        return self.host_settings_to_response(hs)
+
+    async def get_settings_by_category(
+        self,
+        host_id: uuid.UUID,
+        category: SettingsCategory,
+    ) -> SettingsCategoryResponse:
+        host_response = await self._ensure_host_settings_response(host_id)
+        api_rows = None
+        if category == SettingsCategory.API_KEYS:
+            api_rows = await self.get_host_api_keys(host_id)
+        return self._category_response(category, host_response, api_rows)
+
+    async def update_settings_category(
+        self,
+        host_id: uuid.UUID,
+        category: SettingsCategory,
+        category_data: Dict[str, Any],
+    ) -> SettingsCategoryResponse:
+        host_response = await self._ensure_host_settings_response(host_id)
+        update = HostSettingsUpdate()
+        if category == SettingsCategory.GENERAL:
+            if "language_preference" in category_data:
+                update.language_preference = category_data["language_preference"]
+            if "timezone" in category_data:
+                update.timezone = category_data["timezone"]
+            if "currency" in category_data:
+                update.currency = category_data["currency"]
+        elif category == SettingsCategory.NOTIFICATIONS:
+            update.notification_preferences = category_data.get(
+                "notification_preferences", category_data
+            )
+        elif category == SettingsCategory.RECOMMENDATIONS:
+            update.recommendation_settings = category_data.get(
+                "recommendation_settings", category_data
+            )
+        elif category == SettingsCategory.PRIVACY:
+            update.privacy_settings = category_data.get("privacy_settings", category_data)
+        elif category == SettingsCategory.API_KEYS:
+            for service_name, payload in category_data.items():
+                if not isinstance(payload, dict):
+                    continue
+                key_value = payload.get("key_value")
+                if key_value:
+                    await self.update_host_api_key(str(host_id), service_name, key_value)
+        else:
+            raise ValueError(f"Unsupported settings category: {category}")
+        if category != SettingsCategory.API_KEYS:
+            host_response = await self.update_host_settings(host_id, update)
+        api_rows = await self.get_host_api_keys(host_id) if category == SettingsCategory.API_KEYS else None
+        return self._category_response(category, host_response, api_rows)
+
+    async def get_system_settings(self) -> SystemSettingsListResponse:
+        try:
+            result = await self.db.execute(
+                select(SystemSettings).order_by(SystemSettings.category, SystemSettings.setting_key)
+            )
+            rows = result.scalars().all()
+            public_rows = [
+                {
+                    "setting_key": row.setting_key,
+                    "setting_value": "" if row.is_sensitive else (row.setting_value or ""),
+                    "description": row.description or "",
+                    "category": row.category or "general",
+                }
+                for row in rows
+                if not row.is_sensitive
+            ]
+            return SystemSettingsListResponse(settings=public_rows, count=len(public_rows))
+        except Exception as e:
+            logger.error(f"Error loading system settings: {e}")
+            return SystemSettingsListResponse()
+
+    async def backup_host_settings(self, host_id: uuid.UUID) -> SettingsBackupResponse:
+        hs = await self.get_host_settings(host_id)
+        if not hs:
+            hs = await self.create_default_host_settings(str(host_id))
+        host_response = self.host_settings_to_response(hs)
+        backup_id = uuid.uuid4()
+        created_at = datetime.utcnow()
+        prefs = dict(hs.custom_settings or {})
+        backups = dict(prefs.get("settings_backups") or {})
+        backups[str(backup_id)] = {
+            "created_at": created_at.isoformat(),
+            "snapshot": host_response.model_dump(mode="json"),
+        }
+        prefs["settings_backups"] = backups
+        hs.custom_settings = prefs
+        hs.updated_at = created_at
+        await self.db.commit()
+        await self.db.refresh(hs)
+        return SettingsBackupResponse(
+            backup_id=backup_id,
+            host_id=host_id,
+            created_at=created_at,
+        )
+
+    async def restore_host_settings(
+        self,
+        host_id: uuid.UUID,
+        backup_id: uuid.UUID,
+    ) -> HostSettingsResponse:
+        hs = await self.get_host_settings(host_id)
+        if not hs:
+            raise ValueError("Host settings row not found")
+        prefs = dict(hs.custom_settings or {})
+        backups = prefs.get("settings_backups") or {}
+        snapshot = backups.get(str(backup_id))
+        if not snapshot:
+            raise ValueError("Backup not found")
+        snap = snapshot.get("snapshot") if isinstance(snapshot, dict) else None
+        if not isinstance(snap, dict):
+            raise ValueError("Backup snapshot invalid")
+        restored = await self.update_host_settings(
+            host_id,
+            HostSettingsUpdate(
+                language_preference=snap.get("language_preference"),
+                timezone=snap.get("timezone"),
+                currency=snap.get("currency"),
+                notification_preferences=snap.get("notification_preferences"),
+                recommendation_settings=snap.get("recommendation_settings"),
+                privacy_settings=snap.get("privacy_settings"),
+            ),
+        )
+        return restored
+
+    async def validate_api_key(
+        self,
+        service_name: str,
+        api_key_value: str,
+    ) -> SettingsApiKeyValidationResponse:
+        allowed = {
+            "openai",
+            "google_ai",
+            "google_maps",
+            "google_places",
+            "weather",
+            "croatia_tourism",
+            "istria_tourism",
+        }
+        if service_name not in allowed:
+            return SettingsApiKeyValidationResponse(
+                valid=False,
+                service_name=service_name,
+                message=f"Unknown service: {service_name}",
+            )
+        valid = bool(api_key_value and len(api_key_value.strip()) >= 10)
+        return SettingsApiKeyValidationResponse(
+            valid=valid,
+            service_name=service_name,
+            message="Key format looks valid" if valid else "API key must be at least 10 characters",
+        )
+
+    async def test_all_integrations(self, host_id: uuid.UUID) -> SettingsIntegrationsTestResponse:
+        hs = await self.get_host_settings(host_id)
+        pairs = [
+            ("openai", bool(hs and hs.openai_api_key)),
+            ("google_ai", bool(hs and hs.google_ai_api_key)),
+            ("google_maps", bool(hs and hs.google_maps_api_key)),
+            ("google_places", bool(hs and hs.google_places_api_key)),
+            ("weather", bool(hs and hs.weather_api_key)),
+            ("croatia_tourism", bool(hs and hs.croatia_tourism_api_key)),
+            ("istria_tourism", bool(hs and hs.istria_tourism_api_key)),
+        ]
+        integrations: List[SettingsIntegrationTestResult] = []
+        for service_name, configured in pairs:
+            integrations.append(
+                SettingsIntegrationTestResult(
+                    service_name=service_name,
+                    configured=configured,
+                    status="configured" if configured else "not_configured",
+                    message="API key present" if configured else "No API key stored",
+                )
+            )
+        required = {"openai", "google_ai"}
+        success = all(
+            row.configured for row in integrations if row.service_name in required
+        )
+        return SettingsIntegrationsTestResponse(success=success, integrations=integrations)
+
+    async def get_api_key_by_service(
+        self,
+        host_id: uuid.UUID,
+        service_name: str,
+    ) -> Optional[APIKeyResponse]:
+        for row in await self.get_host_api_keys(host_id):
+            if row.service_name == service_name:
+                return row
+        return None
+
+    async def delete_api_key(self, api_key_id: uuid.UUID) -> bool:
+        _ = api_key_id
+        return False

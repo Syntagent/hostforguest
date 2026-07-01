@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
 
     # Application Configuration
-    app_name: str = "TouristGuideLocal"
+    app_name: str = "HostForGuest"
     app_version: str = "1.0.0"
     debug: bool = True
     environment: str = "development"
@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     postgres_server: str = "localhost"
     postgres_user: str = "tourist_guide_user"
     postgres_password: str = ""  # Empty password for trust authentication
+    # Runtime app role (NOBYPASSRLS). When password is set, API uses this role instead of postgres_user.
+    postgres_app_user: str = "tourist_guide_app"
+    postgres_app_password: str = ""
     postgres_db: str = "tourist_guide_db"
     postgres_port: int = 5434  # Updated to match Docker port
     postgres_echo: bool = False
@@ -84,6 +87,18 @@ class Settings(BaseSettings):
     maintenance_job_secret: str = ""
     # Optional explicit Fernet key (44 chars base64). If empty, crypto_util derives from secret_key.
     channel_encryption_key: str = ""
+    # Stripe Configuration
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+
+    # Telegram A2A bot
+    telegram_bot_token: str = "YOUR_BOT_TOKEN_HERE"
+    telegram_webhook_url: str = ""
+    # Optional: X-Telegram-Bot-Api-Secret-Token on webhook POST (set when registering webhook with Telegram)
+    telegram_webhook_secret: str = ""
+
+    # Optional override for guest weather (Open-Meteo used when empty). Supports {lat},{lng},{city}.
+    weather_forecast_api_url: str = ""
 
     # Local dev: auto-create host for login page "Dev Login"
     dev_login_seed_enabled: bool = True
@@ -117,6 +132,20 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def effective_postgres_user(self) -> str:
+        """DB user for application runtime (app role when configured)."""
+        if (self.postgres_app_password or "").strip():
+            return (self.postgres_app_user or "").strip() or self.postgres_user
+        return self.postgres_user
+
+    @property
+    def effective_postgres_password(self) -> str:
+        """Password for application runtime DB user."""
+        if (self.postgres_app_password or "").strip():
+            return self.postgres_app_password
+        return self.postgres_password
+
+    @property
     def postgres_url(self) -> str:
         """
         Build PostgreSQL connection URL.
@@ -124,7 +153,7 @@ class Settings(BaseSettings):
         Returns:
             PostgreSQL connection string
         """
-        return f"postgresql://{self.postgres_user}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+        return f"postgresql://{self.effective_postgres_user}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
 
     @property
     def async_postgres_url(self) -> str:
@@ -134,10 +163,21 @@ class Settings(BaseSettings):
         Returns:
             Async PostgreSQL connection string
         """
-        if self.postgres_password:
-            return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+        user = self.effective_postgres_user
+        password = self.effective_postgres_password
+        if password:
+            return f"postgresql+asyncpg://{user}:{password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
         else:
-            return f"postgresql+asyncpg://{self.postgres_user}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+            return f"postgresql+asyncpg://{user}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+
+    @property
+    def async_migrator_postgres_url(self) -> str:
+        """Async URL for schema migrations and pytest DDL (always superuser/migrator role)."""
+        user = self.postgres_user
+        password = self.postgres_password
+        if password:
+            return f"postgresql+asyncpg://{user}:{password}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
+        return f"postgresql+asyncpg://{user}@{self.postgres_server}:{self.postgres_port}/{self.postgres_db}"
 
     @property
     def cors_origins_list(self) -> List[str]:

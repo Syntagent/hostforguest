@@ -10,13 +10,15 @@ from typing import List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.services.review_service import ReviewService
-from app.services.host_service import HostService
-from app.services.guest_group_service import GuestGroupService
+from app.api.v1.hosts import get_current_host
+from app.models.host import Host
+from app.services.review_service import ReviewService, PublicReviewsListResponse
+from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
 from app.services.attraction_service import AttractionService
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class GenerateResponseRequest(BaseModel):
 @router.post("/request")
 async def request_review(
     request: RequestReviewRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -66,33 +69,26 @@ async def request_review(
     """
     try:
         review_service = ReviewService(db)
-        host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
         attraction_service = AttractionService(db)
         
-        # Get guest group
         guest_group = await guest_group_service.get_guest_group_by_id(uuid.UUID(request.guest_group_id))
-        if not guest_group:
+        if not guest_group or not host_owns_guest_group(guest_group, current_host.id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Guest group not found"
             )
         
-        # Get host
-        host = await host_service.get_by_id(guest_group.host_id)
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found"
-            )
-        
-        # Get attraction if provided
         attraction = None
         if request.attraction_id:
             attraction = await attraction_service.get_by_id(uuid.UUID(request.attraction_id))
+            if not attraction or attraction.created_by_host_id != current_host.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Attraction not found"
+                )
         
-        # Request review
-        success = await review_service.request_review(host, guest_group, attraction)
+        success = await review_service.request_review(current_host, guest_group, attraction)
         
         if success:
             return {"success": True, "message": "Review request sent successfully"}
@@ -115,6 +111,7 @@ async def request_review(
 @router.post("/analyze-sentiment", response_model=AnalyzeSentimentResponse)
 async def analyze_sentiment(
     request: AnalyzeSentimentRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -129,7 +126,9 @@ async def analyze_sentiment(
     """
     try:
         review_service = ReviewService(db)
-        sentiment = await review_service.analyze_review_sentiment(request.review_text)
+        sentiment = await review_service.analyze_review_sentiment(
+            request.review_text, current_host.id
+        )
         
         return AnalyzeSentimentResponse(
             sentiment=sentiment["sentiment"],
@@ -149,6 +148,7 @@ async def analyze_sentiment(
 @router.post("/generate-response")
 async def generate_review_response(
     request: GenerateResponseRequest,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -165,9 +165,7 @@ async def generate_review_response(
         from app.models.attraction import AttractionReview
         
         review_service = ReviewService(db)
-        host_service = HostService(db)
         
-        # Get review
         stmt = select(AttractionReview).where(AttractionReview.id == uuid.UUID(request.review_id))
         result = await db.execute(stmt)
         review = result.scalar_one_or_none()
@@ -178,17 +176,16 @@ async def generate_review_response(
                 detail="Review not found"
             )
         
-        # Get host (from attraction)
-        if review.attraction:
-            host = await host_service.get_by_id(review.attraction.created_by_host_id)
-        else:
+        if (
+            not review.attraction
+            or review.attraction.created_by_host_id != current_host.id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Host not found for review"
+                detail="Review not found"
             )
         
-        # Generate response
-        response = await review_service.generate_review_response(host, review, request.language)
+        response = await review_service.generate_review_response(current_host, review, request.language)
         
         if response:
             return {"success": True, "response": response}
@@ -208,7 +205,7 @@ async def generate_review_response(
         )
 
 
-@router.get("/public")
+@router.get("/public", response_model=PublicReviewsListResponse)
 async def get_public_reviews(
     attraction_id: Optional[str] = Query(None),
     host_id: Optional[str] = Query(None),
@@ -236,7 +233,7 @@ async def get_public_reviews(
             limit=limit
         )
         
-        return {"reviews": reviews, "count": len(reviews)}
+        return PublicReviewsListResponse(reviews=reviews, count=len(reviews))
         
     except Exception as e:
         logger.error(f"Error getting public reviews: {e}")
@@ -249,6 +246,7 @@ async def get_public_reviews(
 @router.post("/update-recommendations/{attraction_id}")
 async def update_recommendations_from_reviews(
     attraction_id: str,
+    current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -262,6 +260,16 @@ async def update_recommendations_from_reviews(
         Success status
     """
     try:
+        from app.models.attraction import Attraction
+
+        attraction_service = AttractionService(db)
+        attraction = await attraction_service.get_by_id(uuid.UUID(attraction_id))
+        if not attraction or attraction.created_by_host_id != current_host.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attraction not found"
+            )
+
         review_service = ReviewService(db)
         
         success = await review_service.update_recommendations_from_reviews(

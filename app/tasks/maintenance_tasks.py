@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from app.db.postgresql.connection import get_async_session
 from app.services.maintenance_service import MaintenanceService
+from app.services.rls_service import RLSService
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,8 @@ async def run_preventive_maintenance_for_all_hosts() -> Dict[str, Any]:
     """
     async for db in get_async_session():
         svc = MaintenanceService(db)
-        created = await svc.run_all_due_schedules_for_all_hosts()
+        async with RLSService(db).worker_bypass():
+            created = await svc.run_all_due_schedules_for_all_hosts()
         logger.info("preventive maintenance job: created %s issue(s)", len(created))
         return {
             "created_count": len(created),

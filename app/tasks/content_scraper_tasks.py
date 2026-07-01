@@ -13,6 +13,7 @@ from typing import Dict, Any
 from app.core.database import get_async_session
 from app.services.content_scraper_service import ContentScraperService
 from app.services.ai_service import AIService
+from app.services.rls_service import RLSService
 from app.models.content_source import CROATIAN_TOURISM_SOURCES, ContentSourceCreate
 
 logger = logging.getLogger(__name__)
@@ -28,29 +29,26 @@ async def initialize_tourism_sources():
     logger.info("Initializing Croatian tourism content sources...")
 
     async for db in get_async_session():
-        async with ContentScraperService(db) as scraper:
+        async with RLSService(db).worker_bypass():
+            async with ContentScraperService(db) as scraper:
+                created_sources = []
 
-            created_sources = []
+                for source_config in CROATIAN_TOURISM_SOURCES:
+                    try:
+                        source_data = ContentSourceCreate(**source_config)
+                        source = await scraper.create_content_source(source_data)
 
-            for source_config in CROATIAN_TOURISM_SOURCES:
-                try:
-                    # Create ContentSourceCreate object
-                    source_data = ContentSourceCreate(**source_config)
+                        if source:
+                            created_sources.append(source)
+                            logger.info(f"Initialized content source: {source.name}")
+                        else:
+                            logger.error(f"Failed to create source: {source_config['name']}")
 
-                    # Create the content source
-                    source = await scraper.create_content_source(source_data)
+                    except Exception as e:
+                        logger.error(f"Error initializing source {source_config['name']}: {e}")
 
-                    if source:
-                        created_sources.append(source)
-                        logger.info(f"Initialized content source: {source.name}")
-                    else:
-                        logger.error(f"Failed to create source: {source_config['name']}")
-
-                except Exception as e:
-                    logger.error(f"Error initializing source {source_config['name']}: {e}")
-
-            logger.info(f"Successfully initialized {len(created_sources)} tourism content sources")
-            return created_sources
+                logger.info(f"Successfully initialized {len(created_sources)} tourism content sources")
+                return created_sources
 
 
 async def run_weekly_content_scraping() -> Dict[str, Any]:
@@ -80,27 +78,27 @@ async def run_weekly_content_scraping() -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            # Initialize AI service for content analysis
-            ai_service = AIService()
+            async with RLSService(db).worker_bypass():
+                ai_service = AIService()
 
-            # Create content scraper service
-            async with ContentScraperService(db, ai_service) as scraper:
+                async with ContentScraperService(db, ai_service) as scraper:
+                    scraping_results = await scraper.run_scheduled_scraping()
 
-                # Run the scheduled scraping
-                scraping_results = await scraper.run_scheduled_scraping()
+                    results.update({
+                        'sources_processed': scraping_results['sources_processed'],
+                        'total_updates_found': scraping_results['total_updates'],
+                        'host_notifications_sent': scraping_results['notifications_sent'],
+                        'errors': scraping_results['errors']
+                    })
 
-                # Update results
-                results.update({
-                    'sources_processed': scraping_results['sources_processed'],
-                    'total_updates_found': scraping_results['total_updates'],
-                    'host_notifications_sent': scraping_results['notifications_sent'],
-                    'errors': scraping_results['errors']
-                })
+                    results['success'] = len(scraping_results['errors']) == 0
 
-                # Mark as successful if no critical errors
-                results['success'] = len(scraping_results['errors']) == 0
+                    logger.info(f"Weekly scraping completed successfully: {results}")
 
-                logger.info(f"Weekly scraping completed successfully: {results}")
+                from app.tasks.event_scraper_tasks import run_daily_event_sync
+
+                event_sync = await run_daily_event_sync()
+                results["event_sync"] = event_sync
 
     except Exception as e:
         error_msg = f"Critical error in weekly content scraping: {e}"
@@ -147,53 +145,50 @@ async def run_daily_content_health_check() -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            async with ContentScraperService(db) as scraper:
+            async with RLSService(db).worker_bypass():
+                async with ContentScraperService(db) as scraper:
+                    from sqlalchemy import select
+                    from app.models.content_source import ContentSource, SourceStatus
 
-                # Get all content sources
-                from sqlalchemy import select
-                from app.models.content_source import ContentSource, SourceStatus
+                    stmt = select(ContentSource)
+                    result = await db.execute(stmt)
+                    sources = result.scalars().all()
 
-                stmt = select(ContentSource)
-                result = await db.execute(stmt)
-                sources = result.scalars().all()
+                    results['total_sources'] = len(sources)
 
-                results['total_sources'] = len(sources)
-
-                for source in sources:
-                    if source.status == SourceStatus.ACTIVE:
-                        results['active_sources'] += 1
-                    elif source.status == SourceStatus.ERROR:
-                        results['error_sources'] += 1
-                        results['sources_needing_attention'].append({
-                            'name': source.name,
-                            'url': source.url,
-                            'status': source.status,
-                            'last_error': source.last_error,
-                            'consecutive_failures': source.consecutive_failures
-                        })
-
-                    # Check for sources that haven't been scraped recently
-                    if source.last_scraped:
-                        days_since_scrape = (datetime.utcnow() - source.last_scraped).days
-                        if days_since_scrape > 14:  # Haven't scraped in 2 weeks
+                    for source in sources:
+                        if source.status == SourceStatus.ACTIVE:
+                            results['active_sources'] += 1
+                        elif source.status == SourceStatus.ERROR:
+                            results['error_sources'] += 1
                             results['sources_needing_attention'].append({
                                 'name': source.name,
-                                'issue': f'Not scraped for {days_since_scrape} days',
-                                'last_scraped': source.last_scraped
+                                'url': source.url,
+                                'status': source.status,
+                                'last_error': source.last_error,
+                                'consecutive_failures': source.consecutive_failures
                             })
 
-                # Generate recommendations
-                if results['error_sources'] > 0:
-                    results['recommendations'].append(
-                        f"Review {results['error_sources']} sources in error status"
-                    )
+                        if source.last_scraped:
+                            days_since_scrape = (datetime.utcnow() - source.last_scraped).days
+                            if days_since_scrape > 14:
+                                results['sources_needing_attention'].append({
+                                    'name': source.name,
+                                    'issue': f'Not scraped for {days_since_scrape} days',
+                                    'last_scraped': source.last_scraped
+                                })
 
-                if len(results['sources_needing_attention']) > 0:
-                    results['recommendations'].append(
-                        f"Check {len(results['sources_needing_attention'])} sources needing attention"
-                    )
+                    if results['error_sources'] > 0:
+                        results['recommendations'].append(
+                            f"Review {results['error_sources']} sources in error status"
+                        )
 
-                logger.info(f"Health check completed: {results}")
+                    if len(results['sources_needing_attention']) > 0:
+                        results['recommendations'].append(
+                            f"Check {len(results['sources_needing_attention'])} sources needing attention"
+                        )
+
+                    logger.info(f"Health check completed: {results}")
 
     except Exception as e:
         logger.error(f"Error in daily health check: {e}")
@@ -225,29 +220,31 @@ async def cleanup_old_content_updates(days_to_keep: int = 90) -> Dict[str, Any]:
 
     try:
         async for db in get_async_session():
-            from sqlalchemy import delete
-            from app.models.content_source import ContentUpdate, HostNotification
+            async with RLSService(db).worker_bypass():
+                from sqlalchemy import delete
+                from app.models.content_source import ContentUpdate, HostNotification
 
-            cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+                cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
 
-            # Delete old content updates
-            delete_updates_stmt = delete(ContentUpdate).where(
-                ContentUpdate.created_at < cutoff_date
-            )
-            update_result = await db.execute(delete_updates_stmt)
-            results['updates_deleted'] = update_result.rowcount
+                delete_updates_stmt = delete(ContentUpdate).where(
+                    ContentUpdate.created_at < cutoff_date
+                )
+                update_result = await db.execute(delete_updates_stmt)
+                results['updates_deleted'] = update_result.rowcount
 
-            # Delete old notifications
-            delete_notifications_stmt = delete(HostNotification).where(
-                HostNotification.created_at < cutoff_date
-            )
-            notification_result = await db.execute(delete_notifications_stmt)
-            results['notifications_deleted'] = notification_result.rowcount
+                delete_notifications_stmt = delete(HostNotification).where(
+                    HostNotification.created_at < cutoff_date
+                )
+                notification_result = await db.execute(delete_notifications_stmt)
+                results['notifications_deleted'] = notification_result.rowcount
 
-            await db.commit()
-            results['success'] = True
+                await db.commit()
+                results['success'] = True
 
-            logger.info(f"Cleanup completed: deleted {results['updates_deleted']} updates and {results['notifications_deleted']} notifications")
+                logger.info(
+                    f"Cleanup completed: deleted {results['updates_deleted']} updates "
+                    f"and {results['notifications_deleted']} notifications"
+                )
 
     except Exception as e:
         logger.error(f"Error in cleanup task: {e}")

@@ -11,18 +11,22 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.auth import require_host_session
-from app.services.query_optimization_service import QueryOptimizationService
+from app.core.auth import require_maintenance_job_secret_only
+from app.models.performance_api import (
+    PerformanceCacheClearResponse,
+    PerformanceQueryAnalysisResponse,
+    PerformanceRefreshViewsResponse,
+)
 from app.services.cache_service import get_cache_service
-from app.models.host import Host
+from app.services.query_optimization_service import QueryOptimizationService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/refresh-views")
+@router.post("/refresh-views", response_model=PerformanceRefreshViewsResponse)
 async def refresh_materialized_views(
-    current_host: Host = Depends(require_host_session),
+    _auth: None = Depends(require_maintenance_job_secret_only),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -39,7 +43,10 @@ async def refresh_materialized_views(
         success = await optimization_service.refresh_materialized_views()
         
         if success:
-            return {"success": True, "message": "Materialized views refreshed"}
+            return PerformanceRefreshViewsResponse(
+                success=True,
+                message="Materialized views refreshed",
+            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -56,9 +63,9 @@ async def refresh_materialized_views(
         )
 
 
-@router.get("/query-analysis")
+@router.get("/query-analysis", response_model=PerformanceQueryAnalysisResponse)
 async def analyze_query_performance(
-    current_host: Host = Depends(require_host_session),
+    _auth: None = Depends(require_maintenance_job_secret_only),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -73,8 +80,17 @@ async def analyze_query_performance(
     try:
         optimization_service = QueryOptimizationService(db)
         analysis = await optimization_service.analyze_query_performance()
-        
-        return analysis
+        slow = analysis.get("slow_queries") or []
+        return PerformanceQueryAnalysisResponse(
+            slow_queries=slow,
+            suggestions=list(analysis.get("suggestions") or []),
+            pg_stat_statements_available=bool(analysis.get("pg_stat_statements_available")),
+            raw={
+                k: v
+                for k, v in analysis.items()
+                if k not in {"slow_queries", "suggestions", "pg_stat_statements_available"}
+            },
+        )
         
     except Exception as e:
         logger.error(f"Error analyzing queries: {e}")
@@ -84,10 +100,10 @@ async def analyze_query_performance(
         )
 
 
-@router.delete("/cache/{pattern}")
+@router.delete("/cache/{pattern}", response_model=PerformanceCacheClearResponse)
 async def clear_cache_pattern(
     pattern: str,
-    current_host: Host = Depends(require_host_session),
+    _auth: None = Depends(require_maintenance_job_secret_only),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -104,11 +120,11 @@ async def clear_cache_pattern(
         cache_service = get_cache_service()
         deleted = await cache_service.delete_pattern(pattern)
         
-        return {
-            "success": True,
-            "pattern": pattern,
-            "deleted_count": deleted
-        }
+        return PerformanceCacheClearResponse(
+            success=True,
+            pattern=pattern,
+            deleted_count=deleted,
+        )
         
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")

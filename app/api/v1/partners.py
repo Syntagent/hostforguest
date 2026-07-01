@@ -6,39 +6,36 @@ host-partner relationships, and commission tracking.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.database import get_db
+from app.core.auth import get_current_host
 from app.services.partner_service import PartnerService
 from app.services.host_service import HostService
+from app.services.host_offerings_for_guest import scrub_contact_from_text
 from app.models.partner import Partner, PartnerType, PartnerStatus
 from app.models.host import Host
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-async def get_current_host(request: Request, db: AsyncSession = Depends(get_db)) -> Host:
-    """Require X-Session-Token for host-scoped partner relationship routes."""
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required",
-        )
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-    return host
+# HostPartner relationship fields (not global Partner columns).
+_HOST_PARTNER_UPDATE_FIELDS = frozenset(
+    {
+        "priority",
+        "commission_rate",
+        "custom_discount_code",
+        "custom_discount_percentage",
+        "partnership_notes",
+        "partnership_start_date",
+        "partnership_end_date",
+    }
+)
 
 
 def _require_self_host(host_id: str, current_host: Host) -> None:
@@ -109,6 +106,38 @@ class PartnerResponse(BaseModel):
         from_attributes = True
 
 
+class PartnerPublicResponse(BaseModel):
+    """Anonymous partner listing without platform business metrics."""
+
+    id: str
+    name: str
+    description: Optional[str]
+    partner_type: str
+    category: Optional[str]
+    city: str
+    region: Optional[str]
+    discount_code: Optional[str]
+    average_rating: Optional[float]
+
+    class Config:
+        from_attributes = True
+
+
+def _public_partner_response(p: Partner) -> PartnerPublicResponse:
+    """Public partner card with structural contact omitted and narrative text scrubbed."""
+    return PartnerPublicResponse(
+        id=str(p.id),
+        name=scrub_contact_from_text(p.name) or p.name,
+        description=scrub_contact_from_text(p.description),
+        partner_type=scrub_contact_from_text(p.partner_type) or p.partner_type,
+        category=scrub_contact_from_text(p.category),
+        city=scrub_contact_from_text(p.city),
+        region=scrub_contact_from_text(p.region),
+        discount_code=scrub_contact_from_text(p.discount_code),
+        average_rating=p.average_rating,
+    )
+
+
 class HostPartnerCreate(BaseModel):
     """Host-partner relationship creation model."""
     partner_id: str
@@ -119,10 +148,63 @@ class HostPartnerCreate(BaseModel):
     partnership_notes: Optional[str] = None
 
 
+class HostPartnerContactCard(BaseModel):
+    """Partner contact fields for authenticated host views."""
+
+    id: str
+    name: str
+    description: Optional[str] = None
+    partner_type: str
+    category: Optional[str] = None
+    city: str
+    region: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    price_range: Optional[str] = None
+    rate_card: Dict[str, Any] = Field(default_factory=dict)
+    price_notes: Optional[str] = None
+    languages_spoken: List[str] = Field(default_factory=list)
+
+
+class HostPartnerRelationshipSummary(BaseModel):
+    """Host-partner relationship summary."""
+
+    priority: int = 0
+    commission_rate: Optional[float] = None
+    status: Optional[str] = None
+    partnership_notes: Optional[str] = None
+
+
+class HostPartnerWithRelationship(BaseModel):
+    """Partner card with host relationship metadata."""
+
+    partner: HostPartnerContactCard
+    relationship: HostPartnerRelationshipSummary
+
+
+class HostPartnerLinkCreateResponse(BaseModel):
+    """POST /partners/hosts/{host_id}/partners success envelope."""
+
+    success: bool
+    relationship_id: str
+    host_id: str
+    partner_id: str
+
+
+class PartnerUpdateResponse(BaseModel):
+    """PUT /partners/{partner_id} success envelope."""
+
+    success: bool
+    partner_id: str
+
+
 @router.post("/", response_model=PartnerResponse, status_code=status.HTTP_201_CREATED)
 async def create_partner(
     partner_data: PartnerCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Create a new business partner.
@@ -143,6 +225,12 @@ async def create_partner(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create partner"
             )
+
+        await service.create_host_partner_relationship(
+            current_host.id,
+            partner.id,
+            relationship_data={"status": PartnerStatus.ACTIVE.value},
+        )
         
         return PartnerResponse(
             id=str(partner.id),
@@ -169,7 +257,7 @@ async def create_partner(
         )
 
 
-@router.get("/{partner_id}", response_model=PartnerResponse)
+@router.get("/{partner_id}", response_model=PartnerPublicResponse)
 async def get_partner(
     partner_id: str,
     db: AsyncSession = Depends(get_db)
@@ -188,20 +276,7 @@ async def get_partner(
                 detail="Partner not found"
             )
         
-        return PartnerResponse(
-            id=str(partner.id),
-            name=partner.name,
-            description=partner.description,
-            partner_type=partner.partner_type,
-            category=partner.category,
-            city=partner.city,
-            region=partner.region,
-            status=partner.status,
-            commission_rate=partner.commission_rate,
-            discount_code=partner.discount_code,
-            total_bookings=partner.total_bookings,
-            average_rating=partner.average_rating
-        )
+        return _public_partner_response(partner)
         
     except HTTPException:
         raise
@@ -213,7 +288,7 @@ async def get_partner(
         )
 
 
-@router.get("/", response_model=List[PartnerResponse])
+@router.get("/", response_model=List[PartnerPublicResponse])
 async def list_partners(
     city: Optional[str] = Query(None),
     partner_type: Optional[str] = Query(None),
@@ -236,23 +311,7 @@ async def list_partners(
             limit=limit
         )
         
-        return [
-            PartnerResponse(
-                id=str(p.id),
-                name=p.name,
-                description=p.description,
-                partner_type=p.partner_type,
-                category=p.category,
-                city=p.city,
-                region=p.region,
-                status=p.status,
-                commission_rate=p.commission_rate,
-                discount_code=p.discount_code,
-                total_bookings=p.total_bookings,
-                average_rating=p.average_rating
-            )
-            for p in partners
-        ]
+        return [_public_partner_response(p) for p in partners]
         
     except Exception as e:
         logger.error(f"Error listing partners: {e}")
@@ -262,7 +321,7 @@ async def list_partners(
         )
 
 
-@router.post("/hosts/{host_id}/partners", status_code=status.HTTP_201_CREATED)
+@router.post("/hosts/{host_id}/partners", response_model=HostPartnerLinkCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_host_partner_relationship(
     host_id: str,
     relationship_data: HostPartnerCreate,
@@ -288,12 +347,12 @@ async def create_host_partner_relationship(
                 detail="Failed to create host-partner relationship"
             )
         
-        return {
-            "success": True,
-            "relationship_id": str(relationship.id),
-            "host_id": host_id,
-            "partner_id": relationship_data.partner_id
-        }
+        return HostPartnerLinkCreateResponse(
+            success=True,
+            relationship_id=str(relationship.id),
+            host_id=host_id,
+            partner_id=relationship_data.partner_id,
+        )
         
     except HTTPException:
         raise
@@ -305,7 +364,7 @@ async def create_host_partner_relationship(
         )
 
 
-@router.get("/hosts/{host_id}/partners")
+@router.get("/hosts/{host_id}/partners", response_model=List[HostPartnerWithRelationship])
 async def get_host_partners(
     host_id: str,
     current_host: Host = Depends(get_current_host),
@@ -318,19 +377,19 @@ async def get_host_partners(
         _require_self_host(host_id, current_host)
         service = PartnerService(db)
         partners = await service.get_host_partners(uuid.UUID(host_id))
-        out = []
+        out: List[HostPartnerWithRelationship] = []
         for p in partners:
             rel = p.get("relationship")
             out.append(
-                {
-                    "partner": _partner_contact_payload(p["partner"]),
-                    "relationship": {
-                        "priority": p["priority"],
-                        "commission_rate": p["commission_rate"],
-                        "status": p["status"],
-                        "partnership_notes": rel.partnership_notes if rel else None,
-                    },
-                }
+                HostPartnerWithRelationship(
+                    partner=HostPartnerContactCard(**_partner_contact_payload(p["partner"])),
+                    relationship=HostPartnerRelationshipSummary(
+                        priority=p["priority"],
+                        commission_rate=p["commission_rate"],
+                        status=p["status"],
+                        partnership_notes=rel.partnership_notes if rel else None,
+                    ),
+                )
             )
         return out
 
@@ -344,11 +403,12 @@ async def get_host_partners(
         )
 
 
-@router.put("/{partner_id}")
+@router.put("/{partner_id}", response_model=PartnerUpdateResponse)
 async def update_partner(
     partner_id: str,
     update_data: dict,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Update a partner.
@@ -363,18 +423,67 @@ async def update_partner(
     """
     try:
         service = PartnerService(db)
-        partner = await service.update_partner(
-            partner_id=uuid.UUID(partner_id),
-            update_data=update_data
-        )
-        
-        if not partner:
+        partner_uuid = uuid.UUID(partner_id)
+        linked = await service.host_has_partner_link(current_host.id, partner_uuid)
+        if not linked:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Partner not found"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not allowed to update a partner you are not linked to",
             )
-        
-        return {"success": True, "partner_id": partner_id}
+
+        owns_partner = await service.host_owns_partner_record(
+            current_host.id, partner_uuid
+        )
+        relationship_patch: dict = {
+            k: v for k, v in update_data.items() if k in _HOST_PARTNER_UPDATE_FIELDS
+        }
+        partner_patch: dict = {
+            k: v
+            for k, v in update_data.items()
+            if k not in _HOST_PARTNER_UPDATE_FIELDS and k != "status"
+        }
+        if "status" in update_data:
+            if owns_partner:
+                partner_patch["status"] = update_data["status"]
+            else:
+                relationship_patch["status"] = update_data["status"]
+
+        if partner_patch and not owns_partner:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the partner creator may update global partner fields",
+            )
+
+        if relationship_patch:
+            rel = await service.update_host_partner_relationship(
+                current_host.id,
+                partner_uuid,
+                relationship_patch,
+            )
+            if not rel:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Partner relationship not found",
+                )
+
+        partner = None
+        if partner_patch:
+            partner = await service.update_partner(
+                partner_id=partner_uuid,
+                update_data=partner_patch,
+            )
+            if not partner:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Partner not found",
+                )
+        elif not relationship_patch:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No valid fields to update",
+            )
+
+        return PartnerUpdateResponse(success=True, partner_id=partner_id)
         
     except HTTPException:
         raise

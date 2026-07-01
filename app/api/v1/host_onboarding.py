@@ -6,26 +6,30 @@ designed to work with beautiful Aceternity UI components.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 import uuid
 import logging
 from datetime import datetime, timezone
-from jose import JWTError, jwt
 
 from app.core.database import get_db
-from app.core.config import settings
-from app.models import Host, HostCreate, HostResponse
+from app.core.auth import get_current_host, require_maintenance_job_secret_only
+from app.models.host import Host
 from app.services.host_onboarding_service import HostOnboardingService
-from app.services.host_service import HostService
 from app.services.onboarding_analytics_service import OnboardingAnalyticsService
-from app.api.v1.hosts import get_current_host
+from app.services.rls_service import RLSService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-security = HTTPBearer(auto_error=False)
+
+
+def _require_self_host(host_id: str, current_host: Host) -> None:
+    if str(current_host.id) != str(host_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized for this host",
+        )
 
 
 # Import models from separate module
@@ -45,18 +49,28 @@ from app.api.v1.host_onboarding_models import (
     EnhancedAttractionSuggestionsRequest,
     AttractionSuggestionsResponse,
     GooglePlacesResponse,
+    NearbyGooglePlacesResponse,
     OnboardingBasicInfo,
     ProfileSuggestionsResponse,
     WelcomeMessageResponse,
     ProfileValidationResponse,
     OnboardingStepResponse,
     EditSuggestionRequest,
+    EditSuggestionResponse,
     CoWriteRequest,
+    CoWriteResponse,
+    AnalyzeLocationResponse,
+    OnboardingProgressResponse,
+    OnboardingTrackStepResponse,
+    OnboardingSuccessMetricsResponse,
+    OnboardingAdminAnalyticsResponse,
     AttractionSuggestionsRequest,
     AIEnhancementResponse,
     AccommodationAgentMessageRequest,
     AccommodationAgentMessageResponse,
+    CompleteOnboardingResponse,
 )
+from app.models.guest_group import GuestHostOfferingsApiResponse, GuestConciergeMessageResponse
 
 # Import helper functions
 from app.api.v1.host_onboarding_helpers import (
@@ -81,35 +95,13 @@ from app.api.v1.host_onboarding_google import (
 )
 
 
-# Helper function to get current host (if authenticated)
-async def get_current_host_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: AsyncSession = Depends(get_db)
-) -> Optional[Host]:
-    """Get current host if authenticated, otherwise return None."""
-    if not credentials:
-        return None
-
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        host_id: str = payload.get("sub")
-        if not host_id:
-            return None
-
-        host_service = HostService(db)
-        return await host_service.get_by_id(uuid.UUID(host_id))
-    except:
-        return None
-
-
 # Onboarding API Endpoints
 
 @router.post("/generate-profile-suggestions", response_model=ProfileSuggestionsResponse)
 async def generate_profile_suggestions(
     basic_info: OnboardingBasicInfo,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Generate AI-powered profile suggestions for hosts.
@@ -183,7 +175,8 @@ async def generate_profile_suggestions(
 @router.post("/generate-attraction-suggestions", response_model=AttractionSuggestionsResponse)
 async def generate_attraction_suggestions(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
@@ -290,7 +283,8 @@ async def generate_attraction_suggestions(
 @router.post("/generate-welcome-messages", response_model=WelcomeMessageResponse)
 async def generate_welcome_messages(
     basic_info: OnboardingBasicInfo,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate AI-powered welcome message suggestions.
@@ -366,7 +360,8 @@ async def generate_welcome_messages(
 @router.post("/validate-profile", response_model=ProfileValidationResponse)
 async def validate_and_enhance_profile(
     profile_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
@@ -444,7 +439,7 @@ async def validate_and_enhance_profile(
 async def get_onboarding_step(
     step: int,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
@@ -689,11 +684,11 @@ async def get_onboarding_step(
         )
 
 
-@router.post("/edit-suggestion")
+@router.post("/edit-suggestion", response_model=EditSuggestionResponse)
 async def edit_profile_suggestion(
     edit_request: EditSuggestionRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Edit or co-write a profile suggestion with AI assistance.
@@ -774,11 +769,11 @@ Return only the improved version, no additional text.
         )
 
 
-@router.post("/co-write")
+@router.post("/co-write", response_model=CoWriteResponse)
 async def co_write_content(
     cowrite_request: CoWriteRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Co-write content with AI assistance.
@@ -853,10 +848,11 @@ Return only the improved content, no additional text."""
         )
 
 
-@router.post("/analyze-location", response_model=Dict[str, Any])
+@router.post("/analyze-location", response_model=AnalyzeLocationResponse)
 async def analyze_location_potential(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Analyze location potential using Croatian tourism hosting best practices.
@@ -914,35 +910,13 @@ async def analyze_location_potential(
 # Google Places functions are imported from host_onboarding_google module
 
 
-# Helper function to get current host (if authenticated)
-async def get_current_host_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: AsyncSession = Depends(get_db)
-) -> Optional[Host]:
-    """Get current host if authenticated, otherwise return None."""
-    if not credentials:
-        return None
-
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        host_id: str = payload.get("sub")
-        if not host_id:
-            return None
-
-        host_service = HostService(db)
-        return await host_service.get_by_id(uuid.UUID(host_id))
-    except:
-        return None
-
-
 # Onboarding API Endpoints
 
 @router.post("/generate-profile-suggestions", response_model=ProfileSuggestionsResponse)
 async def generate_profile_suggestions(
     basic_info: OnboardingBasicInfo,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Generate AI-powered profile suggestions for hosts.
@@ -1016,7 +990,8 @@ async def generate_profile_suggestions(
 @router.post("/generate-attraction-suggestions", response_model=AttractionSuggestionsResponse)
 async def generate_attraction_suggestions(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
@@ -1123,7 +1098,8 @@ async def generate_attraction_suggestions(
 @router.post("/generate-welcome-messages", response_model=WelcomeMessageResponse)
 async def generate_welcome_messages(
     basic_info: OnboardingBasicInfo,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate AI-powered welcome message suggestions.
@@ -1199,7 +1175,8 @@ async def generate_welcome_messages(
 @router.post("/validate-profile", response_model=ProfileValidationResponse)
 async def validate_and_enhance_profile(
     profile_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
@@ -1277,7 +1254,7 @@ async def validate_and_enhance_profile(
 async def get_onboarding_step(
     step: int,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
@@ -1522,11 +1499,11 @@ async def get_onboarding_step(
         )
 
 
-@router.post("/edit-suggestion")
+@router.post("/edit-suggestion", response_model=EditSuggestionResponse)
 async def edit_profile_suggestion(
     edit_request: EditSuggestionRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Edit or co-write a profile suggestion with AI assistance.
@@ -1607,11 +1584,11 @@ Return only the improved version, no additional text.
         )
 
 
-@router.post("/co-write")
+@router.post("/co-write", response_model=CoWriteResponse)
 async def co_write_content(
     cowrite_request: CoWriteRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Co-write content with AI assistance.
@@ -1686,10 +1663,11 @@ Return only the improved content, no additional text."""
         )
 
 
-@router.post("/analyze-location", response_model=Dict[str, Any])
+@router.post("/analyze-location", response_model=AnalyzeLocationResponse)
 async def analyze_location_potential(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Analyze location potential using Croatian tourism hosting best practices.
@@ -1745,35 +1723,13 @@ async def analyze_location_potential(
 # Duplicate model definitions removed - all models are imported from host_onboarding_models module
 
 
-# Helper function to get current host (if authenticated)
-async def get_current_host_optional(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: AsyncSession = Depends(get_db)
-) -> Optional[Host]:
-    """Get current host if authenticated, otherwise return None."""
-    if not credentials:
-        return None
-
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-        host_id: str = payload.get("sub")
-        if not host_id:
-            return None
-
-        host_service = HostService(db)
-        return await host_service.get_by_id(uuid.UUID(host_id))
-    except:
-        return None
-
-
 # Onboarding API Endpoints
 
 @router.post("/generate-profile-suggestions", response_model=ProfileSuggestionsResponse)
 async def generate_profile_suggestions(
     basic_info: OnboardingBasicInfo,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Generate AI-powered profile suggestions for hosts.
@@ -1890,7 +1846,8 @@ async def generate_profile_suggestions(
 @router.post("/generate-attraction-suggestions", response_model=AttractionSuggestionsResponse)
 async def generate_attraction_suggestions(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate REAL Croatian tourism attraction suggestions for hosts.
@@ -2021,7 +1978,8 @@ async def generate_attraction_suggestions(
 async def generate_welcome_messages(
     personality_info: Dict[str, Any],
     guest_types: List[str],
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Generate AI-powered welcome message suggestions for different guest types.
@@ -2104,7 +2062,8 @@ async def generate_welcome_messages(
 @router.post("/validate-profile", response_model=ProfileValidationResponse)
 async def validate_and_enhance_profile(
     profile_data: Dict[str, Any],
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Validate host profile data and suggest AI-powered enhancements.
@@ -2182,7 +2141,7 @@ async def validate_and_enhance_profile(
 async def get_onboarding_step(
     step: int,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Get specific step in the multi-step onboarding flow with Aceternity UI components.
@@ -2434,11 +2393,11 @@ async def get_onboarding_step(
         )
 
 
-@router.post("/edit-suggestion")
+@router.post("/edit-suggestion", response_model=EditSuggestionResponse)
 async def edit_profile_suggestion(
     edit_request: EditSuggestionRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Edit or improve a profile suggestion with optional AI collaboration.
@@ -2516,11 +2475,11 @@ Return only the improved version, no additional text.
         )
 
 
-@router.post("/co-write")
+@router.post("/co-write", response_model=CoWriteResponse)
 async def co_write_content(
     cowrite_request: CoWriteRequest,
     db: AsyncSession = Depends(get_db),
-    current_host: Optional[Host] = Depends(get_current_host_optional)
+    current_host: Host = Depends(get_current_host)
 ):
     """
     Co-write content with AI assistance.
@@ -2596,26 +2555,14 @@ Return only the improved content, no additional text."""
         )
 
 
-@router.get("/google-places/{place_name}", response_model=GooglePlacesResponse)
-async def get_google_places_info_endpoint(
-    place_name: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get location details from Google Places API.
-
-    Provides rich location information to enhance host profiles and local recommendations.
-    """
-    return await get_google_places_info(place_name)
-
-
-@router.get("/google-places/nearby")
+@router.get("/google-places/nearby", response_model=NearbyGooglePlacesResponse)
 async def get_nearby_google_places_endpoint(
     lat: float,
     lng: float,
     radius: int = 5000,
     place_type: str = "tourist_attraction",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Get nearby attractions from Google Places API.
@@ -2625,10 +2572,25 @@ async def get_nearby_google_places_endpoint(
     return await get_nearby_google_places(lat, lng, radius, place_type)
 
 
-@router.post("/analyze-location", response_model=Dict[str, Any])
+@router.get("/google-places/{place_name}", response_model=GooglePlacesResponse)
+async def get_google_places_info_endpoint(
+    place_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
+):
+    """
+    Get location details from Google Places API.
+
+    Provides rich location information to enhance host profiles and local recommendations.
+    """
+    return await get_google_places_info(place_name)
+
+
+@router.post("/analyze-location", response_model=AnalyzeLocationResponse)
 async def analyze_location_potential(
     request: EnhancedAttractionSuggestionsRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Host = Depends(get_current_host),
 ):
     """
     Analyze location potential using Croatian tourism hosting best practices.
@@ -2684,7 +2646,7 @@ async def analyze_location_potential(
 # Helper functions removed - now imported from host_onboarding_helpers module
 
 
-@router.post("/complete-onboarding", response_model=Dict[str, Any])
+@router.post("/complete-onboarding", response_model=CompleteOnboardingResponse)
 async def complete_host_onboarding(
     onboarding_data: EnhancedAttractionSuggestionsRequest,
     current_host: Host = Depends(get_current_host),
@@ -2701,14 +2663,14 @@ async def complete_host_onboarding(
 
         from app.services.geocoding_service import GeocodingService
 
+        county = (
+            onboarding_data.region.value
+            if onboarding_data.region
+            else None
+        )
         lat = onboarding_data.coordinates.lat if onboarding_data.coordinates else None
         lng = onboarding_data.coordinates.lng if onboarding_data.coordinates else None
-        if lat is None or lng is None:
-            county = (
-                onboarding_data.region.value
-                if onboarding_data.region
-                else None
-            )
+        if (onboarding_data.address or "").strip() or (onboarding_data.city or "").strip():
             geo = GeocodingService.geocode(
                 address=onboarding_data.address,
                 city=onboarding_data.city,
@@ -2717,9 +2679,15 @@ async def complete_host_onboarding(
             if geo:
                 lat, lng = geo.latitude, geo.longitude
                 logger.info(
-                    "Onboarding geocode fallback: %s (%s)",
+                    "Onboarding geocode: %s (%s)",
                     geo.matched_query,
                     geo.precision,
+                )
+            elif lat is None or lng is None:
+                logger.warning(
+                    "Onboarding completed without GPS for host %s (city=%s)",
+                    current_host.email,
+                    onboarding_data.city,
                 )
 
         # Generate unique access code for guests
@@ -2809,20 +2777,20 @@ async def complete_host_onboarding(
 
         logger.info(f"Onboarding completed successfully for host: {current_host.email}")
 
-        return {
-            "success": True,
-            "message": "Onboarding completed successfully",
-            "host_id": str(current_host.id),
-            "guest_access_code": access_code,
-            "attractions_generated": 0,  # Simplified for now
-            "profile_updated": True,
-            "guest_access_url": f"/guest/{access_code}",
-            "next_steps": [
+        return CompleteOnboardingResponse(
+            success=True,
+            message="Onboarding completed successfully",
+            host_id=str(current_host.id),
+            guest_access_code=access_code,
+            attractions_generated=0,
+            profile_updated=True,
+            guest_access_url=f"/guest/{access_code}",
+            next_steps=[
                 "Share your access code with guests",
                 "Test guest access with the provided code",
-                "Your data is now stored in the database"
-            ]
-        }
+                "Your data is now stored in the database",
+            ],
+        )
 
     except Exception as e:
         logger.error(f"Onboarding completion error: {e}")
@@ -2833,7 +2801,7 @@ async def complete_host_onboarding(
         )
 
 
-@router.get("/guest-access/{access_code}", response_model=Dict[str, Any])
+@router.get("/guest-access/{access_code}", response_model=GuestHostOfferingsApiResponse)
 async def get_host_offerings_for_guest(
     access_code: str,
     db: AsyncSession = Depends(get_db)
@@ -2844,35 +2812,38 @@ async def get_host_offerings_for_guest(
     This is the main endpoint guests use to see what their host recommends.
     """
     try:
-        # Find host by access code
         from sqlalchemy import select
 
-        host_query = select(Host).where(Host.guest_access_code == access_code.upper())
-        result = await db.execute(host_query)
-        host = result.scalar_one_or_none()
+        code_upper = access_code.upper()
+        rls = RLSService(db)
+        async with rls.guest_bypass(code_upper):
+            host_query = select(Host).where(Host.guest_access_code == code_upper)
+            result = await db.execute(host_query)
+            host = result.scalar_one_or_none()
 
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Invalid access code"
-            )
+            if not host:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Invalid access code"
+                )
 
-        # Get host profile
-        from app.models.host import HostProfile
-        profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
-        profile_result = await db.execute(profile_query)
-        profile = profile_result.scalar_one_or_none()
+            await rls.set_host_context(host.id)
 
-        from app.services.host_offerings_for_guest import build_host_offerings_payload
+            from app.models.host import HostProfile
+            profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
+            profile_result = await db.execute(profile_query)
+            profile = profile_result.scalar_one_or_none()
 
-        host_offerings = build_host_offerings_payload(host, profile, access_code)
+            from app.services.host_offerings_for_guest import build_host_offerings_payload
 
-        return {
-            "success": True,
-            "host_offerings": host_offerings,
-            "access_code": access_code,
-            "valid_access": True
-        }
+            host_offerings = build_host_offerings_payload(host, profile, access_code)
+
+        return GuestHostOfferingsApiResponse(
+            success=True,
+            host_offerings=host_offerings,
+            access_code=access_code,
+            valid_access=True,
+        )
 
     except HTTPException:
         raise
@@ -2927,6 +2898,12 @@ async def enhance_accommodation_description(
                 detail="Host profile not found"
             )
 
+        def profile_value(key: str, default: Any = None) -> Any:
+            """Host profile helpers may return ORM objects or serialized dicts."""
+            if isinstance(host_profile, dict):
+                return host_profile.get(key, default)
+            return getattr(host_profile, key, default)
+
         # Extract key data for AI enhancement
         property_name = current_data.get("property_name", "")
         property_type = current_data.get("property_type", "")
@@ -2938,6 +2915,10 @@ async def enhance_accommodation_description(
         current_specialties = current_data.get("expertise_areas", [])
         city = current_data.get("city", "")
         county = current_data.get("county", "")
+
+        host_profile_city = profile_value("city", city)
+        host_knowledge_level = profile_value("local_knowledge_level", "intermediate")
+        host_interests = profile_value("host_interests", []) or []
 
         # Create context-aware enhancement prompt
         enhancement_prompt = f"""
@@ -2956,9 +2937,9 @@ async def enhance_accommodation_description(
         - Location: {city}, {county}, Croatia
 
         HOST CONTEXT:
-        - Host Location: {host_profile.city or city}, Croatia
-        - Local Knowledge: {host_profile.local_knowledge_level or 'intermediate'}
-        - Host Interests: {', '.join(host_profile.host_interests or [])}
+        - Host Location: {host_profile_city or city}, Croatia
+        - Local Knowledge: {host_knowledge_level or 'intermediate'}
+        - Host Interests: {', '.join(host_interests)}
 
         ENHANCEMENT REQUIREMENTS:
         1. BUILD UPON existing data - don't replace with generic content
@@ -2987,44 +2968,55 @@ async def enhance_accommodation_description(
             enhanced_specialties: List[str] = Field(..., description="List of enhanced local specialties")
             welcome_message: str = Field(..., description="Enhanced welcome message in Croatian hospitality style")
 
-        # Use AI service to generate structured enhancement
-        ai_response = await onboarding_service.ai_service.generate_structured_response(
-            host_id=str(current_host.id),
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI travel expert specializing in Croatian tourism and accommodation enhancement. You must return a structured response with the exact fields specified."
+        # Use AI service to generate structured enhancement. If provider settings
+        # are unavailable in dev, continue with the deterministic fallback below.
+        try:
+            ai_response = await onboarding_service.ai_service.generate_structured_response(
+                host_id=str(current_host.id),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an AI travel expert specializing in Croatian tourism and accommodation enhancement. You must return a structured response with the exact fields specified."
+                    },
+                    {
+                        "role": "user",
+                        "content": enhancement_prompt
+                    }
+                ],
+                context={
+                    "location": f"{city}, {county}, Croatia",
+                    "property_type": property_type,
+                    "host_location": f"{host_profile_city or city}, Croatia"
                 },
-                {
-                    "role": "user",
-                    "content": enhancement_prompt
-                }
-            ],
-            context={
-                "location": f"{city}, {county}, Croatia",
-                "property_type": property_type,
-                "host_location": f"{host_profile.city or city}, Croatia"
-            },
-            response_schema=AccommodationEnhancementSchema
-        )
+                response_schema=AccommodationEnhancementSchema
+            )
+        except Exception as ai_error:
+            logger.warning(f"AI accommodation enhancement provider failed, using fallback: {ai_error}")
+            ai_response = {"success": False, "error": str(ai_error), "provider": "fallback"}
 
-        if not ai_response or not ai_response.get("success", False):
-            # Fallback to simple enhancement
-            enhanced_description = current_description or f"Experience authentic Croatian hospitality in this charming {property_type} in {city}, {county}. Perfect for up to {max_guests} guests seeking an authentic local experience with modern comforts."
+        # Parse structured AI response or fall back to deterministic enhancement.
+        enhanced_data: Dict[str, Any] = {}
+        try:
+            if ai_response.get("success", False) and ai_response.get("structured_data"):
+                enhanced_data = ai_response["structured_data"]
+                logger.info(f"✅ AI structured response successful: {list(enhanced_data.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to parse AI response: {e}")
 
-            # Suggest additional amenities based on property type
-            suggested_amenities = []
+        def default_amenities_for_property() -> List[str]:
             if property_type == "apartment":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "balcony", "parking"]
-            elif property_type == "villa":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "bbq", "outdoor_seating"]
-            elif property_type == "house":
-                suggested_amenities = ["air_conditioning", "wifi", "kitchen", "garden", "parking", "fireplace"]
+                return ["air_conditioning", "wifi", "kitchen", "balcony", "parking"]
+            if property_type == "villa":
+                return ["air_conditioning", "wifi", "kitchen", "garden", "parking", "bbq", "outdoor_seating"]
+            if property_type == "house":
+                return ["air_conditioning", "wifi", "kitchen", "garden", "parking", "fireplace"]
+            return ["wifi", "air_conditioning", "parking"]
 
-            # Filter out amenities that already exist
-            new_amenities = [amenity for amenity in suggested_amenities if amenity not in current_amenities]
+        if not enhanced_data:
+            logger.warning(f"AI service returned: {ai_response}")
+            enhanced_description = current_description or f"Experience authentic Croatian hospitality in this charming {property_type or 'accommodation'} in {city}, {county}. Perfect for up to {max_guests} guests seeking an authentic local experience with modern comforts."
+            new_amenities = [amenity for amenity in default_amenities_for_property() if amenity not in current_amenities]
 
-            # Create fallback structured response
             enhanced_data = {
                 "enhanced_description": enhanced_description,
                 "suggested_amenities": new_amenities,
@@ -3033,30 +3025,54 @@ async def enhance_accommodation_description(
                 "welcome_message": f"Dobro došli! Welcome to your Croatian home away from home in {city}. We're excited to share the beauty and culture of {county} with you."
             }
 
-        # Parse structured AI response
-        try:
-            if ai_response.get("success", False) and ai_response.get("structured_data"):
-                # Use the structured data directly
-                enhanced_data = ai_response["structured_data"]
-                logger.info(f"✅ AI structured response successful: {list(enhanced_data.keys())}")
-            else:
-                # AI service failed or returned unstructured data, use fallback
-                logger.warning(f"AI service returned: {ai_response}")
-                enhanced_data = {}
-        except Exception as e:
-            logger.warning(f"Failed to parse AI response: {e}")
-            enhanced_data = {}
+        enhanced_description = (
+            enhanced_data.get("enhanced_description")
+            or enhanced_data.get("business_description")
+            or enhanced_data.get("Description")
+            or enhanced_data.get("Enhanced Description")
+            or current_description
+        )
+        suggested_amenities = (
+            enhanced_data.get("suggested_amenities")
+            or enhanced_data.get("amenities")
+            or enhanced_data.get("Amenities")
+            or []
+        )
+        suggested_services = (
+            enhanced_data.get("suggested_services")
+            or enhanced_data.get("services")
+            or enhanced_data.get("Services")
+            or []
+        )
+        enhanced_specialties = (
+            enhanced_data.get("enhanced_specialties")
+            or enhanced_data.get("local_specialties")
+            or enhanced_data.get("specialties")
+            or enhanced_data.get("Specialties")
+            or []
+        )
+        welcome_message = enhanced_data.get("welcome_message") or enhanced_data.get("Welcome Message") or ""
+
+        if not suggested_amenities:
+            suggested_amenities = [
+                amenity for amenity in default_amenities_for_property()
+                if amenity not in current_amenities
+            ]
+        if not suggested_services:
+            suggested_services = ["guided_tours", "airport_transfer", "cleaning_service"]
+        if not enhanced_specialties:
+            enhanced_specialties = ["Local Culture", "Gastronomy", "Nature Exploration", "Family Activities"]
 
         # Prepare structured response with enhanced content
         response = AIEnhancementResponse(
             success=True,
             enhancement_type=enhancement_type,
             enhanced_content={
-                "description": enhanced_data.get("enhanced_description", current_description),
-                "amenities": enhanced_data.get("suggested_amenities", []),
-                "services": enhanced_data.get("suggested_services", []),
-                "specialties": enhanced_data.get("enhanced_specialties", []),
-                "welcome_message": enhanced_data.get("welcome_message", "")
+                "description": enhanced_description,
+                "amenities": suggested_amenities,
+                "services": suggested_services,
+                "specialties": enhanced_specialties,
+                "welcome_message": welcome_message
             },
             original_data={
                 "description": current_description,
@@ -3105,7 +3121,7 @@ async def accommodation_agent_message(
             message=request.message,
             focused_item_id=request.focused_item_id,
             checklist_state=[item.model_dump() for item in request.checklist_state],
-            accommodation_snapshot=request.accommodation_snapshot,
+            accommodation_snapshot=request.accommodation_snapshot.to_agent_dict(),
             conversation_history=[msg.model_dump() for msg in request.conversation_history],
         )
         return AccommodationAgentMessageResponse(**result)
@@ -3117,7 +3133,7 @@ async def accommodation_agent_message(
         )
 
 
-@router.post("/guest-message/{access_code}", response_model=Dict[str, Any])
+@router.post("/guest-message/{access_code}", response_model=GuestConciergeMessageResponse)
 async def send_message_to_host(
     access_code: str,
     message_data: Dict[str, Any],
@@ -3129,76 +3145,106 @@ async def send_message_to_host(
     Enables guest-host communication and AI-powered assistance.
     """
     try:
-        # Find host by access code
         from sqlalchemy import select
 
-        host_query = select(Host).where(Host.guest_access_code == access_code.upper())
-        result = await db.execute(host_query)
-        host = result.scalar_one_or_none()
+        code_upper = access_code.upper()
+        rls = RLSService(db)
+        async with rls.guest_bypass(code_upper):
+            host_query = select(Host).where(Host.guest_access_code == code_upper)
+            result = await db.execute(host_query)
+            host = result.scalar_one_or_none()
 
-        if not host:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Invalid access code"
-            )
+            if not host:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Invalid access code"
+                )
 
-        message_text = message_data.get("message", "")
-        message_type = message_data.get("type", "general")  # general, question, request
-        guest_name = message_data.get("guest_name", "Guest")
+            await rls.set_host_context(host.id)
 
-        # For now, we'll use AI to provide immediate responses
-        # Later, this can be enhanced with real host messaging
+            message_text = message_data.get("message", "")
+            message_type = message_data.get("type", "general")  # general, question, request
+            guest_name = message_data.get("guest_name", "Guest")
 
-        if message_type == "question" or "recommend" in message_text.lower():
-            # Use AI to provide recommendations
-            onboarding_service = HostOnboardingService(db)
+            # For now, we'll use AI to provide immediate responses
+            # Later, this can be enhanced with real host messaging
 
-            # Get host profile for context
-            from app.models.host import HostProfile
-            profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
-            profile_result = await db.execute(profile_query)
-            profile = profile_result.scalar_one_or_none()
+            if message_type == "question" or "recommend" in message_text.lower():
+                # Use AI to provide recommendations
+                onboarding_service = HostOnboardingService(db)
 
-            # Generate AI response based on host's knowledge
-            ai_context = {
-                "host_name": f"{host.first_name} {host.last_name}",
-                "location": host.city,
-                "specialties": host.local_specialties,
-                "attractions": host.local_tips or [],
-                "guest_message": message_text,
-                "guest_name": guest_name
-            }
+                # Get host profile for context
+                from app.models.host import HostProfile
+                profile_query = select(HostProfile).where(HostProfile.host_id == host.id)
+                profile_result = await db.execute(profile_query)
+                profile = profile_result.scalar_one_or_none()
 
-            # Simple AI response (can be enhanced with actual AI service)
-            ai_response = f"Hi {guest_name}! As {host.first_name}'s AI assistant, I'd be happy to help. Based on your question about {host.city}, I recommend checking out our local specialties: {', '.join(host.local_specialties[:3])}. Would you like specific recommendations for activities, restaurants, or hidden gems?"
+                from app.services.host_offerings_for_guest import _guest_safe_local_specialties
 
-            response = {
-                "success": True,
-                "response_type": "ai_assistant",
-                "message": ai_response,
-                "suggestions": [
-                    "Tell me about local restaurants",
-                    "What are the best beaches nearby?",
-                    "Recommend activities for families",
-                    "Show me hidden local gems"
-                ],
-                "can_contact_host": True,
-                "response_time": "Immediate (AI) • Host usually responds within 2 hours"
-            }
-        else:
-            # General message - queue for host
-            response = {
-                "success": True,
-                "response_type": "queued_for_host",
-                "message": f"Thanks {guest_name}! Your message has been sent to {host.first_name}. They typically respond within 2 hours. In the meantime, feel free to ask me any questions about {host.city}!",
-                "estimated_response_time": "Within 2 hours",
-                "ai_available": True
-            }
+                def _specialty_labels(raw: list) -> list[str]:
+                    labels: list[str] = []
+                    for item in _guest_safe_local_specialties(raw or [])[:3]:
+                        if isinstance(item, str):
+                            labels.append(item)
+                        elif isinstance(item, dict):
+                            labels.append(
+                                item.get("name")
+                                or item.get("title")
+                                or item.get("label")
+                                or "Specialty"
+                            )
+                    return labels
 
-        # Log the interaction (in a real system, save to messages table)
-        logger.info(f"Guest message via {access_code}: {message_text[:50]}...")
+                specialty_text = ", ".join(_specialty_labels(host.local_specialties))
 
-        return response
+                # Generate AI response based on host's knowledge
+                ai_context = {
+                    "host_name": f"{host.first_name} {host.last_name}",
+                    "location": host.city,
+                    "specialties": _guest_safe_local_specialties(host.local_specialties or []),
+                    "attractions": host.local_tips or [],
+                    "guest_message": message_text,
+                    "guest_name": guest_name
+                }
+
+                # Simple AI response (can be enhanced with actual AI service)
+                ai_response = (
+                    f"Hi {guest_name}! As {host.first_name}'s AI assistant, I'd be happy to help. "
+                    f"Based on your question about {host.city}, I recommend checking out our local "
+                    f"specialties: {specialty_text}. Would you like specific recommendations for "
+                    f"activities, restaurants, or hidden gems?"
+                )
+
+                response = {
+                    "success": True,
+                    "message": ai_response,
+                    "suggestions": [
+                        "Tell me about local restaurants",
+                        "What are the best beaches nearby?",
+                        "Recommend activities for families",
+                        "Show me hidden local gems"
+                    ],
+                    "can_contact_host": True,
+                }
+            else:
+                # General message - queue for host
+                response = {
+                    "success": True,
+                    "message": f"Thanks {guest_name}! Your message has been sent to {host.first_name}. They typically respond within 2 hours. In the meantime, feel free to ask me any questions about {host.city}!",
+                }
+
+            # Log the interaction (in a real system, save to messages table)
+            logger.info(f"Guest message via {access_code}: {message_text[:50]}...")
+
+            from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+            if response.get("message"):
+                response["message"] = (
+                    scrub_contact_from_text(response["message"], scrub_urls=True)
+                    or response["message"]
+                )
+
+            return GuestConciergeMessageResponse(**response)
 
     except HTTPException:
         raise
@@ -3210,25 +3256,28 @@ async def send_message_to_host(
         )
 
 
-@router.get("/progress/{host_id}")
+@router.get("/progress/{host_id}", response_model=OnboardingProgressResponse)
 async def get_onboarding_progress(
     host_id: str,
-    db: AsyncSession = Depends(get_db)
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get onboarding progress for a host.
 
     Args:
         host_id: Host ID
+        current_host: Current authenticated host
         db: Database session
 
     Returns:
         Onboarding progress data
     """
+    _require_self_host(host_id, current_host)
     try:
         analytics_service = OnboardingAnalyticsService(db)
         progress = await analytics_service.get_onboarding_progress(uuid.UUID(host_id))
-        return progress
+        return OnboardingProgressResponse(**progress)
 
     except Exception as e:
         logger.error(f"Error getting onboarding progress: {e}")
@@ -3238,7 +3287,7 @@ async def get_onboarding_progress(
         )
 
 
-@router.post("/track-step")
+@router.post("/track-step", response_model=OnboardingTrackStepResponse)
 async def track_onboarding_step(
     step_data: Dict[str, Any],
     current_host: Host = Depends(get_current_host),
@@ -3265,7 +3314,10 @@ async def track_onboarding_step(
         )
 
         if success:
-            return {"success": True, "message": "Step tracked successfully"}
+            return OnboardingTrackStepResponse(
+                success=True,
+                message="Step tracked successfully",
+            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -3282,10 +3334,11 @@ async def track_onboarding_step(
         )
 
 
-@router.get("/analytics")
+@router.get("/analytics", response_model=OnboardingAdminAnalyticsResponse)
 async def get_onboarding_analytics(
     period_days: int = Query(30, ge=1, le=365),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_maintenance_job_secret_only),
 ):
     """
     Get overall onboarding analytics.
@@ -3300,7 +3353,7 @@ async def get_onboarding_analytics(
     try:
         analytics_service = OnboardingAnalyticsService(db)
         analytics = await analytics_service.get_onboarding_analytics(period_days)
-        return analytics
+        return OnboardingAdminAnalyticsResponse(**analytics)
 
     except Exception as e:
         logger.error(f"Error getting onboarding analytics: {e}")
@@ -3310,25 +3363,28 @@ async def get_onboarding_analytics(
         )
 
 
-@router.get("/success-metrics/{host_id}")
+@router.get("/success-metrics/{host_id}", response_model=OnboardingSuccessMetricsResponse)
 async def get_success_metrics(
     host_id: str,
-    db: AsyncSession = Depends(get_db)
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get success metrics for a host's onboarding.
 
     Args:
         host_id: Host ID
+        current_host: Current authenticated host
         db: Database session
 
     Returns:
         Success metrics
     """
+    _require_self_host(host_id, current_host)
     try:
         analytics_service = OnboardingAnalyticsService(db)
         metrics = await analytics_service.get_success_metrics(uuid.UUID(host_id))
-        return metrics
+        return OnboardingSuccessMetricsResponse(**metrics)
 
     except Exception as e:
         logger.error(f"Error getting success metrics: {e}")

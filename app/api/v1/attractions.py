@@ -9,7 +9,7 @@ import logging
 import os
 import requests
 import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 import uuid
 from datetime import timedelta
 
@@ -18,17 +18,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.auth import get_current_host, optional_host_session, require_maintenance_job_secret_only
 from app.services.attraction_service import AttractionService
 from app.services.host_service import HostService
 from app.services.guest_group_service import GuestGroupService
 from app.services.host_onboarding_service import HostOnboardingService
+from app.services.google_places_enrichment import GooglePlacesEnrichmentService
+from app.services.host_offerings_for_guest import (
+    guest_safe_attraction_public,
+    guest_safe_attraction_review_public,
+    guest_safe_host_contribution_public,
+    guest_safe_seasonal_event_public,
+    scrub_contact_from_text,
+)
 from app.models import (
     Host,
     AttractionCreate,
     AttractionUpdate,
     AttractionResponse,
+    AttractionAnalyticsResponse,
+    AttractionPublicResponse,
     AttractionReviewCreate,
     AttractionReviewResponse,
+    AttractionReviewPublicResponse,
+    AttractionReviewGuestSubmitResponse,
     AttractionReviewUpdate,
     ReviewModerationRequest,
     ReviewModerationResponse,
@@ -38,59 +51,195 @@ from app.models import (
     ReviewSearchResponse,
     GuestReviewSubmission,
     ReviewHelpfulnessVote,
+    ReviewHelpfulnessVoteResponse,
     SeasonalEventCreate,
     SeasonalEventResponse,
+    SeasonalEventPublicResponse,
     HostContributionCreate,
     HostContributionResponse,
+    HostContributionPublicResponse,
     AttractionSearchRequest,
     AttractionSearchResponse,
-    HostContributionStats
+    HostContributionStats,
+    AttractionEnrichRequest,
+    AttractionEnrichResponse,
+    AttractionEnrichResultItem,
+    AttractionEnrichmentStatusResponse,
+    ReviewStatus,
+)
+from app.models.attraction_api import (
+    AttractionAiEnhanceResponse,
+    AttractionGenerateContentResponse,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_INSIDER_ATTRACTION_KEYS = (
+    "host_personal_tip",
+    "host_favorite_time",
+    "host_insider_info",
+    "host_story",
+    "host_recommended_duration",
+    "created_by_host_id",
+    "contact_info",
+)
 
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-) -> Host:
+_SEASONAL_EVENT_PUBLIC_EXCLUDE = frozenset(
+    {
+        "created_by_host_id",
+        "host_recommendation",
+        "best_time_to_visit",
+        "host_personal_experience",
+        "contact_info",
+    }
+)
+
+
+def _attraction_for_viewer(
+    attraction: Any,
+    viewer_host_id: Optional[uuid.UUID],
+) -> Union[AttractionResponse, AttractionPublicResponse]:
+    """Owner sees full attraction; public/other hosts see stripped fields."""
+    if viewer_host_id and getattr(attraction, "created_by_host_id", None) == viewer_host_id:
+        return _attraction_response_with_maps(attraction)
+    public = guest_safe_attraction_public(attraction)
+    maps_fields = GooglePlacesEnrichmentService.computed_maps_fields(attraction)
+    data = public.model_dump()
+    data.update(maps_fields)
+    return AttractionPublicResponse(**data)
+
+
+@router.post("/enrich", response_model=AttractionEnrichResponse)
+async def enrich_attractions_google_places(
+    body: AttractionEnrichRequest,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Get current authenticated host from session token.
-    
-    Args:
-        request: FastAPI request object
-        db: Database session
-        
-    Returns:
-        Host: Current authenticated host
-        
-    Raises:
-        HTTPException: If not authenticated
+    Enrich approved attractions with Google Places data (cached locally).
+
+    Hosts may enrich their own attractions; pass ``attraction_ids`` to limit scope.
     """
-    # Get session token from header
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
+    service = GooglePlacesEnrichmentService()
+    if not service.is_configured:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Maps API is not configured",
         )
-    
-    # Validate session and get host
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    
-    if not host:
+
+    attraction_service = AttractionService(db)
+    ids = body.attraction_ids
+    if ids:
+        for aid in ids:
+            allowed = await attraction_service.can_host_view_analytics(aid, current_host.id)
+            if not allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"No permission to enrich attraction {aid}",
+                )
+
+    summary = await service.batch_enrich_all(
+        db,
+        city=body.city,
+        attraction_ids=ids,
+        host_id=current_host.id if not ids else None,
+        force_refresh=body.force_refresh,
+    )
+    return AttractionEnrichResponse(
+        total=summary["total"],
+        enriched=summary["enriched"],
+        skipped=summary["skipped"],
+        failed=summary["failed"],
+        results=[AttractionEnrichResultItem(**row) for row in summary["results"]],
+    )
+
+
+@router.post("/enrich/all", response_model=AttractionEnrichResponse)
+async def enrich_all_attractions_maintenance(
+    body: AttractionEnrichRequest,
+    _auth: None = Depends(require_maintenance_job_secret_only),
+    db: AsyncSession = Depends(get_db),
+):
+    """Maintenance-only batch enrichment for all approved attractions."""
+    service = GooglePlacesEnrichmentService()
+    if not service.is_configured:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google Maps API is not configured",
         )
-    
-    return host
+    summary = await service.batch_enrich_all(
+        db,
+        city=body.city,
+        attraction_ids=body.attraction_ids,
+        force_refresh=body.force_refresh,
+    )
+    return AttractionEnrichResponse(
+        total=summary["total"],
+        enriched=summary["enriched"],
+        skipped=summary["skipped"],
+        failed=summary["failed"],
+        results=[AttractionEnrichResultItem(**row) for row in summary["results"]],
+    )
+
+
+@router.get(
+    "/{attraction_id}/enrichment-status",
+    response_model=AttractionEnrichmentStatusResponse,
+)
+async def get_attraction_enrichment_status(
+    attraction_id: uuid.UUID,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Show Google Places enrichment status for an attraction."""
+    attraction_service = AttractionService(db)
+    can_view = await attraction_service.can_host_view_analytics(
+        attraction_id=attraction_id,
+        host_id=current_host.id,
+    )
+    if not can_view:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to view this attraction",
+        )
+    attraction = await attraction_service.get_attraction_by_id(attraction_id)
+    if not attraction:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attraction not found")
+    return AttractionEnrichmentStatusResponse(
+        **GooglePlacesEnrichmentService.enrichment_status(attraction)
+    )
+
+
+def _public_attractions(
+    attractions: List[Any],
+) -> List[AttractionPublicResponse]:
+    return [_attraction_for_viewer(a, None) for a in attractions]  # type: ignore[misc]
+
+
+def _contribution_for_viewer(
+    contribution: HostContributionResponse,
+    viewer_host_id: Optional[uuid.UUID],
+) -> Union[HostContributionResponse, HostContributionPublicResponse]:
+    """Contribution owner sees host_id; others get stripped public shape."""
+    if viewer_host_id and contribution.host_id == viewer_host_id:
+        return contribution
+    return guest_safe_host_contribution_public(
+        contribution.model_dump(exclude={"host_id"})
+    )
+
+
+def _attraction_response_with_maps(attraction: Any) -> AttractionResponse:
+    """Build host attraction response including computed Google Maps URLs."""
+    payload = AttractionResponse.model_validate(attraction)
+    maps_fields = GooglePlacesEnrichmentService.computed_maps_fields(attraction)
+    data = payload.model_dump()
+    data.update(maps_fields)
+    return AttractionResponse(**data)
 
 
 # AI-powered attraction content generation
-@router.post("/generate-content", response_model=Dict[str, Any])
+@router.post("/generate-content", response_model=AttractionGenerateContentResponse)
 async def generate_attraction_content(
     request: Dict[str, Any],
     current_host: Host = Depends(get_current_host),
@@ -156,13 +305,13 @@ async def generate_attraction_content(
         
         logger.info(f"✅ Generated AI content for attraction: {attraction_name}")
         
-        return {
-            "success": True,
-            "content": generated_content,
-            "data_source": result.get("data_source", "ai_generated"),
-            "sources_used": result.get("sources_used", 0),
-            "personalization_level": result.get("personalization_level", "expert")
-        }
+        return AttractionGenerateContentResponse(
+            success=True,
+            content=generated_content,
+            data_source=result.get("data_source", "ai_generated"),
+            sources_used=result.get("sources_used", 0),
+            personalization_level=result.get("personalization_level", "expert"),
+        )
         
     except HTTPException:
         raise
@@ -269,7 +418,7 @@ async def _enhance_attraction_with_ai(
 
 
 # Public attraction endpoints (no authentication required)
-@router.get("/", response_model=List[AttractionResponse])
+@router.get("/", response_model=List[AttractionPublicResponse])
 async def get_attractions(
     db: AsyncSession = Depends(get_db),
     skip: int = 0,
@@ -308,7 +457,7 @@ async def get_attractions(
         )
         
         logger.info(f"Retrieved {len(attractions)} attractions with filters: city={city}, type={attraction_type}")
-        return attractions
+        return _public_attractions(attractions)
         
     except Exception as e:
         logger.error(f"Failed to retrieve attractions: {str(e)}")
@@ -336,7 +485,7 @@ async def search_attractions(
     try:
         attraction_service = AttractionService(db)
         # Unpack search request into individual parameters for the service method
-        city = search_request.city or search_request.query
+        city = search_request.city or search_request.q
         category_tags = [search_request.category] if search_request.category else None
         results_list = await attraction_service.search_attractions(
             city=city,
@@ -350,11 +499,11 @@ async def search_attractions(
 
         logger.info(f"Attraction search returned {len(results_list)} results")
         return AttractionSearchResponse(
-            results=results_list,
+            results=_public_attractions(results_list),
             total_count=len(results_list),
             page=1,
             per_page=search_request.limit,
-            query=search_request.query,
+            query=scrub_contact_from_text(search_request.q) if search_request.q else search_request.q,
         )
         
     except Exception as e:
@@ -438,11 +587,71 @@ async def get_my_contributions(
         )
 
 
-@router.get("/{attraction_id}", response_model=AttractionResponse)
+@router.get("/seasonal-events", response_model=List[SeasonalEventPublicResponse])
+async def list_seasonal_events(
+    city: Optional[str] = Query(None, description="Filter by city"),
+    event_type: Optional[str] = Query(None, description="festival, market, seasonal_activity, …"),
+    active_only: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """List host-curated seasonal events (festivals, markets, etc.)."""
+    try:
+        service = AttractionService(db)
+        events = await service.get_seasonal_events(
+            city=city,
+            event_type=event_type,
+            active_only=active_only,
+        )
+        return [
+            guest_safe_seasonal_event_public(
+                e.model_dump(exclude=_SEASONAL_EVENT_PUBLIC_EXCLUDE)
+            )
+            for e in events
+        ]
+    except Exception as e:
+        logger.error(f"Failed to list seasonal events: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list seasonal events",
+        )
+
+
+@router.post(
+    "/seasonal-events",
+    response_model=SeasonalEventResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_seasonal_event(
+    event_data: SeasonalEventCreate,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a seasonal event entry for guest recommendations."""
+    try:
+        service = AttractionService(db)
+        created = await service.create_seasonal_event(current_host.id, event_data)
+        if not created:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not create seasonal event",
+            )
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create seasonal event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create seasonal event",
+        )
+
+
+@router.get("/{attraction_id}", response_model=Union[AttractionResponse, AttractionPublicResponse])
 async def get_attraction(
     attraction_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    language: Optional[str] = "en"
+    language: Optional[str] = "en",
+    current_host: Optional[Host] = Depends(optional_host_session),
 ):
     """
     Get a specific attraction by ID.
@@ -451,6 +660,7 @@ async def get_attraction(
         attraction_id: Attraction ID
         db: Database session
         language: Language for content (en, hr, de, it)
+        current_host: Optional host session (required to view own drafts)
         
     Returns:
         AttractionResponse: Attraction details
@@ -464,12 +674,19 @@ async def get_attraction(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Attraction not found"
             )
+
+        viewer_host_id = current_host.id if current_host else None
+        if not attraction_service.is_attraction_visible(attraction, viewer_host_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attraction not found"
+            )
         
         # Increment view count
         await attraction_service.increment_view_count(attraction_id)
         
         logger.info(f"Retrieved attraction {attraction_id} in {language}")
-        return attraction
+        return _attraction_for_viewer(attraction, viewer_host_id)
         
     except HTTPException:
         raise
@@ -481,7 +698,7 @@ async def get_attraction(
         )
 
 
-@router.get("/city/{city}", response_model=List[AttractionResponse])
+@router.get("/city/{city}", response_model=List[AttractionPublicResponse])
 async def get_attractions_by_city(
     city: str,
     db: AsyncSession = Depends(get_db),
@@ -512,7 +729,7 @@ async def get_attractions_by_city(
         )
         
         logger.info(f"Retrieved {len(attractions)} attractions for city {city}")
-        return attractions
+        return _public_attractions(attractions)
         
     except Exception as e:
         logger.error(f"Failed to retrieve attractions for city {city}: {str(e)}")
@@ -748,27 +965,36 @@ async def add_host_contribution(
         )
 
 
-@router.get("/{attraction_id}/contributions", response_model=List[HostContributionResponse])
+@router.get(
+    "/{attraction_id}/contributions",
+    response_model=List[Union[HostContributionResponse, HostContributionPublicResponse]],
+)
 async def get_host_contributions(
     attraction_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_host: Optional[Host] = Depends(optional_host_session),
 ):
     """
-    Get all host contributions for an attraction.
+    Get host contributions for an attraction (public entries only unless authenticated).
     
     Args:
         attraction_id: Attraction ID
         db: Database session
+        current_host: Optional authenticated host (may see own private contributions)
         
     Returns:
-        List[HostContributionResponse]: List of host contributions
+        List of visible host contributions (host_id only for the contribution owner)
     """
     try:
         attraction_service = AttractionService(db)
-        contributions = await attraction_service.get_host_contributions(attraction_id)
+        viewer_id = current_host.id if current_host else None
+        contributions = await attraction_service.get_host_contributions(
+            attraction_id, viewer_host_id=viewer_id
+        )
+        visible = [_contribution_for_viewer(c, viewer_id) for c in contributions]
         
-        logger.info(f"Retrieved {len(contributions)} contributions for attraction {attraction_id}")
-        return contributions
+        logger.info(f"Retrieved {len(visible)} contributions for attraction {attraction_id}")
+        return visible
         
     except Exception as e:
         logger.error(f"Failed to retrieve host contributions: {str(e)}")
@@ -779,55 +1005,24 @@ async def get_host_contributions(
 
 
 # Review endpoints (for guests)
-@router.post("/{attraction_id}/reviews", response_model=AttractionReviewResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{attraction_id}/reviews", status_code=status.HTTP_410_GONE)
 async def add_attraction_review(
     attraction_id: uuid.UUID,
     review_data: AttractionReviewCreate,
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Add a guest review for an attraction.
-    
-    Args:
-        attraction_id: Attraction ID
-        review_data: Review data
-        db: Database session
-        
-    Returns:
-        AttractionReviewResponse: Created review
+    Deprecated — use POST /attractions/reviews/submit with guest access code.
     """
-    try:
-        attraction_service = AttractionService(db)
-        
-        # Verify attraction exists
-        attraction = await attraction_service.get_attraction_by_id(attraction_id)
-        if not attraction:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Attraction not found"
-            )
-        
-        review = await attraction_service.add_review(
-            attraction_id=attraction_id,
-            review_data=review_data
-        )
-        
-        logger.info(f"Added review for attraction {attraction_id}")
-        return review
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to add attraction review: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to add attraction review"
-        )
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Use POST /api/v1/attractions/reviews/submit with guest access code",
+    )
 
 
 # Enhanced Review endpoints with moderation
 
-@router.post("/reviews/submit", response_model=AttractionReviewResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/reviews/submit", response_model=AttractionReviewGuestSubmitResponse, status_code=status.HTTP_201_CREATED)
 async def submit_guest_review(
     review_submission: GuestReviewSubmission,
     db: AsyncSession = Depends(get_db)
@@ -854,12 +1049,19 @@ async def submit_guest_review(
                 detail="Invalid or expired access code"
             )
         
-        # Verify attraction exists
+        # Verify attraction exists and belongs to guest host's curated catalog
         attraction = await attraction_service.get_attraction_by_id(review_submission.review_data.attraction_id)
         if not attraction:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Attraction not found"
+            )
+        if not await attraction_service.host_can_guest_review_attraction(
+            guest_group.host_id, attraction
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You may only review attractions curated by your host",
             )
         
         # Create review
@@ -876,7 +1078,7 @@ async def submit_guest_review(
             )
         
         logger.info(f"Guest review submitted for attraction {review_submission.review_data.attraction_id}")
-        return review
+        return AttractionReviewGuestSubmitResponse(id=review.id, status=review.status)
         
     except HTTPException:
         raise
@@ -888,38 +1090,38 @@ async def submit_guest_review(
         )
 
 
-@router.get("/{attraction_id}/reviews", response_model=List[AttractionReviewResponse])
+@router.get("/{attraction_id}/reviews", response_model=List[AttractionReviewPublicResponse])
 async def get_attraction_reviews(
     attraction_id: uuid.UUID,
-    status_filter: Optional[str] = Query(None, description="Filter by review status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get reviews for an attraction with optional status filtering.
+    Get approved reviews for an attraction (public).
     
     Args:
         attraction_id: Attraction ID
-        status_filter: Filter by review status (approved, pending, etc.)
         skip: Number of records to skip
         limit: Maximum number of records to return
         db: Database session
         
     Returns:
-        List[AttractionReviewResponse]: List of reviews
+        List[AttractionReviewPublicResponse]: Approved reviews only
     """
     try:
         attraction_service = AttractionService(db)
         reviews = await attraction_service.get_reviews(
             attraction_id=attraction_id,
-            status_filter=status_filter,
+            status_filter=ReviewStatus.APPROVED.value,
             skip=skip,
-            limit=limit
+            limit=limit,
         )
         
         logger.info(f"Retrieved {len(reviews)} reviews for attraction {attraction_id}")
-        return reviews
+        return [
+            guest_safe_attraction_review_public(review) for review in reviews
+        ]
         
     except Exception as e:
         logger.error(f"Failed to retrieve attraction reviews: {str(e)}")
@@ -1037,7 +1239,7 @@ async def search_reviews(
     """
     try:
         attraction_service = AttractionService(db)
-        results = await attraction_service.search_reviews(search_request)
+        results = await attraction_service.search_reviews(search_request, host_id=current_host.id)
         
         logger.info(f"Review search performed by host {current_host.id}")
         return results
@@ -1140,7 +1342,7 @@ async def get_host_review_stats(
         )
 
 
-@router.post("/reviews/{review_id}/helpful", response_model=Dict[str, Any])
+@router.post("/reviews/{review_id}/helpful", response_model=ReviewHelpfulnessVoteResponse)
 async def vote_review_helpfulness(
     review_id: uuid.UUID,
     vote: ReviewHelpfulnessVote,
@@ -1162,12 +1364,12 @@ async def vote_review_helpfulness(
         # For now, return a simple response
         logger.info(f"Helpfulness vote submitted for review {review_id}: {vote.helpful}")
         
-        return {
-            "success": True,
-            "message": "Vote recorded successfully",
-            "review_id": str(review_id),
-            "helpful": vote.helpful
-        }
+        return ReviewHelpfulnessVoteResponse(
+            success=True,
+            message="Vote recorded successfully",
+            review_id=str(review_id),
+            helpful=vote.helpful,
+        )
         
     except Exception as e:
         logger.error(f"Failed to record helpfulness vote: {str(e)}")
@@ -1178,7 +1380,7 @@ async def vote_review_helpfulness(
 
 
 # AI Enhancement endpoint for attraction descriptions
-@router.post("/ai-enhance", response_model=Dict[str, Any])
+@router.post("/ai-enhance", response_model=AttractionAiEnhanceResponse)
 async def enhance_attraction_description(
     request: Dict[str, Any],
     current_host: Host = Depends(get_current_host),
@@ -1419,9 +1621,9 @@ async def enhance_attraction_description(
 
         logger.info(f"✅ Successfully enhanced description for attraction: {attraction_name}")
         
-        return {
-            "success": True,
-            "data": {
+        return AttractionAiEnhanceResponse(
+            success=True,
+            data={
                 "enhanced_description": enhanced_description,
                 "enhancement_method": enhancement_method,
                 "ai_provider": ai_provider,
@@ -1429,10 +1631,10 @@ async def enhance_attraction_description(
                     "attraction_details": True,
                     "host_location": True,
                     "nearby_places": len(nearby_places),
-                    "google_places_data": bool(google_places_data)
-                }
-            }
-        }
+                    "google_places_data": bool(google_places_data),
+                },
+            },
+        )
         
     except HTTPException:
         raise
@@ -1445,7 +1647,7 @@ async def enhance_attraction_description(
 
 
 # Analytics endpoints (hosts only)
-@router.get("/{attraction_id}/analytics", response_model=Dict[str, Any])
+@router.get("/{attraction_id}/analytics", response_model=AttractionAnalyticsResponse)
 async def get_attraction_analytics(
     attraction_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),

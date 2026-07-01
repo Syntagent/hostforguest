@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
@@ -19,17 +19,38 @@ from jose import JWTError, jwt
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.auth import get_current_host
 from app.services.host_service import HostService
 from app.services.session_service import SessionService
+from app.services.host_offerings_for_guest import guest_safe_host_public
+from app.models.guest_group import GuestGroupResponse
+from app.models.attraction import AttractionResponse
 from app.models.host import (
     HostCreate,
     HostUpdate,
     HostResponse,
+    HostPublicResponse,
     HostLogin,
+    HostPasswordChange,
     HostProfileCreate,
     HostProfileUpdate,
     HostProfileResponse,
-    Host
+    Host,
+    TelegramPairingResponse,
+    HostAnalytics,
+    HostAnalyticsGuestGroups,
+    HostAnalyticsAttractions,
+    HostAnalyticsRecommendations,
+    HostAnalyticsSatisfaction,
+    HostDashboardStatsResponse,
+    DashboardRealtimeSnippet,
+    HostSessionItem,
+    HostSessionsResponse,
+    HostAuthSuccessResponse,
+    HostSessionRefreshResponse,
+    HostLoginResponse,
+    HostGeocodeResponse,
+    HostTelegramUnlinkResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,11 +58,11 @@ router = APIRouter()
 security = HTTPBearer()
 
 # In-process dashboard bundle cache: host_id -> (monotonic_ts, payload)
-_dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_dashboard_stats_cache: Dict[str, Tuple[float, HostDashboardStatsResponse]] = {}
 _DASHBOARD_STATS_TTL_SEC = 60
 
 
-async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[str, Any]:
+async def _build_host_analytics(current_host: Host, db: AsyncSession) -> HostAnalytics:
     """Shared analytics payload for /analytics and /dashboard/stats."""
     from app.services.guest_group_service import GuestGroupService
     from app.services.attraction_service import AttractionService
@@ -52,10 +73,17 @@ async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[st
     guest_group_service = GuestGroupService(db)
     attraction_service = AttractionService(db)
 
+    from app.models.guest_group import GuestGroupStatus
+    from app.services.guest_group_stay import is_in_stay
+
     guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
     attractions = await attraction_service.get_host_attractions(current_host.id)
 
-    active_groups = len([g for g in guest_groups if g.status == "active"])
+    # "Active" on the dashboard = in stay today (calendar dates), not DB activation status.
+    in_stay_groups = len([g for g in guest_groups if is_in_stay(g)])
+    activated_groups = len(
+        [g for g in guest_groups if g.status == GuestGroupStatus.ACTIVE.value]
+    )
 
     total_recommendations_query = select(func.count(RecommendationSet.id)).where(
         RecommendationSet.host_id == current_host.id
@@ -99,66 +127,30 @@ async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[st
         average_rating = current_host.average_rating or 0.0
         total_reviews = 0
 
-    analytics = {
-        "guest_groups": {
-            "total": len(guest_groups),
-            "active": active_groups,
-            "inactive": len(guest_groups) - active_groups,
-        },
-        "attractions": {"total": len(attractions), "categories": {}},
-        "recommendations": {
-            "total_given": total_recommendations,
-            "this_month": monthly_recommendations,
-        },
-        "satisfaction": {
-            "average_rating": round(average_rating, 1),
-            "total_reviews": total_reviews,
-        },
-    }
+    analytics = HostAnalytics(
+        guest_groups=HostAnalyticsGuestGroups(
+            total=len(guest_groups),
+            active=in_stay_groups,
+            in_stay=in_stay_groups,
+            activated=activated_groups,
+            inactive=len(guest_groups) - in_stay_groups,
+        ),
+        attractions=HostAnalyticsAttractions(total=len(attractions), categories={}),
+        recommendations=HostAnalyticsRecommendations(
+            total_given=total_recommendations,
+            this_month=monthly_recommendations,
+        ),
+        satisfaction=HostAnalyticsSatisfaction(
+            average_rating=round(average_rating, 1),
+            total_reviews=total_reviews,
+        ),
+    )
     for attraction in attractions:
         category = attraction.attraction_type or "Uncategorized"
-        analytics["attractions"]["categories"][category] = (
-            analytics["attractions"]["categories"].get(category, 0) + 1
+        analytics.attractions.categories[category] = (
+            analytics.attractions.categories.get(category, 0) + 1
         )
     return analytics
-
-
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-) -> Host:
-    """
-    Get current authenticated host from session token.
-    
-    Args:
-        request: FastAPI request object
-        db: Database session
-        
-    Returns:
-        Host: Current authenticated host
-        
-    Raises:
-        HTTPException: If not authenticated
-    """
-    # Get session token from header
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required"
-        )
-    
-    # Validate session and get host
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session"
-        )
-    
-    return host
 
 
 @router.post("/register", response_model=HostResponse, status_code=status.HTTP_201_CREATED)
@@ -208,7 +200,7 @@ async def register_host(
     return new_host
 
 
-@router.post("/login", response_model=Dict[str, Any])
+@router.post("/login", response_model=HostLoginResponse)
 async def login_host(
     login_data: HostLogin,
     request: Request,
@@ -249,14 +241,14 @@ async def login_host(
         # Convert host to response model
         host_response = HostResponse.model_validate(auth_result["host"])
         
-        return {
-            "success": True,
-            "host": host_response,
-            "session_token": auth_result["session_token"],
-            "refresh_token": auth_result["refresh_token"],
-            "expires_at": auth_result["expires_at"],
-            "refresh_expires_at": auth_result["refresh_expires_at"]
-        }
+        return HostLoginResponse(
+            success=True,
+            host=host_response,
+            session_token=auth_result["session_token"],
+            refresh_token=auth_result["refresh_token"],
+            expires_at=auth_result["expires_at"],
+            refresh_expires_at=auth_result["refresh_expires_at"],
+        )
         
     except HTTPException:
         raise
@@ -267,7 +259,7 @@ async def login_host(
             detail="Login failed"
         )
 
-@router.post("/logout")
+@router.post("/logout", response_model=HostAuthSuccessResponse)
 async def logout_host(
     request: Request,
     db: AsyncSession = Depends(get_db)
@@ -299,7 +291,7 @@ async def logout_host(
                 detail="Invalid session token"
             )
         
-        return {"success": True, "message": "Logged out successfully"}
+        return HostAuthSuccessResponse(success=True, message="Logged out successfully")
         
     except HTTPException:
         raise
@@ -310,7 +302,7 @@ async def logout_host(
             detail="Logout failed"
         )
 
-@router.post("/refresh")
+@router.post("/refresh", response_model=HostSessionRefreshResponse)
 async def refresh_session(
     request: Request,
     refresh_data: Optional[Dict[str, str]] = None,
@@ -352,11 +344,11 @@ async def refresh_session(
                 detail="Invalid or expired refresh token"
             )
         
-        return {
-            "success": True,
-            "session_token": refresh_result["session_token"],
-            "expires_at": refresh_result["expires_at"]
-        }
+        return HostSessionRefreshResponse(
+            success=True,
+            session_token=refresh_result["session_token"],
+            expires_at=refresh_result["expires_at"],
+        )
         
     except HTTPException:
         raise
@@ -382,7 +374,7 @@ async def get_current_host_info(
     """
     return HostResponse.model_validate(current_host)
 
-@router.get("/sessions")
+@router.get("/sessions", response_model=HostSessionsResponse)
 async def get_host_sessions(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
@@ -395,16 +387,15 @@ async def get_host_sessions(
         db: Database session
         
     Returns:
-        List of session data
+        HostSessionsResponse: Active session rows for the account UI
     """
     try:
         host_service = HostService(db)
         sessions = await host_service.get_host_sessions(current_host.id)
-        
-        return {
-            "success": True,
-            "sessions": sessions
-        }
+        return HostSessionsResponse(
+            success=True,
+            sessions=[HostSessionItem.model_validate(row) for row in sessions],
+        )
         
     except Exception as e:
         logger.error(f"Error getting sessions: {e}")
@@ -413,7 +404,7 @@ async def get_host_sessions(
             detail="Failed to get sessions"
         )
 
-@router.post("/logout-all")
+@router.post("/logout-all", response_model=HostAuthSuccessResponse)
 async def logout_all_devices(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
@@ -438,10 +429,10 @@ async def logout_all_devices(
                 detail="Failed to logout from all devices"
             )
         
-        return {
-            "success": True,
-            "message": "Logged out from all devices"
-        }
+        return HostAuthSuccessResponse(
+            success=True,
+            message="Logged out from all devices",
+        )
         
     except HTTPException:
         raise
@@ -489,6 +480,61 @@ async def update_current_host(
     return updated_host
 
 
+@router.post("/me/change-password", response_model=HostAuthSuccessResponse)
+async def change_host_password(
+    body: HostPasswordChange,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change password for the authenticated host."""
+    host_service = HostService(db)
+    ok = await host_service.change_password(
+        current_host.id,
+        body.current_password,
+        body.new_password,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    return HostAuthSuccessResponse(success=True, message="Password updated")
+
+
+@router.get("/me/telegram-code", response_model=TelegramPairingResponse)
+async def get_telegram_pairing_code(
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate or return the host's active Telegram pairing code (10 min TTL)."""
+    from app.services.telegram_pairing_service import TelegramPairingService
+
+    svc = TelegramPairingService(db)
+    payload = await svc.get_or_create_pairing_code(current_host.id)
+    return TelegramPairingResponse.model_validate(payload)
+
+
+@router.delete("/me/telegram-link", response_model=HostTelegramUnlinkResponse)
+async def unlink_telegram_account(
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disconnect Telegram from the authenticated host account."""
+    from app.services.telegram_pairing_service import TelegramPairingService
+
+    svc = TelegramPairingService(db)
+    ok = await svc.unlink_telegram(current_host.id)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to unlink Telegram",
+        )
+    return HostTelegramUnlinkResponse(
+        success=True,
+        message="Telegram veza prekinuta",
+    )
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_current_host(
     current_host: Host = Depends(get_current_host),
@@ -519,7 +565,7 @@ async def delete_current_host(
     logger.info(f"Host account deleted successfully: {current_host.email}")
 
 
-@router.get("/analytics", response_model=Dict[str, Any])
+@router.get("/analytics", response_model=HostAnalytics)
 async def get_host_analytics(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
@@ -552,7 +598,7 @@ async def get_host_analytics(
         )
 
 
-@router.get("/dashboard/stats", response_model=Dict[str, Any])
+@router.get("/dashboard/stats", response_model=HostDashboardStatsResponse)
 async def get_dashboard_stats(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -573,7 +619,6 @@ async def get_dashboard_stats(
     try:
         from app.services.guest_group_service import GuestGroupService
         from app.services.attraction_service import AttractionService
-        from app.models.attraction import AttractionResponse
 
         host_service = HostService(db)
         guest_group_service = GuestGroupService(db)
@@ -584,37 +629,40 @@ async def get_dashboard_stats(
         guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
         attractions = await attraction_service.get_host_attractions(current_host.id)
 
-        realtime_updates: List[Dict[str, Any]] = []
+        realtime_updates: List[DashboardRealtimeSnippet] = []
         try:
             from app.services.events_feed_service import EventsFeedService
 
             city = current_host.city or (profile.city if profile else None) or "Lovran"
             updates = await EventsFeedService(db).get_updates(city=city, limit=5)
             realtime_updates = [
-                {
-                    "id": str(u.get("id", "")),
-                    "title": u.get("title", ""),
-                    "content": (u.get("content") or "")[:500],
-                    "description": (u.get("summary") or u.get("content") or "")[:300],
-                    "created_at": u.get("created_at"),
-                }
+                DashboardRealtimeSnippet(
+                    id=str(u.get("id", "")),
+                    title=u.get("title", ""),
+                    content=(u.get("content") or u.get("description") or "")[:500],
+                    description=(u.get("description") or u.get("content") or "")[:300],
+                    created_at=u.get("created_at"),
+                    start_at=u.get("start_at"),
+                    end_at=u.get("end_at"),
+                    source=u.get("source_name") or u.get("source"),
+                )
                 for u in updates
             ]
         except Exception as rt_err:
             logger.warning("Dashboard realtime snippet skipped: %s", rt_err)
 
-        payload = {
-            "analytics": analytics,
-            "profile": HostProfileResponse.model_validate(profile).model_dump()
-            if profile
-            else None,
-            "guest_groups": [g.model_dump() for g in guest_groups],
-            "attractions": [
-                AttractionResponse.model_validate(a).model_dump() for a in attractions
+        payload = HostDashboardStatsResponse(
+            analytics=analytics,
+            profile=HostProfileResponse.model_validate(profile) if profile else None,
+            guest_groups=[
+                GuestGroupResponse.model_validate(g) for g in guest_groups
             ],
-            "realtime_updates": realtime_updates,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-        }
+            attractions=[
+                AttractionResponse.model_validate(a) for a in attractions
+            ],
+            realtime_updates=realtime_updates,
+            cached_at=datetime.now(timezone.utc).isoformat(),
+        )
         _dashboard_stats_cache[cache_key] = (now, payload)
         return payload
     except Exception as e:
@@ -625,20 +673,20 @@ async def get_dashboard_stats(
         ) from e
 
 
-@router.get("/{host_id}", response_model=HostResponse)
+@router.get("/{host_id}", response_model=HostPublicResponse)
 async def get_host_by_id(
     host_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Get host information by ID (public endpoint).
+    Get host public profile by ID (no email, phone, or street address).
     
     Args:
         host_id: Host UUID
         db: Database session
         
     Returns:
-        HostResponse: Host information
+        HostPublicResponse: Public host profile
         
     Raises:
         HTTPException: If host not found
@@ -652,10 +700,10 @@ async def get_host_by_id(
             detail="Host not found"
         )
     
-    return HostResponse.model_validate(host)
+    return guest_safe_host_public(host)
 
 
-@router.get("/", response_model=List[HostResponse])
+@router.get("/", response_model=List[HostPublicResponse])
 async def list_hosts(
     skip: int = 0,
     limit: int = 100,
@@ -674,7 +722,7 @@ async def list_hosts(
         db: Database session
         
     Returns:
-        List[HostResponse]: List of hosts
+        List[HostPublicResponse]: List of hosts (PII omitted)
     """
     host_service = HostService(db)
     
@@ -685,7 +733,7 @@ async def list_hosts(
         # List all hosts with pagination
         hosts = await host_service.list_hosts(skip, limit)
     
-    return hosts
+    return [guest_safe_host_public(h) for h in hosts]
 
 
 # Host Profile Endpoints
@@ -759,7 +807,7 @@ async def get_current_host_extended_profile(
     return HostProfileResponse.model_validate(profile)
 
 
-@router.get("/me/geocode")
+@router.get("/me/geocode", response_model=HostGeocodeResponse)
 async def geocode_accommodation_address(
     address: Optional[str] = None,
     city: Optional[str] = None,
@@ -780,17 +828,18 @@ async def geocode_accommodation_address(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Could not locate this address. Add city and county, then try again.",
         )
-    return {
-        "latitude": result.latitude,
-        "longitude": result.longitude,
-        "matched_query": result.matched_query,
-        "precision": result.precision,
-    }
+    return HostGeocodeResponse(
+        latitude=result.latitude,
+        longitude=result.longitude,
+        matched_query=result.matched_query,
+        precision=result.precision,
+    )
 
 
 @router.put("/me/profile", response_model=HostProfileResponse)
 async def update_host_profile(
     profile_data: HostProfileUpdate,
+    background_tasks: BackgroundTasks,
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)
 ):
@@ -821,4 +870,21 @@ async def update_host_profile(
         )
     
     logger.info(f"Host profile updated successfully for: {current_host.email}")
+
+    if profile_data.city or profile_data.latitude or profile_data.longitude:
+        async def _discover_event_sources() -> None:
+            from app.core.database import get_async_session
+            from app.services.event_source_discovery_agent import EventSourceDiscoveryAgent
+            from app.services.rls_service import RLSService
+
+            host_id = current_host.id
+            async for session in get_async_session():
+                await RLSService(session).set_host_context(host_id)
+                agent = EventSourceDiscoveryAgent(session)
+                prof = await HostService(session).get_host_profile(host_id)
+                await agent.discover_for_host(current_host, prof)
+                break
+
+        background_tasks.add_task(_discover_event_sources)
+
     return HostProfileResponse.model_validate(profile) 

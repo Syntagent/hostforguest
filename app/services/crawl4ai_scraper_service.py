@@ -93,7 +93,7 @@ class Crawl4AIScraperService(ContentScraperService):
                 headless=True,
                 verbose=False,
                 use_managed_browser=True,
-                user_agent="TouristGuideLocal/1.0 Croatian Tourism Monitor"
+                user_agent="HostForGuest/1.0 Croatian Tourism Monitor"
             )
         else:
             self.browser_config = {}
@@ -578,51 +578,17 @@ class Crawl4AIScraperService(ContentScraperService):
             List[Dict[str, Any]]: Real-time updates
         """
         try:
-            # Get recent content updates (last 24 hours)
-            cutoff_time = datetime.utcnow() - timedelta(hours=24)
-            
-            stmt = select(ContentUpdate).where(
-                and_(
-                    ContentUpdate.created_at >= cutoff_time,
-                    ContentUpdate.status == "approved"
-                )
+            from app.services.events_feed_service import EventsFeedService
+
+            feed = EventsFeedService(self.db)
+            updates = await feed.get_updates(
+                city=city,
+                content_types=content_types,
+                hours=168,
+                limit=50,
             )
-            
-            # Apply filters
-            if city:
-                stmt = stmt.where(ContentUpdate.relevant_cities.contains([city]))
-            
-            if content_types:
-                stmt = stmt.where(ContentUpdate.content_type.in_(content_types))
-            
-            # Order by relevance and recency
-            stmt = stmt.order_by(ContentUpdate.relevance_score.desc(), ContentUpdate.created_at.desc())
-            
-            result = await self.db.execute(stmt)
-            updates = result.scalars().all()
-            
-            # Convert to API response format
-            real_time_data = []
-            for update in updates:
-                real_time_data.append({
-                    "id": str(update.id),
-                    "title": update.title,
-                    "content": update.content,
-                    "content_type": update.content_type,
-                    "url": update.url,
-                    "publication_date": update.publication_date.isoformat() if update.publication_date else None,
-                    "relevant_cities": update.relevant_cities,
-                    "relevant_regions": update.relevant_regions,
-                    "keywords": update.keywords,
-                    "quality_score": update.quality_score,
-                    "relevance_score": update.relevance_score,
-                    "created_at": update.created_at.isoformat(),
-                    "source_name": update.source.name if update.source else None
-                })
-            
-            logger.info(f"Retrieved {len(real_time_data)} real-time updates")
-            return real_time_data
-            
+            logger.info(f"Retrieved {len(updates)} real-time updates")
+            return updates
         except Exception as e:
             logger.error(f"Error getting real-time updates: {e}")
             return []

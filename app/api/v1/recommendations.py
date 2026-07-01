@@ -14,16 +14,24 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.auth import get_current_host
 from app.services.recommendation_service import RecommendationService
 from app.services.host_service import HostService
 from app.services.guest_group_service import GuestGroupService, host_owns_guest_group
 from app.services.ai_service import AIService
+from app.models.recommendation_api import (
+    RecommendationAlgorithmTestResponse,
+    RecommendationPerformanceMetricsResponse,
+)
 from app.models.recommendation import (
     RecommendationRequestAPI,
     RecommendationResponse,
+    ExplorerRecommendationPublicResponse,
     RecommendationFeedbackCreate,
     RecommendationFeedbackResponse,
+    GuestRecommendationFeedbackResponse,
     RecommendationAnalytics,
+    GuestGroupRecommendationAnalytics,
     WeatherContext,
     RecommendationBatch,
     GuestRecommendationBatch,
@@ -34,28 +42,6 @@ from app.models.guest_group import GuestGroup
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_current_host(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> Host:
-    """Resolve host via session token (aligned with guest-groups and settings)."""
-    session_token = request.headers.get("X-Session-Token")
-    if not session_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token required",
-        )
-
-    host_service = HostService(db)
-    host = await host_service.get_current_host_from_session(session_token)
-    if not host:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-    return host
 
 
 async def validate_access_code(
@@ -83,6 +69,21 @@ async def validate_access_code(
             detail="Invalid or expired access code"
         )
     return guest_group
+
+
+def _feedback_for_guest(
+    feedback: RecommendationFeedbackResponse,
+) -> GuestRecommendationFeedbackResponse:
+    """Strip guest_group_id, lifecycle timestamps, and scrub contact patterns from feedback payloads."""
+    from app.services.host_offerings_for_guest import scrub_contact_from_text, _scrub_safe_value
+
+    data = feedback.model_dump(exclude={"guest_group_id", "created_at"})
+    for key in ("feedback_text", "improvement_suggestions"):
+        if data.get(key):
+            data[key] = scrub_contact_from_text(data[key])
+    if data.get("helpful_factors"):
+        data["helpful_factors"] = _scrub_safe_value(data["helpful_factors"])
+    return GuestRecommendationFeedbackResponse.model_validate(data)
 
 
 # Guest endpoints (using access code)
@@ -114,7 +115,9 @@ async def get_guest_recommendations(
             guest_group_id=guest_group_id,
             request_data=request_data
         )
-        enriched = await recommendation_service.enrich_batch_for_guest(batch, guest_group_id)
+        enriched = await recommendation_service.enrich_batch_for_guest(
+            batch, guest_group_id, viewer_host_id=guest_group.host_id
+        )
 
         logger.info(
             "Generated %s recommendations for guest group %s",
@@ -133,7 +136,7 @@ async def get_guest_recommendations(
         )
 
 
-@router.post("/guest/{access_code}/feedback", response_model=RecommendationFeedbackResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/guest/{access_code}/feedback", response_model=GuestRecommendationFeedbackResponse, status_code=status.HTTP_201_CREATED)
 async def submit_recommendation_feedback(
     access_code: str,
     feedback_data: RecommendationFeedbackCreate,
@@ -167,7 +170,7 @@ async def submit_recommendation_feedback(
             )
 
         logger.info(f"Feedback submitted for guest group {guest_group.id}")
-        return feedback
+        return _feedback_for_guest(feedback)
         
     except HTTPException:
         raise
@@ -210,7 +213,7 @@ async def get_recommendation_history(
             limit=limit
         )
         enriched = await recommendation_service.enrich_list_for_guest(
-            history, guest_group.id
+            history, guest_group.id, viewer_host_id=guest_group.host_id
         )
 
         logger.info(f"Retrieved {len(enriched)} recommendations history for guest group {guest_group.id}")
@@ -316,7 +319,7 @@ async def get_host_recommendation_analytics(
         )
 
 
-@router.get("/host/guest-groups/{guest_group_id}/analytics", response_model=Dict[str, Any])
+@router.get("/host/guest-groups/{guest_group_id}/analytics", response_model=GuestGroupRecommendationAnalytics)
 async def get_guest_group_analytics(
     guest_group_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -361,7 +364,7 @@ async def get_guest_group_analytics(
 
 
 # Weather-based recommendations
-@router.get("/weather/{city}", response_model=List[RecommendationResponse])
+@router.get("/weather/{city}", response_model=List[ExplorerRecommendationPublicResponse])
 async def get_weather_based_recommendations(
     city: str,
     db: AsyncSession = Depends(get_db),
@@ -398,7 +401,7 @@ async def get_weather_based_recommendations(
 
 
 # Seasonal recommendations
-@router.get("/seasonal/{season}", response_model=List[RecommendationResponse])
+@router.get("/seasonal/{season}", response_model=List[ExplorerRecommendationPublicResponse])
 async def get_seasonal_recommendations(
     season: str,
     db: AsyncSession = Depends(get_db),
@@ -446,7 +449,7 @@ async def get_seasonal_recommendations(
 
 
 # Algorithm testing endpoints (hosts only)
-@router.post("/test/algorithm", response_model=Dict[str, Any])
+@router.post("/test/algorithm", response_model=RecommendationAlgorithmTestResponse)
 async def test_recommendation_algorithm(
     test_data: RecommendationRequestAPI,
     current_host: Host = Depends(get_current_host),
@@ -482,7 +485,7 @@ async def test_recommendation_algorithm(
         )
 
 
-@router.get("/performance/metrics", response_model=Dict[str, Any])
+@router.get("/performance/metrics", response_model=RecommendationPerformanceMetricsResponse)
 async def get_performance_metrics(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db)

@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from app.models.host import Host, HostCreate, HostProfile
 from app.services.host_service import HostService
+from app.services.rls_service import RLSService
 
 logger = logging.getLogger(__name__)
 
@@ -42,45 +43,46 @@ async def seed_dev_login_user_if_needed() -> None:
 
     async with AsyncSessionLocal() as session:
         try:
-            svc = HostService(session)
-            email = (settings.dev_login_seed_email or "").strip().lower()
-            if not email:
-                return
-            existing = await svc.get_host_by_email(email)
-            password = settings.dev_login_seed_password or ""
-            if existing:
-                if getattr(settings, "dev_login_seed_force", False) and len(password) >= 8:
-                    if await svc.set_password_for_email_normalized(email, password):
-                        logger.info(
-                            "Dev login seed: synced password for %s (DEV_LOGIN_SEED_FORCE)",
-                            email,
-                        )
+            async with RLSService(session).worker_bypass():
+                svc = HostService(session)
+                email = (settings.dev_login_seed_email or "").strip().lower()
+                if not email:
+                    return
+                existing = await svc.get_host_by_email(email)
+                password = settings.dev_login_seed_password or ""
+                if existing:
+                    if getattr(settings, "dev_login_seed_force", False) and len(password) >= 8:
+                        if await svc.set_password_for_email_normalized(email, password):
+                            logger.info(
+                                "Dev login seed: synced password for %s (DEV_LOGIN_SEED_FORCE)",
+                                email,
+                            )
+                        else:
+                            logger.warning("Dev login seed: could not sync password for %s", email)
                     else:
-                        logger.warning("Dev login seed: could not sync password for %s", email)
-                else:
-                    logger.debug("Dev login seed: host already exists (%s)", email)
-                return
+                        logger.debug("Dev login seed: host already exists (%s)", email)
+                    return
 
-            if len(password) < 8:
-                logger.warning("Dev login seed skipped: password must be at least 8 characters")
-                return
+                if len(password) < 8:
+                    logger.warning("Dev login seed skipped: password must be at least 8 characters")
+                    return
 
-            host_data = HostCreate(
-                email=email,
-                password=password,
-                first_name="Dev",
-                last_name="Host",
-                address="1 Dev Road",
-                city="Lovran",
-            )
-            created = await svc.create_host(host_data)
-            if created:
-                logger.info(
-                    "Dev login seed: created host %s (matches frontend Dev Login defaults)",
-                    email,
+                host_data = HostCreate(
+                    email=email,
+                    password=password,
+                    first_name="Dev",
+                    last_name="Host",
+                    address="1 Dev Road",
+                    city="Lovran",
                 )
-            else:
-                logger.warning("Dev login seed: create_host returned None for %s", email)
+                created = await svc.create_host(host_data)
+                if created:
+                    logger.info(
+                        "Dev login seed: created host %s (matches frontend Dev Login defaults)",
+                        email,
+                    )
+                else:
+                    logger.warning("Dev login seed: create_host returned None for %s", email)
         except Exception as e:
             logger.warning("Dev login seed failed (non-fatal): %s", e)
             try:
@@ -105,33 +107,34 @@ async def seed_dev_host_profile_shell_if_needed() -> None:
 
     async with AsyncSessionLocal() as session:
         try:
-            hr = await session.execute(select(Host).where(Host.email == email))
-            host = hr.scalar_one_or_none()
-            if not host:
-                return
+            async with RLSService(session).worker_bypass():
+                hr = await session.execute(select(Host).where(Host.email == email))
+                host = hr.scalar_one_or_none()
+                if not host:
+                    return
 
-            pr = await session.execute(
-                select(HostProfile).where(HostProfile.host_id == host.id)
-            )
-            if pr.scalar_one_or_none() is not None:
-                return
-
-            # Match migrations/add_location_fields_to_host_profiles.sql NOT NULL columns.
-            session.add(
-                HostProfile(
-                    host_id=host.id,
-                    city="Unknown",
-                    county="Unknown",
-                    address="Address not specified",
-                    latitude=0.0,
-                    longitude=0.0,
+                pr = await session.execute(
+                    select(HostProfile).where(HostProfile.host_id == host.id)
                 )
-            )
-            await session.commit()
-            logger.info(
-                "Dev seed: created empty HostProfile for %s (edit stay/property in DB or dashboard)",
-                email,
-            )
+                if pr.scalar_one_or_none() is not None:
+                    return
+
+                # Match migrations/add_location_fields_to_host_profiles.sql NOT NULL columns.
+                session.add(
+                    HostProfile(
+                        host_id=host.id,
+                        city="Unknown",
+                        county="Unknown",
+                        address="Address not specified",
+                        latitude=0.0,
+                        longitude=0.0,
+                    )
+                )
+                await session.commit()
+                logger.info(
+                    "Dev seed: created empty HostProfile for %s (edit stay/property in DB or dashboard)",
+                    email,
+                )
         except Exception as e:
             logger.warning("Dev host profile shell seed failed (non-fatal): %s", e)
             try:

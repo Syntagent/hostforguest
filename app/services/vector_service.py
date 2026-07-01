@@ -8,7 +8,6 @@ for attractions and guest preferences.
 import logging
 import os
 from typing import Optional, List, Dict, Any, Tuple
-import numpy as np
 
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
@@ -20,8 +19,29 @@ from app.services.ai_service import AIService
 from app.services.embedding_stub import deterministic_stub_embedding
 from app.models.attraction import Attraction
 from app.models.guest_group import GuestGroup
+from app.models.partner import Partner, PartnerStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_embedding_text(raw: Any) -> Optional[List[float]]:
+    """Parse embedding stored as JSON list text."""
+    if raw is None:
+        return None
+    try:
+        import json
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if not raw:
+                return None
+            parsed = json.loads(raw)
+        else:
+            parsed = raw
+        if not isinstance(parsed, list) or not parsed:
+            return None
+        return [float(x) for x in parsed]
+    except Exception:
+        return None
 
 
 class VectorService:
@@ -42,87 +62,72 @@ class VectorService:
         """
         self.db = db
         self.ai_service = ai_service or AIService()
-        self.embedding_dimensions = 384  # Default for sentence-transformers
-    
+        self.embedding_dimensions = 3072  # Gemini embedding-2
+
     async def generate_embedding(
         self,
         text: str,
         model: Optional[str] = None
     ) -> Optional[List[float]]:
         """
-        Generate embedding for text using AI service.
-        
-        Args:
-            text: Text to generate embedding for
-            model: Optional model name (defaults to configured model)
-            
-        Returns:
-            Embedding vector as list of floats or None
+        Generate embedding for text using Gemini embedding-2 (3072d).
+
+        Falls back to deterministic stub under pytest or when API key is missing.
         """
         try:
             if not text or not text.strip():
                 logger.warning("Empty text provided for embedding generation")
                 return None
 
-            # Never load torch/sentence-transformers during pytest, or when explicitly skipped
-            # (unstable on some Windows builds; long model downloads in CI).
             if os.environ.get("PYTEST_CURRENT_TEST") or os.getenv(
                 "SKIP_SENTENCE_TRANSFORMERS", ""
             ).lower() in ("1", "true", "yes"):
                 return deterministic_stub_embedding(text, self.embedding_dimensions)
-            
-            # Use sentence-transformers for embeddings (faster, cheaper)
-            try:
-                from sentence_transformers import SentenceTransformer
-                
-                # Load model (cached after first load)
-                model_name = model or "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-                transformer = SentenceTransformer(model_name)
-                
-                # Generate embedding
-                embedding = transformer.encode(text, convert_to_numpy=True)
-                
-                # Convert to list
-                embedding_list = embedding.tolist()
-                
-                logger.debug(f"Generated embedding of dimension {len(embedding_list)}")
-                return embedding_list
-                
-            except ImportError:
-                logger.warning("sentence-transformers not available, using OpenAI fallback")
-                # Fallback to OpenAI if sentence-transformers not available
-                if self.ai_service:
-                    return await self._generate_openai_embedding(text, model)
-                return None
-                
+
+            gemini_embedding = await self._generate_gemini_embedding(text, model)
+            if gemini_embedding:
+                return gemini_embedding
+
+            logger.warning("Gemini embedding unavailable, using deterministic stub")
+            return deterministic_stub_embedding(text, self.embedding_dimensions)
+
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             return None
-    
-    async def _generate_openai_embedding(
+
+    async def _generate_gemini_embedding(
         self,
         text: str,
         model: Optional[str] = None
     ) -> Optional[List[float]]:
-        """
-        Generate embedding using OpenAI API.
-        
-        Args:
-            text: Text to generate embedding for
-            model: Optional model name
-            
-        Returns:
-            Embedding vector as list of floats or None
-        """
+        """Generate embedding using Gemini embedding-2 API (3072d)."""
+        import json
+        import urllib.request
         try:
-            # Use OpenAI embedding API
-            # This would call self.ai_service.generate_embedding() if implemented
-            logger.warning("OpenAI embedding generation not fully implemented")
-            return None
+            api_key = os.environ.get("GOOGLE_AI_API_KEY", "")
+            if not api_key:
+                logger.error("GOOGLE_AI_API_KEY not set")
+                return None
             
+            data = json.dumps({
+                "model": "models/gemini-embedding-2",
+                "content": {"parts": [{"text": text}]}
+            }).encode()
+            
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key={api_key}"
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=10)
+            result = json.loads(resp.read())
+            emb = result["embedding"]["values"]
+            logger.info(f"Gemini embedding ({len(emb)}d) for: {text[:60]}...")
+            return emb
         except Exception as e:
-            logger.error(f"Error generating OpenAI embedding: {e}")
-            return None
+            logger.warning(f"Gemini embedding failed, using stub: {e}")
+            try:
+                from app.services.embedding_stub import deterministic_stub_embedding
+                return deterministic_stub_embedding(text, 3072)
+            except Exception:
+                return None
     
     async def generate_attraction_embedding(
         self,
@@ -208,55 +213,148 @@ class VectorService:
         except Exception as e:
             logger.error(f"Error generating guest preference embedding: {e}")
             return None
+
+    async def generate_partner_embedding(
+        self,
+        partner: Partner,
+    ) -> Optional[List[float]]:
+        """Generate embedding for a partner (name + description + partner_type)."""
+        try:
+            text_parts = [
+                partner.name or "",
+                partner.description or "",
+                str(partner.partner_type) if partner.partner_type else "",
+            ]
+            combined_text = " ".join(text_parts).strip()
+            if not combined_text:
+                logger.warning("Partner %s has no text for embedding", partner.id)
+                return None
+            return await self.generate_embedding(combined_text)
+        except Exception as e:
+            logger.error("Error generating partner embedding: %s", e)
+            return None
+
+    async def find_similar_partners(
+        self,
+        query_embedding: List[float],
+        limit: int = 10,
+        partner_types: Optional[List[str]] = None,
+        min_similarity: float = 0.5,
+        host_lat: Optional[float] = None,
+        host_lng: Optional[float] = None,
+        max_distance_km: float = 15.0,
+    ) -> List[Tuple[Partner, float]]:
+        """Find similar active partners using cosine similarity on stored embeddings."""
+        try:
+            if not query_embedding:
+                return []
+
+            from app.services.recommendation_scoring import RecommendationScoring
+            import math as _m
+
+            stmt = select(Partner).where(
+                Partner.status == PartnerStatus.ACTIVE.value,
+                Partner.embedding.isnot(None),
+                Partner.embedding != "",
+            )
+            if partner_types:
+                stmt = stmt.where(Partner.partner_type.in_(partner_types))
+            stmt = stmt.limit(200)
+            result = await self.db.execute(stmt)
+            partners = list(result.scalars().all())
+
+            scored: List[Tuple[Partner, float]] = []
+            for partner in partners:
+                partner_embedding = _parse_embedding_text(partner.embedding)
+                if not partner_embedding:
+                    continue
+                if host_lat is not None and host_lng is not None:
+                    plat, plng = partner.latitude, partner.longitude
+                    if plat is None or plng is None:
+                        continue
+                    dlat = _m.radians(plng - host_lng)
+                    dlng = _m.radians(plat - host_lat)
+                    a = (
+                        _m.sin(dlat / 2) ** 2
+                        + _m.cos(_m.radians(host_lat))
+                        * _m.cos(_m.radians(plat))
+                        * _m.sin(dlng / 2) ** 2
+                    )
+                    dist_km = 6371 * 2 * _m.atan2(_m.sqrt(a), _m.sqrt(1 - a))
+                    if dist_km > max_distance_km:
+                        continue
+                similarity = RecommendationScoring.cosine_similarity(
+                    query_embedding, partner_embedding
+                )
+                if similarity >= min_similarity:
+                    scored.append((partner, float(similarity)))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            logger.info("Found %s similar partners via vector search", len(scored[:limit]))
+            return scored[:limit]
+        except Exception as e:
+            logger.error("Error finding similar partners: %s", e)
+            await self.db.rollback()
+            return []
     
     async def find_similar_attractions(
         self,
         query_embedding: List[float],
         limit: int = 10,
         host_id: Optional[str] = None,
-        min_similarity: float = 0.5
+        min_similarity: float = 0.5,
+        approved_only: bool = True,
     ) -> List[Tuple[Attraction, float]]:
         """
-        Find similar attractions using vector similarity search.
-        
-        Args:
-            query_embedding: Query embedding vector
-            limit: Maximum number of results
-            host_id: Optional host ID to filter by
-            min_similarity: Minimum similarity threshold (0-1)
-            
-        Returns:
-            List of (Attraction, similarity_score) tuples
+        Find similar attractions using cosine similarity on stored TEXT embeddings.
+
+        Searches all attractions with embeddings (optionally scoped to one host).
         """
         try:
             if not query_embedding:
                 logger.warning("Empty query embedding provided")
                 return []
 
-            # Schema stores attraction embeddings as TEXT, not pgvector columns — avoid `<=>` / ::vector here.
-            stmt = (
-                select(Attraction)
-                .where(
-                    Attraction.embedding.isnot(None),
-                    Attraction.embedding != "",
-                )
-                .order_by(
-                    desc(Attraction.recommendation_count),
-                    desc(Attraction.guest_rating),
-                )
-                .limit(limit)
+            from app.models.attraction import AttractionStatus
+            from app.services.recommendation_scoring import RecommendationScoring
+
+            stmt = select(Attraction).where(
+                Attraction.embedding.isnot(None),
+                Attraction.embedding != "",
             )
+            if approved_only:
+                stmt = stmt.where(Attraction.status == AttractionStatus.APPROVED)
             if host_id:
                 stmt = stmt.where(
                     Attraction.created_by_host_id == uuid.UUID(str(host_id))
                 )
+            stmt = stmt.limit(500)
             result = await self.db.execute(stmt)
             attractions = list(result.scalars().all())
-            score = max(float(min_similarity), 0.55)
-            similar_attractions = [(a, score) for a in attractions]
-            logger.info("Found %s similar attractions (text-embedding fallback)", len(similar_attractions))
-            return similar_attractions
-            
+
+            scored: List[Tuple[Attraction, float]] = []
+            for attraction in attractions:
+                attraction_embedding = _parse_embedding_text(attraction.embedding)
+                if not attraction_embedding:
+                    continue
+                if len(attraction_embedding) != len(query_embedding):
+                    logger.warning(
+                        "Skipping attraction %s: embedding dim %s != query dim %s",
+                        attraction.id,
+                        len(attraction_embedding),
+                        len(query_embedding),
+                    )
+                    continue
+                similarity = RecommendationScoring.cosine_similarity(
+                    query_embedding, attraction_embedding
+                )
+                if similarity >= min_similarity:
+                    scored.append((attraction, float(similarity)))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            logger.info("Found %s similar attractions via vector search", len(scored[:limit]))
+            return scored[:limit]
+
         except Exception as e:
             logger.error(f"Error finding similar attractions: {e}")
             await self.db.rollback()
@@ -309,6 +407,38 @@ class VectorService:
             
         except Exception as e:
             logger.error(f"Error updating attraction embedding: {e}")
+            await self.db.rollback()
+            return False
+
+    async def update_partner_embedding(self, partner_id: str) -> bool:
+        """Update embedding for a partner."""
+        try:
+            stmt = select(Partner).where(Partner.id == partner_id)
+            result = await self.db.execute(stmt)
+            partner = result.scalar_one_or_none()
+            if not partner:
+                logger.warning("Partner %s not found", partner_id)
+                return False
+
+            embedding = await self.generate_partner_embedding(partner)
+            if not embedding:
+                logger.warning("Failed to generate embedding for partner %s", partner_id)
+                return False
+
+            embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+            update_query = text(
+                "UPDATE partners SET embedding = :embedding, updated_at = NOW() "
+                "WHERE id = CAST(:partner_id AS uuid)"
+            )
+            await self.db.execute(
+                update_query,
+                {"embedding": embedding_str, "partner_id": str(partner_id)},
+            )
+            await self.db.commit()
+            logger.info("Updated embedding for partner %s", partner_id)
+            return True
+        except Exception as e:
+            logger.error("Error updating partner embedding: %s", e)
             await self.db.rollback()
             return False
     

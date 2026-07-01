@@ -8,14 +8,33 @@ import logging
 import os
 from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, status
+import httpx
 
 from app.api.v1.host_onboarding_models import (
     GooglePlacesResponse,
     GooglePlaceInfo,
-    GooglePlaceLocation
+    GooglePlaceLocation,
+    GooglePlacePhoto,
+    GooglePlaceNearbyItem,
+    NearbyGooglePlacesResponse,
 )
 
 logger = logging.getLogger(__name__)
+
+
+GOOGLE_PLACES_TEXTSEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+GOOGLE_PLACES_NEARBY_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+
+
+async def _get_google_places_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+    status_value = data.get("status")
+    if status_value not in (None, "OK", "ZERO_RESULTS"):
+        raise RuntimeError(data.get("error_message") or f"Google Places returned {status_value}")
+    return data
 
 
 async def get_google_places_info(place_name: str) -> GooglePlacesResponse:
@@ -29,19 +48,17 @@ async def get_google_places_info(place_name: str) -> GooglePlacesResponse:
         GooglePlacesResponse with place information
     """
     try:
-        import googlemaps
-        
         api_key = os.getenv('GOOGLE_MAPS_API_KEY')
         if not api_key:
             return GooglePlacesResponse(
                 success=False,
                 error="Google Places API not configured"
             )
-        
-        gmaps = googlemaps.Client(key=api_key)
-        
-        # Search for place
-        places_result = gmaps.places(query=place_name, language='en')
+
+        places_result = await _get_google_places_json(
+            GOOGLE_PLACES_TEXTSEARCH_URL,
+            {"query": place_name, "language": "en", "key": api_key},
+        )
         
         if not places_result.get('results'):
             return GooglePlacesResponse(
@@ -97,7 +114,7 @@ async def get_nearby_google_places(
     lng: float,
     radius: int = 5000,
     place_type: str = "tourist_attraction"
-) -> Dict[str, Any]:
+) -> NearbyGooglePlacesResponse:
     """
     Get nearby attractions from Google Places API.
     
@@ -111,66 +128,68 @@ async def get_nearby_google_places(
         Dictionary with nearby places information
     """
     try:
-        import googlemaps
-        
         api_key = os.getenv('GOOGLE_MAPS_API_KEY')
         if not api_key:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Google Places API not configured"
             )
-        
-        gmaps = googlemaps.Client(key=api_key)
-        
-        # Search for nearby places
-        nearby_results = gmaps.places_nearby(
-            location=(lat, lng),
-            radius=radius,
-            type=place_type,
-            language='en'
+
+        nearby_results = await _get_google_places_json(
+            GOOGLE_PLACES_NEARBY_URL,
+            {
+                "location": f"{lat},{lng}",
+                "radius": radius,
+                "type": place_type,
+                "language": "en",
+                "key": api_key,
+            },
         )
         
         if not nearby_results.get('results'):
-            return {
-                "success": False,
-                "error": "No nearby places found",
-                "nearby_places": []
-            }
-        
-        # Process and return nearby places
-        nearby_places = []
-        for place in nearby_results['results'][:10]:  # Limit to top 10
+            return NearbyGooglePlacesResponse(
+                success=False,
+                error="No nearby places found",
+                nearby_places=[],
+            )
+
+        nearby_places: List[GooglePlaceNearbyItem] = []
+        for place in nearby_results['results'][:10]:
             geometry = place.get('geometry', {})
             location = geometry.get('location', {})
-            
-            nearby_places.append({
-                "name": place.get('name'),
-                "place_id": place.get('place_id'),
-                "rating": place.get('rating'),
-                "types": place.get('types', []),
-                "vicinity": place.get('vicinity'),
-                "location": {
-                    "lat": location.get('lat'),
-                    "lng": location.get('lng')
-                },
-                "price_level": place.get('price_level'),
-                "photos": [
-                    {
-                        "photo_reference": photo.get('photo_reference'),
-                        "width": photo.get('width'),
-                        "height": photo.get('height')
-                    }
-                    for photo in place.get('photos', [])[:1]  # Limit to 1 photo per place
-                ]
-            })
-        
-        return {
-            "success": True,
-            "nearby_places": nearby_places,
-            "total_found": len(nearby_places),
-            "search_location": {"lat": lat, "lng": lng},
-            "search_radius": radius
-        }
+            lat_val = location.get('lat')
+            lng_val = location.get('lng')
+            nearby_places.append(
+                GooglePlaceNearbyItem(
+                    name=place.get('name'),
+                    place_id=place.get('place_id'),
+                    rating=place.get('rating'),
+                    types=place.get('types', []),
+                    vicinity=place.get('vicinity'),
+                    location=(
+                        GooglePlaceLocation(lat=lat_val, lng=lng_val)
+                        if lat_val is not None and lng_val is not None
+                        else None
+                    ),
+                    price_level=place.get('price_level'),
+                    photos=[
+                        GooglePlacePhoto(
+                            photo_reference=photo.get('photo_reference'),
+                            width=photo.get('width'),
+                            height=photo.get('height'),
+                        )
+                        for photo in place.get('photos', [])[:1]
+                    ],
+                )
+            )
+
+        return NearbyGooglePlacesResponse(
+            success=True,
+            nearby_places=nearby_places,
+            total_found=len(nearby_places),
+            search_location=GooglePlaceLocation(lat=lat, lng=lng),
+            search_radius=radius,
+        )
         
     except HTTPException:
         raise

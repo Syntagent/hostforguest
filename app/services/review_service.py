@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import uuid
 
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func, desc
 
@@ -22,10 +23,34 @@ from app.models.guest_group import GuestGroup
 from app.models.host import Host
 from app.services.communication_service import CommunicationService
 from app.services.content_generation_service import ContentGenerationService
-from app.services.ai_service import AIService
+from app.services.host_offerings_for_guest import scrub_contact_from_text
+from app.services.ai_service_fallback import AIServiceWithFallback
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
+
+
+class SentimentAnalysisResult(BaseModel):
+    """Structured AI output for guest review sentiment."""
+
+    sentiment: str = Field(description="positive, negative, or neutral")
+    score: float = Field(ge=0.0, le=1.0, description="Sentiment score from 0 to 1")
+    positive_keywords: int = Field(ge=0, description="Count of positive aspects or keywords")
+    negative_keywords: int = Field(ge=0, description="Count of negative aspects or keywords")
+
+
+class PublicReviewCardResponse(BaseModel):
+    """Unauthenticated public review card — no guest or host PII."""
+
+    id: str
+    attraction_name: Optional[str] = None
+    rating: int
+    review_text: Optional[str] = None
+
+
+class PublicReviewsListResponse(BaseModel):
+    reviews: List[PublicReviewCardResponse]
+    count: int
 
 
 class ReviewService:
@@ -45,8 +70,8 @@ class ReviewService:
         """
         self.db = db
         settings_service = SettingsService(db)
-        ai_service = AIService(settings_service)
-        self.content_service = ContentGenerationService(ai_service, settings_service)
+        self._ai = AIServiceWithFallback(settings_service)
+        self.content_service = ContentGenerationService(self._ai, settings_service)
         self.communication_service = CommunicationService(db)
     
     async def request_review(
@@ -95,62 +120,104 @@ class ReviewService:
             logger.error(f"Error requesting review: {e}")
             return False
     
+    def _keyword_sentiment_analysis(self, review_text: str) -> Dict[str, Any]:
+        """Deterministic keyword-based sentiment when AI is unavailable."""
+        review_lower = review_text.lower()
+
+        positive_keywords = [
+            "excellent", "amazing", "wonderful", "great", "fantastic",
+            "beautiful", "perfect", "loved", "enjoyed", "recommend",
+        ]
+        negative_keywords = [
+            "disappointing", "poor", "bad", "terrible", "awful",
+            "worst", "hated", "waste", "avoid",
+        ]
+
+        positive_count = sum(1 for word in positive_keywords if word in review_lower)
+        negative_count = sum(1 for word in negative_keywords if word in review_lower)
+
+        if positive_count > negative_count:
+            sentiment = "positive"
+            score = min(1.0, 0.5 + (positive_count * 0.1))
+        elif negative_count > positive_count:
+            sentiment = "negative"
+            score = max(0.0, 0.5 - (negative_count * 0.1))
+        else:
+            sentiment = "neutral"
+            score = 0.5
+
+        return {
+            "sentiment": sentiment,
+            "score": score,
+            "positive_keywords": positive_count,
+            "negative_keywords": negative_count,
+        }
+
+    async def _analyze_sentiment_with_ai(
+        self,
+        review_text: str,
+        host_id: uuid.UUID,
+    ) -> Optional[Dict[str, Any]]:
+        """Use structured AI output for sentiment; returns None when AI fails."""
+        try:
+            res = await self._ai.generate_structured_response(
+                str(host_id),
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Analyze the sentiment of this guest review. "
+                            "Return positive, negative, or neutral sentiment, a score from 0 to 1, "
+                            "and counts of positive and negative keywords or themes.\n\n"
+                            f"Review:\n{review_text}"
+                        ),
+                    }
+                ],
+                context={"task": "review_sentiment_analysis"},
+                response_schema=SentimentAnalysisResult,
+            )
+            if res.get("success") and res.get("structured_data"):
+                data = SentimentAnalysisResult.model_validate(res["structured_data"])
+                sentiment = data.sentiment.lower().strip()
+                if sentiment not in ("positive", "negative", "neutral"):
+                    sentiment = "neutral"
+                return {
+                    "sentiment": sentiment,
+                    "score": max(0.0, min(1.0, data.score)),
+                    "positive_keywords": data.positive_keywords,
+                    "negative_keywords": data.negative_keywords,
+                }
+        except Exception as e:
+            logger.warning("AI sentiment analysis failed, using keyword fallback: %s", e)
+        return None
+
     async def analyze_review_sentiment(
         self,
-        review_text: str
+        review_text: str,
+        host_id: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
         """
         Analyze sentiment of a review.
-        
+
+        Uses structured AI output when host_id is provided; falls back to
+        keyword counting when AI is unavailable or host_id is omitted.
+
         Args:
             review_text: Review text to analyze
-            
+            host_id: Optional host UUID for AI configuration
+
         Returns:
             Sentiment analysis results
         """
         try:
-            # In production, would use AI service for sentiment analysis
-            # For now, basic keyword-based analysis
-            
-            review_lower = review_text.lower()
-            
-            positive_keywords = [
-                "excellent", "amazing", "wonderful", "great", "fantastic",
-                "beautiful", "perfect", "loved", "enjoyed", "recommend"
-            ]
-            negative_keywords = [
-                "disappointing", "poor", "bad", "terrible", "awful",
-                "worst", "hated", "waste", "avoid"
-            ]
-            
-            positive_count = sum(1 for word in positive_keywords if word in review_lower)
-            negative_count = sum(1 for word in negative_keywords if word in review_lower)
-            
-            if positive_count > negative_count:
-                sentiment = "positive"
-                score = min(1.0, 0.5 + (positive_count * 0.1))
-            elif negative_count > positive_count:
-                sentiment = "negative"
-                score = max(0.0, 0.5 - (negative_count * 0.1))
-            else:
-                sentiment = "neutral"
-                score = 0.5
-            
-            return {
-                "sentiment": sentiment,
-                "score": score,
-                "positive_keywords": positive_count,
-                "negative_keywords": negative_count
-            }
-            
+            if host_id:
+                ai_result = await self._analyze_sentiment_with_ai(review_text, host_id)
+                if ai_result:
+                    return ai_result
+            return self._keyword_sentiment_analysis(review_text)
         except Exception as e:
             logger.error(f"Error analyzing sentiment: {e}")
-            return {
-                "sentiment": "neutral",
-                "score": 0.5,
-                "positive_keywords": 0,
-                "negative_keywords": 0
-            }
+            return self._keyword_sentiment_analysis(review_text)
     
     async def generate_review_response(
         self,
@@ -170,7 +237,7 @@ class ReviewService:
             Generated response text or None
         """
         try:
-            sentiment = await self.analyze_review_sentiment(review.review_text)
+            sentiment = await self.analyze_review_sentiment(review.review_text, host.id)
             
             if sentiment["sentiment"] == "positive":
                 response_template = f"""
@@ -216,7 +283,7 @@ class ReviewService:
         attraction_id: Optional[uuid.UUID] = None,
         host_id: Optional[uuid.UUID] = None,
         limit: int = 20
-    ) -> List[Dict[str, Any]]:
+    ) -> List[PublicReviewCardResponse]:
         """
         Get public reviews for display.
         
@@ -229,39 +296,34 @@ class ReviewService:
             List of public review data
         """
         try:
-            stmt = select(AttractionReview).where(
-                AttractionReview.status == ReviewStatus.APPROVED
+            stmt = (
+                select(AttractionReview, Attraction)
+                .join(Attraction, AttractionReview.attraction_id == Attraction.id)
+                .where(AttractionReview.status == ReviewStatus.APPROVED)
             )
-            
+
             if attraction_id:
                 stmt = stmt.where(AttractionReview.attraction_id == attraction_id)
-            
+
             if host_id:
-                # Filter by host's attractions
-                stmt = stmt.join(Attraction).where(
-                    Attraction.created_by_host_id == host_id
-                )
-            
+                stmt = stmt.where(Attraction.created_by_host_id == host_id)
+
             stmt = stmt.order_by(desc(AttractionReview.created_at))
             stmt = stmt.limit(limit)
-            
+
             result = await self.db.execute(stmt)
-            reviews = result.scalars().all()
-            
+            rows = result.all()
+
             public_reviews = []
-            for review in reviews:
-                sentiment = await self.analyze_review_sentiment(review.review_text)
-                
-                public_reviews.append({
-                    "id": str(review.id),
-                    "attraction_name": review.attraction.name if review.attraction else None,
-                    "rating": review.rating,
-                    "review_text": review.review_text,
-                    "guest_name": review.guest_name or "Anonymous",
-                    "created_at": review.created_at.isoformat() if review.created_at else None,
-                    "sentiment": sentiment["sentiment"],
-                    "sentiment_score": sentiment["score"]
-                })
+            for review, attraction in rows:
+                public_reviews.append(
+                    PublicReviewCardResponse(
+                        id=str(review.id),
+                        attraction_name=scrub_contact_from_text(attraction.name),
+                        rating=review.rating,
+                        review_text=scrub_contact_from_text(review.review_text),
+                    )
+                )
             
             return public_reviews
             
@@ -296,15 +358,24 @@ class ReviewService:
             
             if not reviews:
                 return False
-            
+
+            attraction_stmt = select(Attraction).where(Attraction.id == attraction_id)
+            attraction_result = await self.db.execute(attraction_stmt)
+            attraction = attraction_result.scalar_one_or_none()
+            host_id_for_ai = (
+                attraction.created_by_host_id if attraction else None
+            )
+
             # Analyze review patterns
             total_rating = sum(r.rating for r in reviews)
             avg_rating = total_rating / len(reviews)
-            
+
             # Extract common themes from reviews
             common_themes = []
             for review in reviews:
-                sentiment = await self.analyze_review_sentiment(review.review_text)
+                sentiment = await self.analyze_review_sentiment(
+                    review.review_text, host_id_for_ai
+                )
                 if sentiment["sentiment"] == "positive":
                     # Extract positive aspects
                     common_themes.append("positive_feedback")

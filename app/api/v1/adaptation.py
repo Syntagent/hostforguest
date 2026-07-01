@@ -61,10 +61,125 @@ class AdaptationAssistantBody(BaseModel):
     history: List[AdaptationAssistantHistoryItem] = Field(default_factory=list, max_length=12)
 
 
+class AdaptationRoiResultResponse(BaseModel):
+    baseline_nights_year: float
+    baseline_revenue_year: float
+    projected_revenue_year: float
+    incremental_revenue_year: float
+    incremental_revenue_month: float
+    simple_payback_months: Optional[float] = None
+    disclaimer: str
+
+
+class AdaptationProjectResponse(BaseModel):
+    id: str
+    title: str
+    brief: Optional[str] = None
+    style_tags: List[str] = Field(default_factory=list)
+    budget_band: Optional[str] = None
+    status: str
+    assumptions_json: Dict[str, Any] = Field(default_factory=dict)
+    roi_inputs_json: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class AdaptationProjectListResponse(BaseModel):
+    projects: List[AdaptationProjectResponse]
+
+
+class AdaptationAssetResponse(BaseModel):
+    id: str
+    project_id: str
+    storage_url: str
+    kind: str
+    sort_order: int
+
+
+class AdaptationAnalyzeResponse(BaseModel):
+    proposal_id: str
+    version: int
+    vision_analysis: Dict[str, Any] = Field(default_factory=dict)
+    bom: Dict[str, Any] = Field(default_factory=dict)
+    total_range_min: Optional[float] = None
+    total_range_max: Optional[float] = None
+    roi_preview: AdaptationRoiResultResponse
+    disclaimer: str
+    ai_used: bool
+    bom_source: str
+    hints: Optional[List[str]] = None
+    vision_multimodal: Optional[bool] = None
+    vision_images_fetched: Optional[int] = None
+    vision_images_requested: Optional[int] = None
+    vision_ai_provider: Optional[str] = None
+
+
+class AdaptationPhaseResponse(BaseModel):
+    phase_name: str = ""
+    description: str = ""
+    order: int = 1
+    duration_weeks_min: int = 0
+    duration_weeks_max: int = 0
+    key_tasks: List[str] = Field(default_factory=list)
+
+
+class AdaptationAssistantResponse(BaseModel):
+    disclaimer: str
+    ai_used: bool
+    reply: str
+    phases: List[AdaptationPhaseResponse] = Field(default_factory=list)
+    cost_orientation: str = ""
+    timeline_overview: str = ""
+    communication_tips: List[str] = Field(default_factory=list)
+    follow_up_questions: List[str] = Field(default_factory=list)
+
+
+class AdaptationSupplierPartnerResponse(BaseModel):
+    partner_id: str
+    name: str
+    phone: Optional[str] = None
+    city: str
+    distance_km: Optional[float] = None
+
+
+class AdaptationSupplierDiscoveryResponse(BaseModel):
+    host_has_coordinates: bool
+    any_distance_unknown: bool
+    linked_only: bool = True
+    sort_explanation: str
+
+
+class AdaptationSupplierSuggestResponse(BaseModel):
+    bom_category: str
+    maintenance_category: str
+    partners: List[AdaptationSupplierPartnerResponse] = Field(default_factory=list)
+    discovery: AdaptationSupplierDiscoveryResponse
+
+
+class AdaptationBomPatchResponse(BaseModel):
+    bom: Dict[str, Any]
+    total_range_min: float
+    total_range_max: float
+
+
+class AdaptationProposalSummaryResponse(BaseModel):
+    id: str
+    version: int
+    vision_analysis_json: Optional[Dict[str, Any]] = None
+    bom_json: Optional[Dict[str, Any]] = None
+    concept_image_urls: List[str] = Field(default_factory=list)
+    total_range_min: Optional[float] = None
+    total_range_max: Optional[float] = None
+    created_at: Optional[str] = None
+
+
+class AdaptationProposalListResponse(BaseModel):
+    proposals: List[AdaptationProposalSummaryResponse]
+
+
 def _proj_dict(p) -> Dict[str, Any]:
     return {
         "id": str(p.id),
-        "host_id": str(p.host_id),
         "title": p.title,
         "brief": p.brief,
         "style_tags": p.style_tags or [],
@@ -77,7 +192,7 @@ def _proj_dict(p) -> Dict[str, Any]:
     }
 
 
-@router.get("/projects")
+@router.get("/projects", response_model=AdaptationProjectListResponse)
 async def list_projects(
     current_host: Host = Depends(get_current_host),
     db: AsyncSession = Depends(get_db),
@@ -87,7 +202,7 @@ async def list_projects(
     return {"projects": [_proj_dict(p) for p in rows]}
 
 
-@router.post("/projects", status_code=status.HTTP_201_CREATED)
+@router.post("/projects", status_code=status.HTTP_201_CREATED, response_model=AdaptationProjectResponse)
 async def create_project(
     body: AdaptationProjectCreate,
     current_host: Host = Depends(get_current_host),
@@ -104,7 +219,7 @@ async def create_project(
     return _proj_dict(p)
 
 
-@router.get("/projects/{project_id}")
+@router.get("/projects/{project_id}", response_model=AdaptationProjectResponse)
 async def get_project(
     project_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -117,7 +232,7 @@ async def get_project(
     return _proj_dict(p)
 
 
-@router.patch("/projects/{project_id}")
+@router.patch("/projects/{project_id}", response_model=AdaptationProjectResponse)
 async def patch_project(
     project_id: uuid.UUID,
     body: AdaptationProjectPatch,
@@ -132,7 +247,11 @@ async def patch_project(
     return _proj_dict(p)
 
 
-@router.post("/projects/{project_id}/assets", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/projects/{project_id}/assets",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AdaptationAssetResponse,
+)
 async def add_asset(
     project_id: uuid.UUID,
     body: AdaptationAssetCreate,
@@ -158,7 +277,7 @@ async def add_asset(
     }
 
 
-@router.post("/projects/{project_id}/assistant")
+@router.post("/projects/{project_id}/assistant", response_model=AdaptationAssistantResponse)
 async def adaptation_assistant(
     project_id: uuid.UUID,
     body: AdaptationAssistantBody,
@@ -177,7 +296,7 @@ async def adaptation_assistant(
     return await ai.assistant_turn(current_host, p, body.message.strip(), hist)
 
 
-@router.post("/projects/{project_id}/analyze")
+@router.post("/projects/{project_id}/analyze", response_model=AdaptationAnalyzeResponse)
 async def analyze_project(
     project_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -191,7 +310,10 @@ async def analyze_project(
     return await ai.analyze_project(current_host, p)
 
 
-@router.post("/projects/{project_id}/suggest-suppliers")
+@router.post(
+    "/projects/{project_id}/suggest-suppliers",
+    response_model=AdaptationSupplierSuggestResponse,
+)
 async def suggest_suppliers(
     project_id: uuid.UUID,
     body: SupplierSuggestBody,
@@ -206,7 +328,7 @@ async def suggest_suppliers(
     return await ai.suggest_suppliers(current_host, p, body.bom_category)
 
 
-@router.patch("/projects/{project_id}/bom")
+@router.patch("/projects/{project_id}/bom", response_model=AdaptationBomPatchResponse)
 async def patch_bom(
     project_id: uuid.UUID,
     body: BOMPatchBody,
@@ -220,7 +342,7 @@ async def patch_bom(
     return out
 
 
-@router.get("/projects/{project_id}/roi")
+@router.get("/projects/{project_id}/roi", response_model=AdaptationRoiResultResponse)
 async def get_roi(
     project_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),
@@ -233,7 +355,7 @@ async def get_roi(
     return svc.compute_roi_for_project(p)
 
 
-@router.get("/projects/{project_id}/proposals")
+@router.get("/projects/{project_id}/proposals", response_model=AdaptationProposalListResponse)
 async def list_proposals(
     project_id: uuid.UUID,
     current_host: Host = Depends(get_current_host),

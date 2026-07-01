@@ -6,12 +6,19 @@ guest satisfaction, recommendation effectiveness, partner performance, and reven
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.analytics_api import (
+    AnalyticsExportResponse,
+    AnalyticsRevenueTrackingResponse,
+    PartnerPerformanceRow,
+    RecommendationEffectivenessResponse,
+    SatisfactionTrendsResponse,
+)
 from app.core.database import get_db
 from app.core.auth import require_host_session
 from app.services.analytics_service import AnalyticsService
@@ -21,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/satisfaction-trends")
+@router.get("/satisfaction-trends", response_model=SatisfactionTrendsResponse)
 async def get_satisfaction_trends(
     current_host: Host = Depends(require_host_session),
     days: int = Query(30, ge=1, le=365),
@@ -44,8 +51,8 @@ async def get_satisfaction_trends(
             host_id=str(current_host.id),
             days=days
         )
-        return trends
-        
+        return SatisfactionTrendsResponse.model_validate(trends)
+
     except Exception as e:
         logger.error(f"Error getting satisfaction trends: {e}")
         raise HTTPException(
@@ -54,7 +61,7 @@ async def get_satisfaction_trends(
         )
 
 
-@router.get("/recommendation-effectiveness")
+@router.get("/recommendation-effectiveness", response_model=RecommendationEffectivenessResponse)
 async def get_recommendation_effectiveness(
     current_host: Host = Depends(require_host_session),
     days: int = Query(30, ge=1, le=365),
@@ -77,8 +84,8 @@ async def get_recommendation_effectiveness(
             host_id=str(current_host.id),
             days=days
         )
-        return effectiveness
-        
+        return RecommendationEffectivenessResponse.model_validate(effectiveness)
+
     except Exception as e:
         logger.error(f"Error getting recommendation effectiveness: {e}")
         raise HTTPException(
@@ -87,7 +94,7 @@ async def get_recommendation_effectiveness(
         )
 
 
-@router.get("/partner-performance")
+@router.get("/partner-performance", response_model=List[PartnerPerformanceRow])
 async def get_partner_performance(
     current_host: Host = Depends(require_host_session),
     days: int = Query(30, ge=1, le=365),
@@ -110,8 +117,8 @@ async def get_partner_performance(
             host_id=str(current_host.id),
             days=days
         )
-        return performance
-        
+        return [PartnerPerformanceRow.model_validate(row) for row in performance]
+
     except Exception as e:
         logger.error(f"Error getting partner performance: {e}")
         raise HTTPException(
@@ -120,7 +127,7 @@ async def get_partner_performance(
         )
 
 
-@router.get("/revenue-tracking")
+@router.get("/revenue-tracking", response_model=AnalyticsRevenueTrackingResponse)
 async def get_revenue_tracking(
     current_host: Host = Depends(require_host_session),
     days: int = Query(30, ge=1, le=365),
@@ -143,8 +150,8 @@ async def get_revenue_tracking(
             host_id=str(current_host.id),
             days=days
         )
-        return revenue
-        
+        return AnalyticsRevenueTrackingResponse.model_validate(revenue)
+
     except Exception as e:
         logger.error(f"Error getting revenue tracking: {e}")
         raise HTTPException(
@@ -153,7 +160,7 @@ async def get_revenue_tracking(
         )
 
 
-@router.get("/export")
+@router.get("/export", response_model=AnalyticsExportResponse)
 async def export_analytics_report(
     current_host: Host = Depends(require_host_session),
     report_type: str = Query("comprehensive", pattern="^(comprehensive|revenue|satisfaction|partners|recommendations)$"),
@@ -179,8 +186,8 @@ async def export_analytics_report(
             report_type=report_type,
             format=format
         )
-        return report
-        
+        return AnalyticsExportResponse.model_validate(report)
+
     except Exception as e:
         logger.error(f"Error exporting analytics report: {e}")
         raise HTTPException(

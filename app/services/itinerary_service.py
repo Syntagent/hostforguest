@@ -21,8 +21,10 @@ from urllib.parse import quote
 from app.models import (
     Itinerary, DayPlan, ItineraryActivity, ActivityVote, Attraction, GuestGroup, Host,
     ItineraryCreate, ItineraryResponse, ItineraryWithDetails, ItineraryAssignFromTemplate,
-    DayPlanCreate, DayPlanResponse, DayPlanWithActivities,
-    ActivityCreate, ActivityResponse, ActivityVoteCreate, ActivityVoteResponse,
+    DayPlanCreate, DayPlanResponse, DayPlanWithActivities, DayPlanGuestWithActivities,
+    ActivityCreate, ActivityUpdate, ActivityResponse, ActivityGuestResponse, ActivityVoteCreate, ActivityVoteResponse,
+    ItineraryUpdate, RoutePointCreate, RoutePointReorder, RoutePointResponse,
+    ItineraryGuestWithDetails,
     GoogleMapsDirectionsRequest, GoogleMapsDirectionsResponse,
     ItinerarySuggestionRequest, ItinerarySuggestionResponse,
     ItineraryStatus, ActivityStatus, TransportMode, WeatherSuitability,
@@ -390,6 +392,132 @@ class ItineraryService:
             logger.error(f"Error getting itinerary by guest group {guest_group_id}: {e}")
             return None
 
+    @staticmethod
+    def _scrub_guest_itinerary_text_fields(
+        data: Dict[str, Any], keys: tuple[str, ...]
+    ) -> None:
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        _categorical_defaults = {
+            "language": "en",
+            "pace": "moderate",
+            "budget_level": "moderate",
+            "transportation_preference": "mixed",
+            "activity_type": "attraction",
+        }
+
+        for text_key in keys:
+            if not data.get(text_key):
+                continue
+            original = str(data[text_key])
+            scrub_urls = text_key == "google_maps_url"
+            scrubbed = scrub_contact_from_text(original, scrub_urls=scrub_urls)
+            if (
+                text_key in _categorical_defaults
+                and scrubbed != original
+                and scrubbed
+                and "[contact removed]" in scrubbed
+            ):
+                data[text_key] = _categorical_defaults[text_key]
+            else:
+                data[text_key] = scrubbed
+
+    async def get_guest_itinerary_response(
+        self,
+        guest_group_id: uuid.UUID,
+        stay_host_id: uuid.UUID,
+    ) -> Optional[ItineraryGuestWithDetails]:
+        """Guest-safe itinerary with activities; strips foreign-host attraction tips."""
+        details = await self.get_itinerary_by_guest_group(
+            guest_group_id, include_activities=True
+        )
+        if not details:
+            return None
+
+        activities_stmt = (
+            select(ItineraryActivity)
+            .join(DayPlan, DayPlan.id == ItineraryActivity.day_plan_id)
+            .where(DayPlan.itinerary_id == details.id)
+        )
+        act_result = await self.db.execute(activities_stmt)
+        activity_attr_map: Dict[uuid.UUID, Optional[uuid.UUID]] = {
+            row.id: row.attraction_id for row in act_result.scalars().all()
+        }
+
+        attraction_ids: set[uuid.UUID] = {
+            aid for aid in activity_attr_map.values() if aid
+        }
+
+        foreign_attraction_ids: set[uuid.UUID] = set()
+        if attraction_ids:
+            result = await self.db.execute(
+                select(Attraction.id).where(
+                    Attraction.id.in_(attraction_ids),
+                    Attraction.created_by_host_id != stay_host_id,
+                )
+            )
+            foreign_attraction_ids = set(result.scalars().all())
+
+        _activity_text_keys = (
+            "title",
+            "description",
+            "host_tip",
+            "address",
+            "location_name",
+            "google_maps_url",
+            "activity_type",
+        )
+        _day_plan_text_keys = ("title", "description", "host_tips", "theme")
+        _itinerary_text_keys = (
+            "title",
+            "description",
+            "base_location",
+            "pace",
+            "budget_level",
+            "transportation_preference",
+            "language",
+        )
+
+        _day_plan_internal = ("itinerary_id", "status", "completion_percentage", "created_at")
+        _activity_internal = ("day_plan_id", "status", "created_at")
+        _itinerary_internal = (
+            "status",
+            "is_template",
+            "completion_rate",
+            "guest_satisfaction",
+            "created_at",
+            "updated_at",
+        )
+
+        guest_day_plans: List[DayPlanGuestWithActivities] = []
+        for day_plan in details.day_plans:
+            dp_base = DayPlanResponse.model_validate(day_plan).model_dump()
+            for key in _day_plan_internal:
+                dp_base.pop(key, None)
+            self._scrub_guest_itinerary_text_fields(dp_base, _day_plan_text_keys)
+            guest_activities: List[ActivityGuestResponse] = []
+            for activity in getattr(day_plan, "activities", None) or []:
+                act_data = ActivityResponse.model_validate(activity).model_dump()
+                for key in _activity_internal:
+                    act_data.pop(key, None)
+                attr_id = activity_attr_map.get(activity.id)
+                if attr_id in foreign_attraction_ids:
+                    act_data["host_tip"] = None
+                self._scrub_guest_itinerary_text_fields(act_data, _activity_text_keys)
+                guest_activities.append(ActivityGuestResponse.model_validate(act_data))
+            guest_day_plans.append(
+                DayPlanGuestWithActivities(**dp_base, activities=guest_activities)
+            )
+
+        itinerary_data = details.model_dump(
+            exclude={"host_id", "guest_group_id", "day_plans"}
+        )
+        for key in _itinerary_internal:
+            itinerary_data.pop(key, None)
+        self._scrub_guest_itinerary_text_fields(itinerary_data, _itinerary_text_keys)
+        itinerary_guest = ItineraryGuestWithDetails.model_validate(itinerary_data)
+        return itinerary_guest.model_copy(update={"day_plans": guest_day_plans})
+
     async def get_map_view_data_for_host(
         self, day_plan_id: uuid.UUID, host_id: uuid.UUID
     ) -> Optional[Dict[str, Any]]:
@@ -402,6 +530,64 @@ class ItineraryService:
             return None
         data = await self.get_map_view_data(day_plan_id)
         return data if data else None
+
+    async def get_map_view_data_for_guest_group(
+        self, day_plan_id: uuid.UUID, guest_group_id: uuid.UUID
+    ) -> Optional[Dict[str, Any]]:
+        """Map view data if the day plan belongs to the guest group's itinerary."""
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        day_plan = await self._get_day_plan(day_plan_id)
+        if not day_plan:
+            return None
+        itinerary = await self._get_itinerary(day_plan.itinerary_id)
+        if not itinerary or itinerary.guest_group_id != guest_group_id:
+            return None
+        data = await self.get_map_view_data(day_plan_id)
+        if not data:
+            return None
+        for loc in data.get("locations") or []:
+            if loc.get("name"):
+                loc["name"] = scrub_contact_from_text(str(loc["name"]))
+            loc.pop("start_time", None)
+            loc.pop("sequence", None)
+            if loc.get("type") == "activity":
+                loc.pop("id", None)
+        route = data.get("route") or {}
+        if route.get("mode"):
+            mode_data = {"transportation_preference": route["mode"]}
+            self._scrub_guest_itinerary_text_fields(
+                mode_data, ("transportation_preference",)
+            )
+            route["mode"] = mode_data["transportation_preference"]
+            data["route"] = route
+        data.pop("day_plan_id", None)
+        return data
+
+    async def day_plan_owned_by_host(
+        self, day_plan_id: uuid.UUID, host_id: uuid.UUID
+    ) -> bool:
+        """True when day plan belongs to an itinerary owned by host_id."""
+        day_plan = await self._get_day_plan(day_plan_id)
+        if not day_plan:
+            return False
+        itinerary = await self._get_itinerary(day_plan.itinerary_id)
+        return bool(itinerary and itinerary.host_id == host_id)
+
+    async def activity_owned_by_host(
+        self, activity_id: uuid.UUID, host_id: uuid.UUID
+    ) -> bool:
+        """True when activity belongs to an itinerary owned by host_id."""
+        activity_stmt = select(ItineraryActivity).where(ItineraryActivity.id == activity_id)
+        activity_result = await self.db.execute(activity_stmt)
+        activity = activity_result.scalar_one_or_none()
+        if not activity:
+            return False
+        day_plan = await self._get_day_plan(activity.day_plan_id)
+        if not day_plan:
+            return False
+        itinerary = await self._get_itinerary(day_plan.itinerary_id)
+        return bool(itinerary and itinerary.host_id == host_id)
 
     async def get_map_view_data(self, day_plan_id: uuid.UUID) -> Dict[str, Any]:
         """
@@ -577,14 +763,15 @@ class ItineraryService:
             await self.db.commit()
             
             logger.info(f"Activity {activity_id} checked in by guest group {guest_group_id}")
-            
+
+            from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+            activity_name = scrub_contact_from_text(activity.title) or activity.title
+
             return {
                 "success": True,
                 "message": "Checked in to activity successfully",
-                "activity_id": str(activity_id),
-                "activity_name": activity.title,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": "completed"
+                "activity_name": activity_name,
             }
             
         except Exception as e:
@@ -759,10 +946,11 @@ class ItineraryService:
                 host_tip=activity_data.host_tip,
             )
             
-            # Add host insights if this is linked to an attraction
+            # Add host insights when linked attraction belongs to the itinerary host
             if activity_data.attraction_id:
                 attraction = await self.attraction_service.get_attraction_by_id(activity_data.attraction_id)
-                if attraction:
+                itinerary = await self._get_itinerary(day_plan.itinerary_id)
+                if attraction and itinerary and attraction.created_by_host_id == itinerary.host_id:
                     if not activity.host_tip:
                         activity.host_tip = attraction.host_personal_tip
                     activity.host_story = attraction.host_story
@@ -784,6 +972,204 @@ class ItineraryService:
             await self.db.rollback()
             logger.error(f"Error adding activity to day plan: {e}")
             return None
+
+    async def update_itinerary(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: ItineraryUpdate,
+    ) -> Optional[ItineraryResponse]:
+        try:
+            itinerary = await self._get_itinerary(itinerary_id)
+            if not itinerary or itinerary.host_id != host_id:
+                return None
+            payload = data.model_dump(exclude_unset=True)
+            for key, value in payload.items():
+                setattr(itinerary, key, value)
+            itinerary.updated_at = datetime.utcnow()
+            await self.db.commit()
+            await self.db.refresh(itinerary)
+            return ItineraryResponse.model_validate(itinerary)
+        except Exception as e:
+            await self.db.rollback()
+            logger.error("Error updating itinerary %s: %s", itinerary_id, e)
+            return None
+
+    async def list_route_points(
+        self, itinerary_id: uuid.UUID, host_id: uuid.UUID
+    ) -> Optional[List[RoutePointResponse]]:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        stmt = (
+            select(ItineraryActivity, DayPlan)
+            .join(DayPlan, ItineraryActivity.day_plan_id == DayPlan.id)
+            .where(DayPlan.itinerary_id == itinerary_id)
+            .order_by(DayPlan.day_number, ItineraryActivity.sequence_order)
+        )
+        result = await self.db.execute(stmt)
+        rows = result.all()
+        return [
+            RoutePointResponse(
+                id=act.id,
+                day_plan_id=act.day_plan_id,
+                name=act.title,
+                latitude=act.latitude,
+                longitude=act.longitude,
+                description=act.description,
+                order_index=act.sequence_order,
+                estimated_duration=act.estimated_duration,
+            )
+            for act, _dp in rows
+        ]
+
+    async def add_route_point(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: RoutePointCreate,
+    ) -> Optional[RoutePointResponse]:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        day_plan = await self._get_day_plan(data.day_plan_id)
+        if not day_plan or day_plan.itinerary_id != itinerary_id:
+            return None
+        order = data.order_index or await self._get_next_activity_sequence(data.day_plan_id)
+        start = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+        end = start + timedelta(minutes=data.estimated_duration)
+        created = await self.add_activity_to_day(
+            data.day_plan_id,
+            ActivityCreate(
+                title=data.name,
+                description=data.description,
+                activity_type="tnt_point",
+                location_name=data.name,
+                scheduled_start_time=start,
+                scheduled_end_time=end,
+                estimated_duration=data.estimated_duration,
+                latitude=data.latitude,
+                longitude=data.longitude,
+            ),
+        )
+        if not created:
+            return None
+        act = await self._get_activity(created.id)
+        if act and act.sequence_order != order:
+            act.sequence_order = order
+            await self.db.commit()
+            await self.db.refresh(act)
+        elif act:
+            pass
+        else:
+            act = None
+        row = act or await self._get_activity(created.id)
+        if not row:
+            return None
+        return RoutePointResponse(
+            id=row.id,
+            day_plan_id=row.day_plan_id,
+            name=row.title,
+            latitude=row.latitude,
+            longitude=row.longitude,
+            description=row.description,
+            order_index=row.sequence_order,
+            estimated_duration=row.estimated_duration,
+        )
+
+    async def update_route_point(
+        self,
+        point_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: ActivityUpdate,
+    ) -> Optional[RoutePointResponse]:
+        act = await self._get_activity(point_id)
+        if not act:
+            return None
+        day_plan = await self._get_day_plan(act.day_plan_id)
+        itinerary = await self._get_itinerary(day_plan.itinerary_id) if day_plan else None
+        if not itinerary or itinerary.host_id != host_id:
+            return None
+        payload = data.model_dump(exclude_unset=True)
+        if "title" in payload:
+            act.title = payload["title"]
+            if "location_name" not in payload:
+                act.location_name = payload["title"]
+        if "location_name" in payload:
+            act.location_name = payload["location_name"]
+        for key in ("description", "address", "latitude", "longitude", "host_tip", "estimated_duration"):
+            if key in payload:
+                setattr(act, key, payload[key])
+        if "sequence_order" in payload:
+            act.sequence_order = payload["sequence_order"]
+        if "scheduled_start_time" in payload:
+            act.scheduled_start_time = _naive_utc(payload["scheduled_start_time"])
+        if "scheduled_end_time" in payload:
+            act.scheduled_end_time = _naive_utc(payload["scheduled_end_time"])
+        act.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(act)
+        return RoutePointResponse(
+            id=act.id,
+            day_plan_id=act.day_plan_id,
+            name=act.title,
+            latitude=act.latitude,
+            longitude=act.longitude,
+            description=act.description,
+            order_index=act.sequence_order,
+            estimated_duration=act.estimated_duration,
+        )
+
+    async def delete_route_point(self, point_id: uuid.UUID, host_id: uuid.UUID) -> bool:
+        act = await self._get_activity(point_id)
+        if not act:
+            return False
+        day_plan = await self._get_day_plan(act.day_plan_id)
+        itinerary = await self._get_itinerary(day_plan.itinerary_id) if day_plan else None
+        if not itinerary or itinerary.host_id != host_id:
+            return False
+        day_plan_id = act.day_plan_id
+        await self.db.delete(act)
+        await self.db.commit()
+        await self._update_day_plan_totals(day_plan_id)
+        return True
+
+    async def reorder_route_points(
+        self,
+        itinerary_id: uuid.UUID,
+        host_id: uuid.UUID,
+        data: RoutePointReorder,
+    ) -> bool:
+        itinerary = await self._get_itinerary(itinerary_id)
+        if not itinerary or itinerary.host_id != host_id:
+            return False
+        day_plan = await self._get_day_plan(data.day_plan_id)
+        if not day_plan or day_plan.itinerary_id != itinerary_id:
+            return False
+        stmt = (
+            select(ItineraryActivity)
+            .where(ItineraryActivity.day_plan_id == data.day_plan_id)
+            .order_by(ItineraryActivity.sequence_order, ItineraryActivity.created_at)
+        )
+        result = await self.db.execute(stmt)
+        activities = list(result.scalars().all())
+        activities_by_id = {act.id: act for act in activities}
+        submitted_ids = list(data.ordered_activity_ids)
+        if len(set(submitted_ids)) != len(submitted_ids):
+            return False
+        if any(act_id not in activities_by_id for act_id in submitted_ids):
+            return False
+
+        ordered_ids = submitted_ids + [act.id for act in activities if act.id not in submitted_ids]
+        for idx, act_id in enumerate(ordered_ids, start=1):
+            activities_by_id[act_id].sequence_order = idx
+        await self.db.commit()
+        return True
+
+    async def _get_activity(self, activity_id: uuid.UUID) -> Optional[ItineraryActivity]:
+        stmt = select(ItineraryActivity).where(ItineraryActivity.id == activity_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     # Google Maps Integration
     
@@ -1227,6 +1613,21 @@ Rules:
             ActivityVoteResponse: Created vote or None
         """
         try:
+            # Get activity and verify it belongs to guest group's itinerary
+            activity_stmt = select(ItineraryActivity).where(ItineraryActivity.id == activity_id)
+            activity_result = await self.db.execute(activity_stmt)
+            activity = activity_result.scalar_one_or_none()
+            if not activity:
+                raise ValueError("Activity not found")
+
+            day_plan = await self._get_day_plan(activity.day_plan_id)
+            if not day_plan:
+                raise ValueError("Day plan not found")
+
+            itinerary = await self._get_itinerary(day_plan.itinerary_id)
+            if not itinerary or itinerary.guest_group_id != guest_group_id:
+                raise ValueError("Activity does not belong to this guest group")
+
             # Check if guest already voted on this activity
             existing_vote_stmt = select(ActivityVote).where(
                 and_(
@@ -1268,6 +1669,9 @@ Rules:
                 logger.info(f"Guest voted on activity {activity_id}: {vote_data.vote}")
                 return ActivityVoteResponse.model_validate(vote)
                 
+        except ValueError:
+            await self.db.rollback()
+            raise
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error voting on activity: {e}")

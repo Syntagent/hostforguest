@@ -418,11 +418,91 @@ class ActivityCreate(ActivityBase):
         raise TypeError("scheduled time must be datetime or ISO string")
 
 
+class ItineraryUpdate(SQLModel):
+    """Partial itinerary update (route template or guest itinerary)."""
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    base_location: Optional[str] = Field(default=None, max_length=200)
+    base_latitude: Optional[float] = None
+    base_longitude: Optional[float] = None
+    pace: Optional[str] = Field(default=None, max_length=20)
+    budget_level: Optional[str] = Field(default=None, max_length=20)
+
+
+class ActivityUpdate(SQLModel):
+    """Update a route stop / TNT point (itinerary activity)."""
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    location_name: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    sequence_order: Optional[int] = Field(default=None, ge=1)
+    estimated_duration: Optional[int] = Field(default=None, ge=1)
+    scheduled_start_time: Optional[datetime] = None
+    scheduled_end_time: Optional[datetime] = None
+    host_tip: Optional[str] = None
+
+
+class RoutePointReorder(SQLModel):
+    """Reorder TNT points within a day plan."""
+    day_plan_id: uuid.UUID
+    ordered_activity_ids: List[uuid.UUID] = Field(min_length=1)
+
+
+class RoutePointCreate(SQLModel):
+    """Add a TNT point to a route day."""
+    day_plan_id: uuid.UUID
+    name: str = Field(max_length=200)
+    latitude: float
+    longitude: float
+    description: Optional[str] = None
+    order_index: Optional[int] = Field(default=None, ge=1)
+    estimated_duration: int = Field(default=60, ge=1)
+
+
+class RoutePointResponse(SQLModel):
+    """TNT point exposed on route APIs."""
+    id: uuid.UUID
+    day_plan_id: uuid.UUID
+    name: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    description: Optional[str] = None
+    order_index: int
+    estimated_duration: int
+
+    class Config:
+        from_attributes = True
+
+
+class ActivityGuestResponse(ActivityBase):
+    """Guest itinerary activity — host_tip only for stay-host-owned attractions."""
+
+    id: uuid.UUID
+    sequence_order: int
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
+    travel_time_minutes: int
+    travel_distance_km: float
+    cost_per_person: Optional[float] = None
+    google_maps_url: Optional[str] = None
+    host_tip: Optional[str] = None
+    guest_rating: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ActivityResponse(ActivityBase):
     """Activity response model."""
     id: uuid.UUID
     day_plan_id: uuid.UUID
     sequence_order: int
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
     status: str
     travel_time_minutes: int
     travel_distance_km: float
@@ -455,9 +535,59 @@ class ActivityVoteResponse(ActivityVoteCreate):
         from_attributes = True
 
 
+class ActivityVoteGuestResponse(SQLModel):
+    """Guest access-code vote response — omits guest_group_id and priority."""
+
+    id: uuid.UUID
+    itinerary_activity_id: uuid.UUID
+    guest_name: Optional[str] = Field(default=None, max_length=100)
+    vote: str = Field(regex="^(yes|no|maybe)$")
+    reason: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ItineraryWithDetails(ItineraryResponse):
     """Complete itinerary with day plans and activities."""
     day_plans: List[DayPlanResponse] = Field(default_factory=list)
+
+
+class ItineraryGuestResponse(ItineraryBase):
+    """Guest access-code itinerary — omits host/internal tenant IDs and analytics."""
+
+    id: uuid.UUID
+    total_days: int
+
+    class Config:
+        from_attributes = True
+
+
+class DayPlanGuestResponse(DayPlanBase):
+    """Guest day plan — omits itinerary linkage and completion metrics."""
+
+    id: uuid.UUID
+    description: Optional[str] = None
+    host_tips: Optional[str] = None
+    estimated_duration: Optional[int] = None
+    total_distance: Optional[float] = None
+    total_travel_time: Optional[int] = None
+    estimated_cost: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DayPlanGuestWithActivities(DayPlanGuestResponse):
+    """Day plan with guest-safe activities."""
+
+    activities: List[ActivityGuestResponse] = Field(default_factory=list)
+
+
+class ItineraryGuestWithDetails(ItineraryGuestResponse):
+    """Complete guest itinerary with day plans (no host_id / guest_group_id)."""
+
+    day_plans: List[DayPlanGuestWithActivities] = Field(default_factory=list)
 
 
 class DayPlanWithActivities(DayPlanResponse):
@@ -532,4 +662,87 @@ class ItinerarySuggestionResponse(SQLModel):
     day_plans: List[DayPlanCreate]
     activities: List[ActivityCreate]
     reasoning: str  # Why this itinerary was suggested
-    alternatives: List[str] = Field(default_factory=list)  # Alternative suggestions 
+    alternatives: List[str] = Field(default_factory=list)  # Alternative suggestions
+
+
+class ItineraryMapViewLocation(SQLModel):
+    """Map marker on GET .../map-view."""
+    id: str
+    name: str
+    lat: float
+    lng: float
+    type: str
+    marker_color: Optional[str] = None
+    start_time: Optional[str] = None
+    sequence: Optional[int] = None
+
+
+class ItineraryMapViewRoute(SQLModel):
+    waypoints: List[str] = Field(default_factory=list)
+    optimize: bool = True
+    mode: str = "driving"
+
+
+class ItineraryMapViewCenter(SQLModel):
+    lat: float
+    lng: float
+
+
+class ItineraryMapViewBounds(SQLModel):
+    north: float
+    south: float
+    east: float
+    west: float
+
+
+class ItineraryMapViewResponse(SQLModel):
+    """GET /itineraries/host/day-plans/{id}/map-view."""
+    day_plan_id: str
+    locations: List[ItineraryMapViewLocation] = Field(default_factory=list)
+    route: ItineraryMapViewRoute
+    center: ItineraryMapViewCenter
+    zoom: int = 13
+    bounds: Optional[ItineraryMapViewBounds] = None
+
+
+class ItineraryRoutePointsReorderResponse(SQLModel):
+    """PUT /itineraries/{id}/route-points/reorder."""
+    success: bool = True
+
+
+class ItineraryOptimizeRouteResponse(SQLModel):
+    """POST /itineraries/day-plans/{id}/optimize-route."""
+    success: bool = True
+    message: str
+    day_plan_id: str
+
+
+class GuestItineraryMapViewLocation(SQLModel):
+    """Guest map marker — activity rows omit id; no scheduling metadata."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: Optional[str] = None
+    name: str
+    lat: float
+    lng: float
+    type: str
+    marker_color: Optional[str] = None
+
+
+class GuestItineraryMapViewResponse(SQLModel):
+    """GET /itineraries/guest/{access_code}/day-plans/{id}/map-view."""
+
+    locations: List[GuestItineraryMapViewLocation] = Field(default_factory=list)
+    route: ItineraryMapViewRoute
+    center: ItineraryMapViewCenter
+    zoom: int = 13
+    bounds: Optional[ItineraryMapViewBounds] = None
+
+
+class GuestActivityCheckInResponse(SQLModel):
+    """POST /itineraries/activities/{id}/check-in guest confirmation."""
+
+    success: bool
+    message: str
+    activity_name: Optional[str] = None
