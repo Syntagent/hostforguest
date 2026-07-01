@@ -5,21 +5,6 @@ Enables hosts to contribute local knowledge and create comprehensive
 attraction databases for their guests with host-centric content creation.
 """
 
-    # Google Places enrichment
-    google_place_id: Optional[str] = None
-    google_rating: Optional[float] = None
-    google_user_ratings_total: Optional[int] = None
-    google_price_level: Optional[int] = None
-    google_photos: List[str] = Field(default_factory=list)
-    google_website: Optional[str] = None
-    google_phone: Optional[str] = None
-    
-    # Wikipedia enrichment
-    wikipedia_pageid: Optional[int] = None
-    wikipedia_extract: Optional[str] = None
-    wikipedia_url: Optional[str] = None
-    wikipedia_image: Optional[str] = None
-
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from enum import Enum
@@ -179,6 +164,18 @@ class Attraction(Base):
     # Google Places enrichment (cached locally — refresh after 30 days)
     google_place_id = Column(String(200), nullable=True, index=True)
     google_rating = Column(Float, nullable=True)
+    google_user_ratings_total = Column(Integer, nullable=True)
+    google_price_level = Column(Integer, nullable=True)
+    google_photos = Column(JSON, default=[])
+    google_website = Column(String(500), nullable=True)
+    google_phone = Column(String(50), nullable=True)
+    google_data_fetched_at = Column(DateTime, nullable=True)
+    
+    # Wikipedia Enrichment
+    wikipedia_pageid = Column(Integer, nullable=True)
+    wikipedia_extract = Column(Text, nullable=True)
+    wikipedia_url = Column(String(500), nullable=True)
+    wikipedia_image = Column(String(500), nullable=True)
     google_user_ratings_total = Column(Integer, nullable=True)
     google_price_level = Column(Integer, nullable=True)  # 0-4
     google_photos = Column(JSON, default=[])  # photo reference URLs (no binary fetch)
@@ -435,6 +432,12 @@ class AttractionGooglePlacesFields(SQLModel):
     google_maps_url: Optional[str] = Field(default=None, max_length=500)
     static_map_image_url: Optional[str] = Field(default=None, max_length=2048)
 
+    
+    # Wikipedia enrichment
+    wikipedia_pageid: Optional[int] = None
+    wikipedia_extract: Optional[str] = None
+    wikipedia_url: Optional[str] = None
+    wikipedia_image: Optional[str] = None
 
 class AttractionResponse(AttractionBase, AttractionGooglePlacesFields):
     """Attraction response model."""
@@ -449,7 +452,22 @@ class AttractionResponse(AttractionBase, AttractionGooglePlacesFields):
     updated_at: datetime
     published_at: Optional[datetime] = None
 
-    class Config:
+        # Google Places enrichment
+    google_place_id: Optional[str] = None
+    google_rating: Optional[float] = None
+    google_user_ratings_total: Optional[int] = None
+    google_price_level: Optional[int] = None
+    google_photos: List[str] = Field(default_factory=list)
+    google_website: Optional[str] = None
+    google_phone: Optional[str] = None
+    
+    # Wikipedia enrichment
+    wikipedia_pageid: Optional[int] = None
+    wikipedia_extract: Optional[str] = None
+    wikipedia_url: Optional[str] = None
+    wikipedia_image: Optional[str] = None
+
+class Config:
         from_attributes = True
 
 

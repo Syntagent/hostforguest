@@ -436,6 +436,12 @@ class GuestAttractionSummary(SQLModel):
     google_phone: Optional[str] = None
     google_maps_url: Optional[str] = None
     static_map_image_url: Optional[str] = None
+    
+    # Wikipedia enrichment
+    wikipedia_pageid: Optional[int] = None
+    wikipedia_extract: Optional[str] = None
+    wikipedia_url: Optional[str] = None
+    wikipedia_image: Optional[str] = None
     created_by_host_id: Optional[uuid.UUID] = None
     short_description: Optional[str] = None
     category_tags: List[str] = Field(default_factory=list)
