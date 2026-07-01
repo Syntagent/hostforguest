@@ -1,5 +1,5 @@
 """
-Models package for TouristGuideLocal.
+Models package for HostForGuest.
 
 Exports all database models and Pydantic schemas.
 """
@@ -26,6 +26,7 @@ from .guest_group import (
     GuestGroupCreate,
     GuestGroupUpdate,
     GuestGroupResponse,
+    GuestGroupGuestResponse,
     HostGuestExperienceResponse,
 )
 
@@ -80,12 +81,19 @@ from .itinerary import (
     ItineraryResponse,
     ItineraryAssignFromTemplate,
     ItineraryWithDetails,
+    ItineraryGuestResponse,
+    ItineraryGuestWithDetails,
     DayPlanBase,
     DayPlanCreate,
     DayPlanResponse,
     DayPlanWithActivities,
+    DayPlanGuestWithActivities,
     ActivityBase,
     ActivityCreate,
+    ItineraryUpdate,
+    RoutePointCreate,
+    RoutePointReorder,
+    RoutePointResponse,
     ActivityResponse,
     ActivityVoteCreate,
     ActivityVoteResponse,
@@ -93,6 +101,16 @@ from .itinerary import (
     GoogleMapsDirectionsResponse,
     ItinerarySuggestionRequest,
     ItinerarySuggestionResponse,
+    ItineraryMapViewResponse,
+    GuestItineraryMapViewResponse,
+    GuestItineraryMapViewLocation,
+    GuestActivityCheckInResponse,
+    ItineraryRoutePointsReorderResponse,
+    ItineraryOptimizeRouteResponse,
+    ItineraryMapViewLocation,
+    ItineraryMapViewRoute,
+    ItineraryMapViewCenter,
+    ItineraryMapViewBounds,
     LLMItineraryDayPlan,
     LLMItineraryPlanResult,
 )
