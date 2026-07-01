@@ -5,6 +5,21 @@ Enables hosts to contribute local knowledge and create comprehensive
 attraction databases for their guests with host-centric content creation.
 """
 
+    # Google Places enrichment
+    google_place_id: Optional[str] = None
+    google_rating: Optional[float] = None
+    google_user_ratings_total: Optional[int] = None
+    google_price_level: Optional[int] = None
+    google_photos: List[str] = Field(default_factory=list)
+    google_website: Optional[str] = None
+    google_phone: Optional[str] = None
+    
+    # Wikipedia enrichment
+    wikipedia_pageid: Optional[int] = None
+    wikipedia_extract: Optional[str] = None
+    wikipedia_url: Optional[str] = None
+    wikipedia_image: Optional[str] = None
+
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from enum import Enum
