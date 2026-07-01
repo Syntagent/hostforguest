@@ -6,14 +6,14 @@ timing, and Google Maps integration for Croatian tourism experiences.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from enum import Enum
 import uuid
 
 from sqlalchemy import Column, String, Text, Boolean, DateTime, JSON, Integer, Float, ForeignKey, Date, Time
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, model_validator, field_validator
 from sqlmodel import SQLModel, Field
 
 from app.db.postgresql.connection import Base
@@ -402,6 +402,20 @@ class ActivityCreate(ActivityBase):
     cost_per_person: Optional[float] = Field(default=None, ge=0)
     booking_required: bool = Field(default=False)
     priority_level: str = Field(default="medium", max_length=20)
+
+    @field_validator("scheduled_start_time", "scheduled_end_time", mode="before")
+    @classmethod
+    def _coerce_naive_schedule(cls, value: Any) -> datetime:
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
+        raise TypeError("scheduled time must be datetime or ISO string")
 
 
 class ActivityResponse(ActivityBase):

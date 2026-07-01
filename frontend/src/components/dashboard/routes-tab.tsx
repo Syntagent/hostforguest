@@ -34,6 +34,11 @@ function formatTime(iso: string): string {
   }
 }
 
+function toNaiveLocalIso(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export const RoutesTab: React.FC<RoutesTabProps> = ({
   guestGroups,
   attractions,
@@ -294,8 +299,8 @@ export const RoutesTab: React.FC<RoutesTabProps> = ({
       activity_type: "attraction",
       location_name: att.name,
       address: att.address || "",
-      scheduled_start_time: start.toISOString(),
-      scheduled_end_time: end.toISOString(),
+      scheduled_start_time: toNaiveLocalIso(start),
+      scheduled_end_time: toNaiveLocalIso(end),
       estimated_duration: 90,
       attraction_id: att.id,
       latitude: att.latitude ?? undefined,

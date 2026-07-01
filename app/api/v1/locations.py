@@ -199,23 +199,43 @@ async def get_nearby_locations(
                 detail=f"Host not found: {host_id}"
             )
         
-        if not host.latitude or not host.longitude:
-            raise HTTPException(
-                status_code=400,
-                detail="Host location coordinates not available"
-            )
+        lat = host.latitude
+        lng = host.longitude
+        if lat is None or lng is None:
+            city_key = (host.city or "").strip().lower()
+            city_coords = {
+                "lovran": (45.2739, 14.2711),
+                "opatija": (45.3271, 14.3062),
+                "rijeka": (45.3271, 14.4422),
+                "pula": (44.8666, 13.8496),
+                "zagreb": (45.8150, 15.9819),
+            }
+            fallback = city_coords.get(city_key)
+            if fallback:
+                lat, lng = fallback
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Host location coordinates not available",
+                )
         
-        cache_service = LocationCacheService(db)
-        
-        # Get locations for the host's area
-        locations = await cache_service.get_cached_locations_for_guest_group(
-            guest_group_id=None,  # We'll filter by host area instead
-            include_google_places=True,
-            include_host_attractions=True
+        from app.services.attraction_service import AttractionService
+
+        attraction_service = AttractionService(db)
+        city_attractions = await attraction_service.get_attractions_by_city(
+            host.city or "Lovran",
+            limit=limit,
         )
-        
-        # Filter by distance (simplified - in production, use proper geospatial queries)
-        nearby_locations = locations[:limit]
+        nearby_locations = [
+            {
+                "type": "attraction",
+                "name": a.name,
+                "city": a.city,
+                "description": (a.short_description or a.description or "")[:200],
+                "attraction_type": a.attraction_type,
+            }
+            for a in city_attractions
+        ]
         
         return {
             "success": True,
@@ -224,9 +244,9 @@ async def get_nearby_locations(
             "host_location": {
                 "city": host.city,
                 "coordinates": {
-                    "lat": host.latitude,
-                    "lng": host.longitude
-                }
+                    "lat": lat,
+                    "lng": lng,
+                },
             },
             "search_radius_km": radius_km
         }

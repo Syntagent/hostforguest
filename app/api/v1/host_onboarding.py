@@ -53,7 +53,9 @@ from app.api.v1.host_onboarding_models import (
     EditSuggestionRequest,
     CoWriteRequest,
     AttractionSuggestionsRequest,
-    AIEnhancementResponse
+    AIEnhancementResponse,
+    AccommodationAgentMessageRequest,
+    AccommodationAgentMessageResponse,
 )
 
 # Import helper functions
@@ -464,7 +466,7 @@ async def get_onboarding_step(
             1: {
                 "step_name": "Welcome & Introduction",
                 "content": {
-                    "title": "Welcome to TouristGuideLocal",
+                    "title": "Welcome to HostForGuest",
                     "description": "Let's help you create an amazing experience for your guests",
                     "features": [
                         "AI-powered profile creation",
@@ -1297,7 +1299,7 @@ async def get_onboarding_step(
             1: {
                 "step_name": "Welcome & Introduction",
                 "content": {
-                    "title": "Welcome to TouristGuideLocal",
+                    "title": "Welcome to HostForGuest",
                     "description": "Let's help you create an amazing experience for your guests",
                     "features": [
                         "AI-powered profile creation",
@@ -2697,21 +2699,50 @@ async def complete_host_onboarding(
     try:
         logger.info(f"Completing onboarding for host: {current_host.email}")
 
+        from app.services.geocoding_service import GeocodingService
+
+        lat = onboarding_data.coordinates.lat if onboarding_data.coordinates else None
+        lng = onboarding_data.coordinates.lng if onboarding_data.coordinates else None
+        if lat is None or lng is None:
+            county = (
+                onboarding_data.region.value
+                if onboarding_data.region
+                else None
+            )
+            geo = GeocodingService.geocode(
+                address=onboarding_data.address,
+                city=onboarding_data.city,
+                county=county,
+            )
+            if geo:
+                lat, lng = geo.latitude, geo.longitude
+                logger.info(
+                    "Onboarding geocode fallback: %s (%s)",
+                    geo.matched_query,
+                    geo.precision,
+                )
+
         # Generate unique access code for guests
         import secrets
         import string
         access_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+        property_name = (onboarding_data.property_name or current_host.business_name or "").strip() or None
+        property_type = (onboarding_data.property_type or current_host.business_type or "apartment").strip()
+        languages = onboarding_data.languages or current_host.languages or ["hr", "en"]
 
         # Update main host record
         from sqlalchemy import update, select
         from app.models.host import HostProfile
 
         host_update = update(Host).where(Host.id == current_host.id).values(
+            business_name=property_name,
+            business_type=property_type,
             city=onboarding_data.city,
             address=onboarding_data.address or current_host.address,
-            latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else current_host.latitude,
-            longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else current_host.longitude,
+            latitude=lat if lat is not None else current_host.latitude,
+            longitude=lng if lng is not None else current_host.longitude,
             local_specialties=onboarding_data.interests,
+            languages=languages,
             guest_access_code=access_code,
             onboarding_completed=True,
             updated_at=datetime.utcnow()
@@ -2727,11 +2758,13 @@ async def complete_host_onboarding(
         if existing_profile:
             # Update existing profile
             profile_update = update(HostProfile).where(HostProfile.host_id == current_host.id).values(
+                property_name=property_name,
+                property_type=property_type,
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
-                latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else None,
-                longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else None,
+                latitude=lat,
+                longitude=lng,
                 expertise_areas=onboarding_data.interests,
                 typical_guest_profile={
                     "preferred_guests": onboarding_data.preferred_guests,
@@ -2739,7 +2772,7 @@ async def complete_host_onboarding(
                     "knowledge_level": onboarding_data.knowledge_level.value
                 },
                 location_story=onboarding_data.location_story,
-                google_verified=bool(onboarding_data.coordinates),
+                google_verified=bool(onboarding_data.coordinates) or (lat is not None and lng is not None),
                 onboarding_completed=True,
                 onboarding_completed_at=datetime.utcnow().isoformat(),
                 updated_at=datetime.utcnow()
@@ -2749,11 +2782,13 @@ async def complete_host_onboarding(
             # Create new profile
             new_profile = HostProfile(
                 host_id=current_host.id,
+                property_name=property_name,
+                property_type=property_type,
                 city=onboarding_data.city,
                 county=onboarding_data.region.value if onboarding_data.region else None,
                 address=onboarding_data.address or None,
-                latitude=onboarding_data.coordinates.lat if onboarding_data.coordinates else None,
-                longitude=onboarding_data.coordinates.lng if onboarding_data.coordinates else None,
+                latitude=lat,
+                longitude=lng,
                 expertise_areas=onboarding_data.interests,
                 typical_guest_profile={
                     "preferred_guests": onboarding_data.preferred_guests,
@@ -2761,7 +2796,7 @@ async def complete_host_onboarding(
                     "knowledge_level": onboarding_data.knowledge_level.value
                 },
                 location_story=onboarding_data.location_story,
-                google_verified=bool(onboarding_data.coordinates),
+                google_verified=bool(onboarding_data.coordinates) or (lat is not None and lng is not None),
                 onboarding_completed=True,
                 onboarding_completed_at=datetime.utcnow().isoformat(),
                 ai_generated_content=False,
@@ -3049,6 +3084,36 @@ async def enhance_accommodation_description(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to enhance accommodation description"
+        )
+
+
+@router.post("/accommodation/agent/message", response_model=AccommodationAgentMessageResponse)
+async def accommodation_agent_message(
+    request: AccommodationAgentMessageRequest,
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Run one focused turn of the Stay-tab accommodation onboarding agent.
+
+    The response contains a reviewable patch; it does not save profile changes.
+    """
+    try:
+        onboarding_service = HostOnboardingService(db)
+        result = await onboarding_service.accommodation_agent_turn(
+            host_id=current_host.id,
+            message=request.message,
+            focused_item_id=request.focused_item_id,
+            checklist_state=[item.model_dump() for item in request.checklist_state],
+            accommodation_snapshot=request.accommodation_snapshot,
+            conversation_history=[msg.model_dump() for msg in request.conversation_history],
+        )
+        return AccommodationAgentMessageResponse(**result)
+    except Exception as e:
+        logger.error("Accommodation agent message error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to run accommodation onboarding agent",
         )
 
 

@@ -1,0 +1,9 @@
+# VPS development: Postgres in Docker only (host API :8010, UI :3055).
+# Usage:
+#   docker compose -p hostforguest-dev -f docker-compose.yml -f docker-compose.vps-dev.yml up -d postgres
+
+services:
+  postgres:
+    container_name: hostforguest_dev_postgres
+    ports: !override
+      - "127.0.0.1:5440:5432"

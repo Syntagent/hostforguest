@@ -6,7 +6,7 @@ automated content updates to provide personalized recommendations.
 """
 
 import logging
-import math
+import time
 from datetime import datetime, date
 from types import SimpleNamespace
 from typing import Optional, List, Dict, Any, Tuple
@@ -16,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_, func, desc
 from sqlalchemy.exc import IntegrityError
 
+from app.models.recommendation_api import (
+    RecommendationAlgorithmTestResponse,
+    RecommendationPerformanceMetricsResponse,
+)
 from app.models.recommendation import (
     RecommendationRequest,
     Recommendation,
@@ -26,6 +30,7 @@ from app.models.recommendation import (
     RecommendationRequestCreate,
     RecommendationRequestAPI,
     RecommendationResponse,
+    ExplorerRecommendationPublicResponse,
     RecommendationSetResponse,
     RecommendationFeedback,
     RecommendationSetFeedback,
@@ -41,12 +46,13 @@ from app.models.recommendation import (
     CROATIAN_SEASONAL_FACTORS,
 )
 from app.models.attraction import Attraction, AttractionStatus, SeasonalEvent
+from app.models.partner import Partner, PartnerStatus
 from app.models.guest_group import GuestGroup, GuestPreference
 from app.models.host import Host
 from app.models.content_source import ContentUpdate
 from app.services.vector_service import VectorService
 from app.services.ai_service import AIService
-from app.services.recommendation_scoring import RecommendationScoring
+from app.services.recommendation_scoring import RecommendationScoring, _wow_multiplier
 from app.services.recommendation_candidates import RecommendationCandidates
 from app.services.recommendation_builders import RecommendationBuilders
 
@@ -76,8 +82,15 @@ class RecommendationService:
         self.builders_service = RecommendationBuilders(db)
     
     # Core Recommendation Generation
-    async def generate_recommendations(self, guest_group_id: uuid.UUID, host_id: uuid.UUID, 
-                                     request_data: RecommendationRequestCreate) -> Optional[RecommendationSetResponse]:
+    async def generate_recommendations(
+        self,
+        guest_group_id: uuid.UUID,
+        host_id: uuid.UUID,
+        request_data: RecommendationRequestCreate,
+        max_price_level: Optional[int] = None,
+        food_type: Optional[str] = None,
+        query_terms: Optional[str] = None,
+    ) -> Optional[RecommendationSetResponse]:
         """
         Generate personalized recommendations for a guest group.
         
@@ -115,13 +128,39 @@ class RecommendationService:
             
             # Generate candidate attractions using vector search + graph relationships + traditional filtering
             candidates = await self.candidates_service.get_candidate_attractions_advanced(
-                request, guest_group, host
+                request, guest_group, host, max_price_level=max_price_level,
+                query_terms=query_terms,
             )
-            
+            candidates = [
+                c for c in candidates
+                if self._is_guest_visible_attraction(c)
+            ]
+
             # Score and rank recommendations
             scored_recommendations = await self._score_recommendations(
-                request, guest_group, host, candidates
+                request, guest_group, host, candidates, query_terms=query_terms
             )
+            
+            # Enrich with partners for dining/food categories
+            if request.preferred_categories or food_type:
+                pref_lower = [c.lower() for c in (request.preferred_categories or [])]
+                # Only add partners for dedicated dining/food/wine queries
+                dining_cats = {'dining', 'food', 'restaurant', 'wine'}
+                is_dining_query = bool(dining_cats & set(pref_lower))
+                # Also check if dining is the primary category (not mixed with beach/nature)
+                is_primary_dining = is_dining_query and len(set(pref_lower) - dining_cats) <= 1
+                if is_primary_dining or food_type:
+                    partner_recs = await self._get_partner_recommendations(
+                        request,
+                        host,
+                        food_type=food_type,
+                        query_terms=query_terms,
+                    )
+                    scored_recommendations.extend(partner_recs)
+                    scored_recommendations.sort(key=lambda x: x.get('total_score', 0), reverse=True)
+                    for i, rec in enumerate(scored_recommendations):
+                        rec['rank_order'] = i + 1
+                    logger.info(f"Added {len(partner_recs)} partner recommendations, total now {len(scored_recommendations)}")
             
             # Create recommendation set
             recommendation_set = await self.builders_service.create_recommendation_set(
@@ -129,6 +168,7 @@ class RecommendationService:
             )
             
             if recommendation_set:
+                await self.db.commit()
                 logger.info(f"Generated {len(scored_recommendations)} recommendations for group {guest_group_id}")
                 return recommendation_set
             
@@ -138,6 +178,172 @@ class RecommendationService:
             logger.error(f"Error generating recommendations: {e}")
             return None
     
+    async def _get_partner_recommendations(
+        self,
+        request,
+        host,
+        *,
+        food_type: Optional[str] = None,
+        query_terms: Optional[str] = None,
+    ):
+        # Fetch and score partner recommendations for dining/food categories
+        try:
+            partner_types = []
+            pref_lower = [c.lower() for c in (request.preferred_categories or [])]
+            if any(c in pref_lower for c in ('dining', 'food', 'restaurant')) or food_type:
+                partner_types.extend(['restaurant', 'wine_bar', 'cafe'])
+            if 'wine' in pref_lower and 'wine_bar' not in partner_types:
+                partner_types.append('wine_bar')
+            if not partner_types:
+                return []
+
+            search_terms: List[str] = []
+            if query_terms:
+                for qt in query_terms.strip().lower().split():
+                    if qt and qt not in search_terms:
+                        search_terms.append(qt)
+            # Deduplicate while preserving order
+            seen_terms: set[str] = set()
+            unique_terms: List[str] = []
+            for term in search_terms:
+                if term not in seen_terms:
+                    seen_terms.add(term)
+                    unique_terms.append(term)
+            search_terms = unique_terms
+            
+            # Search ALL partners of matching type, filter by Haversine distance from host
+            host_lat = getattr(host, 'latitude', None) or 45.293
+            host_lng = getattr(host, 'longitude', None) or 14.276
+
+            # Vector search: semantic match on partner embeddings
+            vector_hits: Dict[Any, float] = {}
+            query_parts: List[str] = list(search_terms)
+            if food_type:
+                query_parts.append(food_type)
+            if request.preferred_categories:
+                query_parts.extend(request.preferred_categories)
+            query_text = " ".join(p for p in query_parts if p).strip()
+            if query_text:
+                try:
+                    query_embedding = await self.vector_service.generate_embedding(query_text)
+                    if query_embedding:
+                        for partner, sim in await self.vector_service.find_similar_partners(
+                            query_embedding=query_embedding,
+                            limit=15,
+                            partner_types=partner_types,
+                            host_lat=host_lat,
+                            host_lng=host_lng,
+                        ):
+                            vector_hits[partner.id] = sim
+                except Exception as e:
+                    logger.warning("Partner vector search failed: %s", e)
+
+            stmt = select(Partner).where(
+                Partner.status == PartnerStatus.ACTIVE,
+                Partner.partner_type.in_(partner_types)
+            )
+            if search_terms:
+                term_filters = []
+                for term in search_terms:
+                    pattern = f"%{term}%"
+                    term_filters.append(Partner.name.ilike(pattern))
+                    term_filters.append(Partner.description.ilike(pattern))
+                stmt = stmt.where(or_(*term_filters))
+            stmt = stmt.order_by(Partner.name).limit(50)
+            
+            result = await self.db.execute(stmt)
+            partners = result.scalars().all()
+            
+            # Filter by Haversine distance from host (15km radius)
+            import math as _m
+            def _hdist(lat1, lng1, lat2, lng2):
+                if None in (lat1, lng1, lat2, lng2): return 999.0
+                R = 6371
+                dlat = _m.radians(lat2 - lat1)
+                dlng = _m.radians(lng2 - lng1)
+                a = _m.sin(dlat/2)**2 + _m.cos(_m.radians(lat1)) * _m.cos(_m.radians(lat2)) * _m.sin(dlng/2)**2
+                return R * 2 * _m.atan2(_m.sqrt(a), _m.sqrt(1-a))
+            
+            nearby = []
+            for p in partners:
+                d = _hdist(host_lat, host_lng, p.latitude, p.longitude)
+                if d <= 15.0:
+                    nearby.append((p, d))
+            nearby.sort(key=lambda x: x[1])
+            partners = [p for p, _ in nearby[:10]]
+
+            # Merge vector hits (may include partners outside ILIKE filter)
+            if vector_hits:
+                seen_ids = {p.id for p in partners}
+                extra_ids = [pid for pid in vector_hits if pid not in seen_ids]
+                if extra_ids:
+                    extra_result = await self.db.execute(
+                        select(Partner).where(Partner.id.in_(extra_ids))
+                    )
+                    for p in extra_result.scalars().all():
+                        d = _hdist(host_lat, host_lng, p.latitude, p.longitude)
+                        if d <= 15.0:
+                            partners.append(p)
+            
+            scored = []
+            for partner in partners:
+                score = 0.5
+                vector_sim = vector_hits.get(partner.id, 0.0)
+                if vector_sim:
+                    score += min(0.35, vector_sim * 0.35)
+                if partner.partner_type == 'wine_bar' and 'wine' in pref_lower:
+                    score += 0.3
+                if partner.partner_type == 'restaurant' and any(c in pref_lower for c in ('dining', 'food', 'restaurant')):
+                    score += 0.2
+                if search_terms:
+                    haystack = f"{partner.name or ''} {partner.description or ''}".lower()
+                    matched = False
+                    for term in search_terms:
+                        if term in haystack:
+                            matched = True
+                            break
+                        # Also match prefix (e.g. "pizza" in "pizzeria")
+                        if len(term) >= 4:
+                            prefix = term[:4]
+                            if prefix in haystack:
+                                matched = True
+                                break
+                    if matched:
+                        score += 0.50
+                
+                from types import SimpleNamespace
+                wrapper = SimpleNamespace(
+                    id=partner.id, name=partner.name, description=partner.description,
+                    attraction_type=partner.partner_type, city=partner.city,
+                    category_tags=[partner.partner_type], age_suitability=[],
+                    guest_rating=float(partner.google_rating or 4.0), created_by_host_id=host.id,
+                    google_rating=partner.google_rating,
+                    google_user_ratings_total=partner.google_user_ratings_total,
+                    google_price_level=partner.google_price_level,
+                    google_website=partner.google_website,
+                    google_phone=partner.google_phone,
+                    latitude=partner.latitude, longitude=partner.longitude,
+                    host_personal_tip=None, host_insider_info=None, host_story=None,
+                    host_recommended_duration='1-2 hours',
+                    host_favorite_time='evening' if partner.partner_type in ('restaurant', 'wine_bar') else 'anytime',
+                    admission_fee=None, best_months=[], status='approved'
+                )
+                
+                rec = {
+                    'attraction': wrapper, 'total_score': min(1.0, score),
+                    'priority': 'high' if score >= 0.7 else 'medium',
+                    'scores': {'preference': score, 'host_insight': 0.5, 'popularity': 0.5, 'seasonal': 0.5, 'location': 0.5, 'vector_similarity': vector_sim},
+                    'host_insight': None, 'host_tip': None,
+                    'why_recommended': f"Local {partner.partner_type.replace('_', ' ')} in {host.city}"
+                }
+                scored.append(rec)
+            
+            logger.info(f"Fetched {len(scored)} partner recommendations")
+            return scored
+        except Exception as e:
+            logger.error(f"Error fetching partner recommendations: {e}")
+            return []
+
     async def _create_recommendation_request(self, guest_group_id: uuid.UUID, host_id: uuid.UUID, 
                                            request_data: RecommendationRequestCreate) -> Optional[RecommendationRequest]:
         """Create a recommendation request record."""
@@ -166,9 +372,12 @@ class RecommendationService:
             )
             
             self.db.add(request)
-            await self.db.commit()
-            await self.db.refresh(request)
-            
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
+            try:
+                await self.db.refresh(request)
+            except Exception:
+                pass  # RLS may block SELECT after flush
+
             return request
             
         except Exception as e:
@@ -244,9 +453,11 @@ class RecommendationService:
     async def _score_recommendations(self, request: RecommendationRequest, 
                                    guest_group: Dict[str, Any], 
                                    host: Host, 
-                                   candidates: List[Attraction]) -> List[Dict[str, Any]]:
+                                   candidates: List[Attraction],
+                                   query_terms: Optional[str] = None) -> List[Dict[str, Any]]:
         """Score and rank candidate attractions."""
         scored_recommendations = []
+        query_driven = bool(query_terms and query_terms.strip())
         
         for attraction in candidates:
             try:
@@ -258,14 +469,27 @@ class RecommendationService:
                 location_score = RecommendationScoring.calculate_location_score(attraction, request, host)
                 
                 # Calculate vector similarity score if embeddings exist
-                vector_score = RecommendationScoring.calculate_vector_similarity_score(
-                    attraction, guest_group.get('group')
-                )
+                query_vector_sim = getattr(attraction, "_query_vector_sim", None)
+                if query_vector_sim is not None:
+                    vector_score = float(query_vector_sim)
+                else:
+                    vector_score = RecommendationScoring.calculate_vector_similarity_score(
+                        attraction, guest_group.get('group')
+                    )
                 
-                # Calculate weighted total score (including vector similarity)
+                # Calculate distance and wow factors
+                dist_score, dist_km = RecommendationScoring.calculate_location_score_with_distance(
+                    attraction, request, host
+                )
+                location_score = max(location_score, dist_score)
+                wow_factor = _wow_multiplier(attraction)  # from scoring module
+                
+                # Weighted total score with distance + wow multipliers
                 total_score = RecommendationScoring.calculate_total_score(
                     preference_score, host_insight_score, popularity_score,
-                    seasonal_score, location_score, vector_score
+                    seasonal_score, location_score, vector_score,
+                    distance_penalty=dist_score,
+                    wow_factor=wow_factor
                 )
                 
                 # Determine priority
@@ -275,6 +499,7 @@ class RecommendationService:
                 recommendation_data = {
                     'attraction': attraction,
                     'total_score': total_score,
+                    'distance_km': dist_km,
                     'priority': priority,
                     'scores': {
                         'preference': preference_score,
@@ -286,7 +511,9 @@ class RecommendationService:
                     },
                     'host_insight': self._generate_host_insight(attraction, host),
                     'host_tip': self._generate_host_tip(attraction, host),
-                    'why_recommended': self._generate_explanation(attraction, guest_group, total_score)
+                    'why_recommended': self._generate_explanation(
+                        attraction, guest_group, total_score, host
+                    )
                 }
                 
                 scored_recommendations.append(recommendation_data)
@@ -295,8 +522,17 @@ class RecommendationService:
                 logger.error(f"Error scoring attraction {attraction.id}: {e}")
                 continue
         
-        # Sort by total score
-        scored_recommendations.sort(key=lambda x: x['total_score'], reverse=True)
+        # Sort: query-driven requests prioritize semantic vector match, then blended score
+        if query_driven:
+            scored_recommendations.sort(
+                key=lambda x: (
+                    x["scores"].get("vector_similarity", 0.0),
+                    x["total_score"],
+                ),
+                reverse=True,
+            )
+        else:
+            scored_recommendations.sort(key=lambda x: x['total_score'], reverse=True)
         
         # Add rank order
         for i, rec in enumerate(scored_recommendations):
@@ -315,30 +551,73 @@ class RecommendationService:
         else:
             return RecommendationPriority.LOW
     
+    def _attraction_owned_by_host(self, attraction: Attraction, host: Host) -> bool:
+        """True when the stay host created this attraction (insider fields may be shared)."""
+        return attraction.created_by_host_id == host.id
+
     def _generate_host_insight(self, attraction: Attraction, host: Host) -> Optional[str]:
         """Generate host insight for the recommendation."""
+        if not self._attraction_owned_by_host(attraction, host):
+            return None
         insights = []
-        
+
         if attraction.host_personal_tip:
             insights.append(attraction.host_personal_tip)
-        
+
         if attraction.host_favorite_time:
             insights.append(f"Best time to visit: {attraction.host_favorite_time}")
-        
+
         if attraction.host_recommended_duration:
             insights.append(f"Recommended duration: {attraction.host_recommended_duration}")
-        
+
         return " | ".join(insights) if insights else None
-    
+
     def _generate_host_tip(self, attraction: Attraction, host: Host) -> Optional[str]:
         """Generate specific host tip."""
+        if not self._attraction_owned_by_host(attraction, host):
+            return None
         if attraction.host_insider_info:
             return attraction.host_insider_info
         return None
     
-    def _generate_explanation(self, attraction: Attraction, 
-                            guest_group: Dict[str, Any], 
-                            total_score: float) -> str:
+    def _guest_safe_rec_text(
+        self,
+        text: Optional[str],
+        attraction: Optional[Attraction],
+        owner_view: bool,
+        rec: Optional[RecommendationResponse] = None,
+    ) -> Optional[str]:
+        """Drop recommendation copy that echoes another host's insider fields."""
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        if not text:
+            return text
+        if not owner_view:
+            low = text.casefold()
+            fragments: list[Optional[str]] = []
+            if rec is not None:
+                fragments.extend([rec.host_insight, rec.host_tip])
+            if attraction is not None:
+                fragments.extend(
+                    [
+                        attraction.host_personal_tip,
+                        attraction.host_insider_info,
+                        attraction.host_recommended_duration,
+                        attraction.host_favorite_time,
+                    ]
+                )
+            for frag in fragments:
+                if frag and str(frag).casefold() in low:
+                    return None
+        return scrub_contact_from_text(text)
+
+    def _generate_explanation(
+        self,
+        attraction: Attraction,
+        guest_group: Dict[str, Any],
+        total_score: float,
+        host: Host,
+    ) -> str:
         """Generate explanation for why this was recommended."""
         reasons = []
         
@@ -346,18 +625,18 @@ class RecommendationService:
         
         # Check interest matches
         if group.interests:
-            matching_interests = set(group.interests) & set(attraction.category_tags)
+            matching_interests = set(group.interests or []) & set(getattr(attraction, "category_tags", []) or [])
             if matching_interests:
                 reasons.append(f"Matches your interests: {', '.join(matching_interests)}")
         
         # Check group suitability
-        if group.group_dynamics == "family" and "family_friendly" in attraction.category_tags:
+        if group.group_dynamics == "family" and "family_friendly" in (getattr(attraction, "category_tags", []) or []):
             reasons.append("Perfect for families")
-        elif group.group_dynamics == "romantic" and "romantic" in attraction.category_tags:
+        elif group.group_dynamics == "romantic" and "romantic" in (getattr(attraction, "category_tags", []) or []):
             reasons.append("Ideal for couples")
         
-        # Host knowledge
-        if attraction.host_personal_tip:
+        # Host knowledge — only for attractions owned by the stay host
+        if self._attraction_owned_by_host(attraction, host) and attraction.host_personal_tip:
             reasons.append("Your host has special insights about this place")
         
         # Popularity
@@ -384,6 +663,31 @@ class RecommendationService:
             return "winter"
     
     # Feedback and Analytics
+    async def get_guest_group_analytics(self, guest_group_id: uuid.UUID) -> Dict[str, Any]:
+        """Recommendation analytics for a single guest group."""
+        gg = await self._get_guest_group_with_preferences(guest_group_id)
+        if not gg:
+            return {
+                "guest_group_id": str(guest_group_id),
+                "recommendations_given": 0,
+                "recommendations_accepted": 0,
+                "acceptance_rate": 0.0,
+                "satisfaction_rating": None,
+            }
+        group = gg["group"]
+        given = int(group.recommendations_given or 0)
+        accepted = int(group.recommendations_accepted or 0)
+        rate = (accepted / given) if given else 0.0
+        return {
+            "guest_group_id": str(guest_group_id),
+            "recommendations_given": given,
+            "recommendations_accepted": accepted,
+            "acceptance_rate": round(rate, 3),
+            "satisfaction_rating": group.satisfaction_rating,
+            "group_name": group.group_name,
+            "status": group.status,
+        }
+
     async def get_host_analytics(self, host_id: uuid.UUID, days: int = 30) -> RecommendationAnalytics:
         """
         Aggregate recommendation analytics for the host dashboard.
@@ -412,31 +716,29 @@ class RecommendationService:
         relevance_score: float,
         rank_order: int,
         why_recommended: str,
-    ) -> RecommendationResponse:
+    ) -> ExplorerRecommendationPublicResponse:
         """Build API recommendation rows for public explorer endpoints (no DB persistence)."""
-        now = datetime.utcnow()
-        rs = max(0.0, min(1.0, float(relevance_score)))
-        if rs >= 0.65:
-            priority = RecommendationPriority.HIGH
-        elif rs >= 0.35:
-            priority = RecommendationPriority.MEDIUM
-        else:
-            priority = RecommendationPriority.LOW
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
         desc = attraction.description or attraction.short_description or ""
-        return RecommendationResponse(
+        duration_hours = getattr(attraction, "duration_hours", None)
+        estimated_duration = (
+            f"{duration_hours:g} hours" if duration_hours is not None else None
+        )
+        return ExplorerRecommendationPublicResponse(
             id=attraction.id,
-            title=attraction.name,
-            description=desc,
+            title=scrub_contact_from_text(attraction.name) or attraction.name,
+            description=scrub_contact_from_text(desc) or "",
             recommendation_type=RecommendationType.ATTRACTION.value,
-            relevance_score=round(rs, 3),
-            priority=priority.value,
-            rank_order=rank_order,
-            why_recommended=why_recommended,
-            estimated_duration=getattr(attraction, "host_recommended_duration", None),
-            best_time_to_visit=getattr(attraction, "host_favorite_time", None),
-            estimated_cost=getattr(attraction, "admission_fee", None),
+            why_recommended=scrub_contact_from_text(why_recommended),
+            estimated_duration=estimated_duration,
+            best_time_to_visit=scrub_contact_from_text(
+                getattr(attraction, "best_time_to_visit", None)
+            ),
+            estimated_cost=scrub_contact_from_text(
+                getattr(attraction, "admission_fee", None)
+            ),
             booking_required=bool(getattr(attraction, "booking_required", False)),
-            created_at=now,
         )
 
     async def _fetch_approved_attractions_for_city(
@@ -447,13 +749,9 @@ class RecommendationService:
         """
         Attractions for public seasonal/weather endpoints.
 
-        Matches public city search: draft/pending included, rejected/archived excluded.
+        Approved only — matches public city listing and anonymous attraction reads.
         """
-        visible = (
-            AttractionStatus.APPROVED,
-            AttractionStatus.DRAFT,
-            AttractionStatus.PENDING,
-        )
+        visible = (AttractionStatus.APPROVED,)
         stmt = select(Attraction).where(Attraction.status.in_(visible))
         if city and city.strip():
             stmt = stmt.where(Attraction.city.ilike(f"%{city.strip()}%"))
@@ -471,7 +769,7 @@ class RecommendationService:
         season: str,
         city: Optional[str] = None,
         limit: int = 20,
-    ) -> List[RecommendationResponse]:
+    ) -> List[ExplorerRecommendationPublicResponse]:
         """Seasonal picks from approved attractions (Croatian seasonal model)."""
         lim = max(1, min(int(limit), 50))
         fake_request = SimpleNamespace(season=season, weather_context=None)
@@ -487,7 +785,7 @@ class RecommendationService:
                 score = 0.35
             scored.append((a, score))
         scored.sort(key=lambda x: x[1], reverse=True)
-        out: List[RecommendationResponse] = []
+        out: List[ExplorerRecommendationPublicResponse] = []
         for i, (a, s) in enumerate(scored[:lim]):
             out.append(
                 self._explorer_attraction_to_response(
@@ -503,7 +801,7 @@ class RecommendationService:
         self,
         city: str,
         limit: int = 10,
-    ) -> List[RecommendationResponse]:
+    ) -> List[ExplorerRecommendationPublicResponse]:
         """Lightweight weather-friendly ranking for a city (public endpoint)."""
         lim = max(1, min(int(limit), 50))
         attractions = await self._fetch_approved_attractions_for_city(
@@ -511,7 +809,7 @@ class RecommendationService:
         )
         scored: List[Tuple[Attraction, float]] = []
         for a in attractions:
-            tags = a.category_tags or []
+            tags = getattr(a, "category_tags", []) or []
             s = 0.42
             if "outdoor" in tags or (a.attraction_type or "") == "natural":
                 s += 0.28
@@ -525,7 +823,7 @@ class RecommendationService:
                 s += min(0.18, max(0.0, (float(a.guest_rating) - 3.0) * 0.06))
             scored.append((a, min(1.0, s)))
         scored.sort(key=lambda x: x[1], reverse=True)
-        out: List[RecommendationResponse] = []
+        out: List[ExplorerRecommendationPublicResponse] = []
         for i, (a, s) in enumerate(scored[:lim]):
             out.append(
                 self._explorer_attraction_to_response(
@@ -567,7 +865,7 @@ class RecommendationService:
                 
                 await self.db.execute(rec_stmt)
             
-            await self.db.commit()
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
             
             logger.info(f"Recorded feedback for recommendation set {feedback.recommendation_set_id}")
             return True
@@ -703,7 +1001,14 @@ class RecommendationService:
         )
 
         try:
-            rec_set = await self.generate_recommendations(guest_group_id, host_id, create)
+            rec_set = await self.generate_recommendations(
+                guest_group_id,
+                host_id,
+                create,
+                max_price_level=request_data.max_price_level,
+                food_type=request_data.food_type,
+                query_terms=request_data.query_terms,
+            )
         except Exception as e:
             logger.error("get_personalized_recommendations: generate_recommendations failed: %s", e)
             return empty
@@ -751,64 +1056,208 @@ class RecommendationService:
             logger.error("get_recommendation_history failed: %s", e)
             return []
 
-    @staticmethod
-    def _personalization_factor_strings(raw: Any) -> List[str]:
+    _INTERNAL_FACTOR_KEYS = frozenset(
+        {
+            "algorithm_weights",
+            "request_type",
+            "season",
+            "weather_context",
+            "group_size",
+            "duration_hours",
+            "budget_range",
+        }
+    )
+
+    _FACTOR_LABELS = {
+        "preferred_categories": "Good for you",
+        "interests": "Matches your interests",
+    }
+
+    @classmethod
+    def _guest_safe_factor_dict(cls, raw: Any) -> Dict[str, Any]:
+        """Strip internal scoring keys from batch-level personalization_factors."""
+        from app.services.host_offerings_for_guest import _scrub_safe_value
+
+        if not isinstance(raw, dict):
+            return {}
+        safe: Dict[str, Any] = {}
+        for k, v in raw.items():
+            if k in cls._INTERNAL_FACTOR_KEYS:
+                continue
+            safe[k] = _scrub_safe_value(v)
+        return safe
+
+    @classmethod
+    def _guest_safe_factor_chips(cls, chips: List[str]) -> List[str]:
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        out: List[str] = []
+        for chip in chips:
+            scrubbed = scrub_contact_from_text(chip)
+            if scrubbed:
+                out.append(scrubbed)
+        return out
+
+    @classmethod
+    def _personalization_factor_strings(cls, raw: Any) -> List[str]:
         """Flatten batch personalization_factors into short guest-facing chips."""
         if not raw:
             return []
         if isinstance(raw, list):
-            return [str(x).strip() for x in raw if str(x).strip()]
+            return cls._guest_safe_factor_chips(
+                [
+                    s
+                    for s in (str(x).strip() for x in raw)
+                    if s and "algorithm" not in s.lower() and "request type" not in s.lower()
+                ]
+            )
         if isinstance(raw, dict):
             out: List[str] = []
             for key, val in raw.items():
+                if key in cls._INTERNAL_FACTOR_KEYS:
+                    continue
+                if key == "preferred_categories" and isinstance(val, list):
+                    for item in val[:4]:
+                        t = str(item).strip().replace("_", " ")
+                        if t:
+                            out.append(t.title())
+                    continue
                 if isinstance(val, list):
-                    out.extend(str(x).strip() for x in val if str(x).strip())
-                elif val is not None and str(val).strip():
-                    label = str(key).replace("_", " ").strip()
-                    out.append(f"{label}: {val}" if label else str(val))
-            return out
-        return [str(raw).strip()] if str(raw).strip() else []
+                    for item in val[:3]:
+                        t = str(item).strip().replace("_", " ")
+                        if t and len(t) < 40:
+                            out.append(t.title())
+                elif val is not None:
+                    text = str(val).strip()
+                    if not text or text.startswith("{") or "algorithm" in text.lower():
+                        continue
+                    label = cls._FACTOR_LABELS.get(key) or str(key).replace("_", " ").strip().title()
+                    if key in cls._FACTOR_LABELS:
+                        out.append(label)
+                    elif len(text) < 36:
+                        out.append(text.title())
+            return cls._guest_safe_factor_chips(out[:6])
+        text = str(raw).strip()
+        if text and "algorithm" not in text.lower():
+            return cls._guest_safe_factor_chips([text])
+        return []
 
     @staticmethod
-    def _attraction_to_guest_summary(attraction: Attraction) -> GuestAttractionSummary:
-        tags = list(attraction.category_tags or [])
-        category = (tags[0] if tags else None) or attraction.attraction_type or "experience"
+    def _is_guest_visible_attraction(attraction: Optional[Attraction]) -> bool:
+        if not attraction:
+            return False
+        blob = f"{attraction.name or ''} {attraction.description or ''}".lower()
+        blocked = (
+            "ben component",
+            "ben qa",
+            "full-component",
+            "full component qa",
+            "qa attraction",
+            "test attraction",
+            "slash-test",
+            "verify ",
+        )
+        return not any(b in blob for b in blocked)
+
+    @staticmethod
+    def _attraction_to_guest_summary(
+        attraction: Attraction,
+        viewer_host_id: Optional[uuid.UUID] = None,
+    ) -> GuestAttractionSummary:
+        from app.services.host_offerings_for_guest import (
+            scrub_contact_from_text,
+            _scrub_safe_value,
+            _scrub_opening_hours,
+            _guest_safe_best_months,
+        )
+
+        tags = list(getattr(attraction, "category_tags", []) or [])
+        category_raw = (tags[0] if tags else None) or attraction.attraction_type or "experience"
+        category = scrub_contact_from_text(str(category_raw)) or "experience"
         parts = [p for p in (attraction.address, attraction.city, attraction.region) if p]
         location = ", ".join(parts) if parts else (attraction.city or "")
+        description = scrub_contact_from_text(
+            (attraction.description or attraction.short_description or "").strip()
+        )
+        address = scrub_contact_from_text(attraction.address)
+        location = scrub_contact_from_text(location)
         coords: Optional[List[float]] = None
         if attraction.latitude is not None and attraction.longitude is not None:
             coords = [float(attraction.latitude), float(attraction.longitude)]
         opening = attraction.opening_hours if isinstance(attraction.opening_hours, dict) else {}
         gallery = list(attraction.image_gallery or []) if isinstance(attraction.image_gallery, list) else []
+        scrubbed_gallery = [
+            scrub_contact_from_text(str(u), scrub_urls=True) or str(u) for u in gallery
+        ]
+        featured_url = scrub_contact_from_text(
+            attraction.featured_image_url, scrub_urls=True
+        )
+        owner_view = (
+            viewer_host_id is not None
+            and getattr(attraction, "created_by_host_id", None) == viewer_host_id
+        )
+        host_tip = attraction.host_personal_tip if owner_view else None
+        host_fav_time = attraction.host_favorite_time if owner_view else None
+        host_insider = attraction.host_insider_info if owner_view else None
+        scrubbed_opening = _scrub_opening_hours(opening)
+        admission_fee = scrub_contact_from_text(attraction.admission_fee)
+        scrubbed_name = scrub_contact_from_text(attraction.name) or attraction.name
+        from app.services.google_places_enrichment import GooglePlacesEnrichmentService
+
+        maps_fields = GooglePlacesEnrichmentService.computed_maps_fields(attraction)
+        google_photos = list(attraction.google_photos or []) if isinstance(attraction.google_photos, list) else []
+        scrubbed_photos = [
+            scrub_contact_from_text(str(u), scrub_urls=True) or str(u) for u in google_photos
+        ]
+        google_rating = attraction.google_rating
+        avg_rating = google_rating if google_rating is not None else attraction.guest_rating
+        review_count = (
+            int(attraction.google_user_ratings_total or 0)
+            if attraction.google_user_ratings_total
+            else int(attraction.total_ratings or 0)
+        )
         return GuestAttractionSummary(
             id=attraction.id,
-            name=attraction.name,
-            description=(attraction.description or attraction.short_description or "").strip(),
-            category=str(category),
-            location=location,
+            name=scrubbed_name,
+            description=description or "",
+            category=category,
+            location=location or "",
             coordinates=coords,
-            opening_hours=opening,
-            cost_estimate=(attraction.admission_fee or "").strip(),
+            opening_hours=scrubbed_opening,
+            cost_estimate=(admission_fee or "").strip(),
             authenticity_level="local",
             seasonal_info={},
-            attraction_type=attraction.attraction_type,
-            city=attraction.city,
-            address=attraction.address,
-            region=attraction.region,
+            attraction_type=scrub_contact_from_text(attraction.attraction_type),
+            city=scrub_contact_from_text(attraction.city),
+            address=address,
+            region=scrub_contact_from_text(attraction.region),
             latitude=attraction.latitude,
             longitude=attraction.longitude,
-            featured_image_url=attraction.featured_image_url,
-            image_gallery=gallery,
-            best_months=list(attraction.best_months or []),
-            average_rating=attraction.guest_rating,
-            review_count=int(attraction.total_ratings or 0),
-            host_personal_tip=attraction.host_personal_tip,
-            host_favorite_time=attraction.host_favorite_time,
-            host_insider_info=attraction.host_insider_info,
-            host_recommended_duration=attraction.host_recommended_duration,
-            admission_fee=attraction.admission_fee,
-            seasonal_availability=attraction.seasonal_availability,
-            seasonal_notes=attraction.seasonal_notes,
+            featured_image_url=featured_url or (scrubbed_photos[0] if scrubbed_photos else None),
+            image_gallery=scrubbed_gallery or scrubbed_photos,
+            best_months=_guest_safe_best_months(list(attraction.best_months or [])),
+            average_rating=avg_rating,
+            review_count=review_count,
+            host_personal_tip=scrub_contact_from_text(host_tip) if host_tip else None,
+            host_favorite_time=scrub_contact_from_text(host_fav_time) if host_fav_time else None,
+            host_insider_info=scrub_contact_from_text(host_insider) if host_insider else None,
+            host_recommended_duration=(
+                scrub_contact_from_text(attraction.host_recommended_duration)
+                if owner_view and attraction.host_recommended_duration
+                else None
+            ),
+            admission_fee=admission_fee,
+            seasonal_availability=scrub_contact_from_text(attraction.seasonal_availability),
+            seasonal_notes=scrub_contact_from_text(attraction.seasonal_notes),
+            google_place_id=attraction.google_place_id,
+            google_rating=google_rating,
+            google_user_ratings_total=attraction.google_user_ratings_total,
+            google_price_level=attraction.google_price_level,
+            google_photos=scrubbed_photos,
+            google_website=scrub_contact_from_text(attraction.google_website, scrub_urls=True),
+            google_phone=scrub_contact_from_text(attraction.google_phone),
+            google_maps_url=maps_fields.get("google_maps_url"),
+            static_map_image_url=maps_fields.get("static_map_image_url"),
         )
 
     async def _load_attractions_by_ids(
@@ -826,55 +1275,168 @@ class RecommendationService:
         guest_group_id: uuid.UUID,
         attraction: Optional[Attraction],
         factor_strings: List[str],
+        viewer_host_id: Optional[uuid.UUID] = None,
     ) -> GuestRecommendationItem:
-        reason = (rec.why_recommended or rec.description or rec.title or "").strip()
+        from app.services.host_offerings_for_guest import scrub_contact_from_text
+
+        owner_view = False
+        if attraction is not None and viewer_host_id is not None:
+            owner_view = getattr(attraction, 'created_by_host_id', None) == viewer_host_id
+
+        reason = ""
+        if owner_view and attraction:
+            tip = (attraction.host_personal_tip or attraction.host_insider_info or "").strip()
+            if tip and len(tip) > 12 and "qa" not in tip.lower():
+                reason = tip
+            else:
+                reason = (
+                    self._guest_safe_rec_text(
+                        (rec.why_recommended or rec.description or rec.title or "").strip(),
+                        attraction,
+                        owner_view,
+                        rec,
+                    )
+                    or ""
+                )
+                if not reason or "special insights" in reason.lower():
+                    name = scrub_contact_from_text(
+                        (attraction.name or "this place").strip()
+                    ) or "this place"
+                    city = scrub_contact_from_text(
+                        (attraction.city or "the area").strip()
+                    ) or "the area"
+                    reason = f"Your host recommends {name} while you stay in {city}."
+        else:
+            reason = (
+                self._guest_safe_rec_text(
+                    (rec.why_recommended or rec.description or rec.title or "").strip(),
+                    attraction,
+                    owner_view,
+                    rec,
+                )
+                or ""
+            )
+            if attraction and (not reason or "special insights" in reason.lower()):
+                city = scrub_contact_from_text(
+                    (attraction.city or "the area").strip()
+                ) or "the area"
+                reason = f"Recommended while you stay in {city}."
         if not reason:
             reason = "Recommended for your stay."
-        summary = self._attraction_to_guest_summary(attraction) if attraction else None
+        summary = (
+            self._attraction_to_guest_summary(attraction, viewer_host_id)
+            if attraction
+            else None
+        )
+
+        guest_insight = (
+            scrub_contact_from_text(rec.host_insight) if owner_view and rec.host_insight else None
+        )
+        guest_tip = (
+            scrub_contact_from_text(rec.host_tip) if owner_view and rec.host_tip else None
+        )
+        guest_description = self._guest_safe_rec_text(
+            rec.description, attraction, owner_view, rec
+        )
+        guest_why = self._guest_safe_rec_text(
+            rec.why_recommended, attraction, owner_view, rec
+        )
+        guest_title = self._guest_safe_rec_text(rec.title, attraction, owner_view, rec)
+        safe_reason = self._guest_safe_rec_text(reason, attraction, owner_view, rec)
+        if safe_reason is not None:
+            reason = safe_reason
+        elif not owner_view:
+            if attraction:
+                city = scrub_contact_from_text(
+                    (attraction.city or "the area").strip()
+                ) or "the area"
+                reason = f"Recommended while you stay in {city}."
+            else:
+                reason = "Recommended for your stay."
+        else:
+            reason = scrub_contact_from_text(reason) or "Recommended for your stay."
         return GuestRecommendationItem(
             id=rec.id,
-            guest_group_id=guest_group_id,
             attraction_id=rec.attraction_id,
-            score=float(rec.relevance_score),
             reason=reason,
             personalization_factors=factor_strings,
-            created_at=rec.created_at,
-            feedback_rating=rec.feedback_rating,
             attraction=summary,
-            title=rec.title,
-            description=rec.description,
-            why_recommended=rec.why_recommended,
-            relevance_score=rec.relevance_score,
-            host_insight=rec.host_insight,
-            host_tip=rec.host_tip,
+            title=guest_title,
+            description=guest_description,
+            why_recommended=guest_why,
+            host_insight=guest_insight,
+            host_tip=guest_tip,
         )
 
     async def enrich_batch_for_guest(
         self,
         batch: RecommendationBatch,
         guest_group_id: uuid.UUID,
+        viewer_host_id: Optional[uuid.UUID] = None,
     ) -> GuestRecommendationBatch:
         """Attach attraction cards and guest UI aliases to a recommendation batch."""
         recs = list(batch.recommendations or [])
         ids = [r.attraction_id for r in recs if r.attraction_id]
+        # Re-apply worker bypass — pipeline commits may have cleared it
+        from app.services.rls_service import RLSService
+        try:
+            await RLSService(self.db).set_bypass("worker")
+        except Exception:
+            pass
         by_id = await self._load_attractions_by_ids(ids)
+        
+        # Load partners for recommendations without attraction_id
+        partner_titles = [r.title for r in recs if r.title and not r.attraction_id]
+        by_partner_title: Dict[str, Any] = {}
+        if partner_titles:
+            from app.models.partner import Partner
+            from sqlalchemy import select as sa_select
+            pstmt = sa_select(Partner).where(Partner.name.in_(partner_titles), Partner.status == 'active')
+            presult = await self.db.execute(pstmt)
+            for p in presult.scalars().all():
+                by_partner_title[p.name] = p
+        
         factors = self._personalization_factor_strings(batch.personalization_factors)
-        items = [
-            self._build_guest_item(
-                r,
-                guest_group_id,
-                by_id.get(r.attraction_id) if r.attraction_id else None,
-                factors,
+        items: List[GuestRecommendationItem] = []
+        for r in recs:
+            att = by_id.get(r.attraction_id) if r.attraction_id else None
+            if att is None and r.title and r.title in by_partner_title:
+                partner = by_partner_title[r.title]
+                # Build synthetic GuestAttractionSummary from partner
+                from app.services.google_places_enrichment import GooglePlacesEnrichmentService
+                maps_url = None
+                if partner.latitude and partner.longitude:
+                    maps_url = f"https://maps.google.com/?q={partner.latitude},{partner.longitude}"
+                att = GuestAttractionSummary(
+                    id=partner.id,
+                    name=partner.name,
+                    description=partner.description or "",
+                    category=partner.category or "dining",
+                    location=partner.city or "",
+                    city=partner.city,
+                    address=partner.address,
+                    latitude=partner.latitude,
+                    longitude=partner.longitude,
+                    google_rating=partner.google_rating,
+                    google_user_ratings_total=partner.google_user_ratings_total,
+                    google_price_level=partner.google_price_level,
+                    google_website=partner.google_website,
+                    google_phone=partner.google_phone,
+                    google_maps_url=maps_url,
+                    created_by_host_id=None,
+                    category_tags=[],
+                )
+            if att is not None and not self._is_guest_visible_attraction(att):
+                continue
+            items.append(
+                self._build_guest_item(r, guest_group_id, att, factors, viewer_host_id)
             )
-            for r in recs
-        ]
         return GuestRecommendationBatch(
             recommendations=items,
-            total_count=batch.total_count,
-            generated_at=batch.generated_at,
-            guest_group_id=batch.guest_group_id or guest_group_id,
-            request_context=batch.request_context or {},
-            personalization_factors=batch.personalization_factors or {},
+            total_count=len(items),
+            personalization_factors=self._guest_safe_factor_dict(
+                batch.personalization_factors
+            ),
         )
 
     async def enrich_list_for_guest(
@@ -882,20 +1444,21 @@ class RecommendationService:
         recs: List[RecommendationResponse],
         guest_group_id: uuid.UUID,
         personalization_factors: Optional[Dict[str, Any]] = None,
+        viewer_host_id: Optional[uuid.UUID] = None,
     ) -> List[GuestRecommendationItem]:
         """Enrich history rows with embedded attractions for guest UI."""
         ids = [r.attraction_id for r in recs if r.attraction_id]
         by_id = await self._load_attractions_by_ids(ids)
         factors = self._personalization_factor_strings(personalization_factors or {})
-        return [
-            self._build_guest_item(
-                r,
-                guest_group_id,
-                by_id.get(r.attraction_id) if r.attraction_id else None,
-                factors,
+        items: List[GuestRecommendationItem] = []
+        for r in recs:
+            att = by_id.get(r.attraction_id) if r.attraction_id else None
+            if att is not None and not self._is_guest_visible_attraction(att):
+                continue
+            items.append(
+                self._build_guest_item(r, guest_group_id, att, factors, viewer_host_id)
             )
-            for r in recs
-        ]
+        return items
 
     async def submit_feedback(
         self,
@@ -924,7 +1487,7 @@ class RecommendationService:
             if feedback_data.feedback_text:
                 rec.feedback_comment = feedback_data.feedback_text
             rec.updated_at = datetime.utcnow()
-            await self.db.commit()
+            await self.db.flush()  # was commit(); flush keeps RLS bypass alive
             await self.db.refresh(rec)
 
             return RecommendationFeedbackResponse(
@@ -942,3 +1505,90 @@ class RecommendationService:
             await self.db.rollback()
             logger.error("submit_feedback failed: %s", e)
             return None
+
+    async def test_algorithm(
+        self,
+        test_data: RecommendationRequestAPI,
+        host_id: uuid.UUID,
+    ) -> RecommendationAlgorithmTestResponse:
+        """Dry-run or live algorithm test for host tuning."""
+        started = time.perf_counter()
+        params = test_data.model_dump(mode="json")
+        sample_titles: List[str] = []
+        rec_count = 0
+        message = "Dry-run completed using approved attraction candidates"
+        success = True
+        guest_group_id = test_data.guest_group_id
+
+        if guest_group_id:
+            gg_stmt = select(GuestGroup).where(
+                GuestGroup.id == guest_group_id,
+                GuestGroup.host_id == host_id,
+            )
+            gg_result = await self.db.execute(gg_stmt)
+            group = gg_result.scalar_one_or_none()
+            if not group:
+                return RecommendationAlgorithmTestResponse(
+                    success=False,
+                    message="Guest group not found for this host",
+                    guest_group_id=guest_group_id,
+                    parameters_used=params,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+            request = RecommendationRequestCreate(
+                preferred_radius_km=test_data.preferred_radius_km,
+                preferred_categories=test_data.preferred_categories,
+                excluded_categories=test_data.excluded_categories,
+                accessibility_requirements=test_data.accessibility_requirements,
+                response_language=test_data.language,
+                target_date=test_data.target_date,
+                current_location=test_data.current_location,
+            )
+            batch = await self.generate_recommendations(
+                guest_group_id=guest_group_id,
+                host_id=host_id,
+                request_data=request,
+            )
+            rec_count = len(batch.recommendations) if batch and batch.recommendations else 0
+            sample_titles = [
+                rec.title[:80]
+                for rec in (batch.recommendations[:3] if batch and batch.recommendations else [])
+                if rec.title
+            ]
+            message = "Live algorithm test completed"
+        else:
+            attractions = await self._fetch_approved_attractions_for_city(
+                test_data.current_location,
+                fetch_limit=max(test_data.max_recommendations * 3, 15),
+            )
+            rec_count = min(len(attractions), test_data.max_recommendations)
+            sample_titles = [a.name[:80] for a in attractions[:3]]
+
+        return RecommendationAlgorithmTestResponse(
+            success=success,
+            message=message,
+            guest_group_id=guest_group_id,
+            recommendations_count=rec_count,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            parameters_used=params,
+            sample_titles=sample_titles,
+        )
+
+    async def get_performance_metrics(
+        self,
+        host_id: uuid.UUID,
+    ) -> RecommendationPerformanceMetricsResponse:
+        stats = await self.get_host_recommendation_stats(host_id)
+        return RecommendationPerformanceMetricsResponse(
+            total_recommendation_sets=int(stats.get("total_recommendation_sets") or 0),
+            total_recommendations_generated=int(
+                stats.get("total_recommendations_generated") or 0
+            ),
+            average_satisfaction=float(stats.get("average_satisfaction") or 0.0),
+            recommendations_accepted_rate=float(
+                stats.get("recommendations_accepted_rate") or 0.0
+            ),
+            host_insights_helpful_rate=float(
+                stats.get("host_insights_helpful_rate") or 0.0
+            ),
+        )

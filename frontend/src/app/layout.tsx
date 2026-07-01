@@ -2,7 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Manrope, Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/contexts/auth-context";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
+import { ToastProvider } from "@/components/ui/toast";
 
 const bodyFont = Manrope({
   subsets: ["latin"],
@@ -20,13 +21,15 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 5,
-  themeColor: "#0e7490",
+  themeColor: "#1a56db",
 };
 
 export const metadata: Metadata = {
-  title: "TouristGuideLocal - Croatian Tourism Host Platform",
-  description: "B2B SaaS platform for Croatian tourist hosts offering personalized, AI-powered local guide services to guests.",
-  keywords: "Croatia, tourism, hosts, Airbnb, local guide, AI recommendations, Istria, Lovran",
+  title: "HostForGuest — AI-Powered Local Guide for Your Stay",
+  description:
+    "HostForGuest is an AI-powered platform that helps accommodation hosts provide personalized local guide experiences to their guests. Built by Syntagent.",
+  keywords:
+    "Croatia, tourism, hosts, AI recommendations, Istria, Kvarner, local guide, Syntagent",
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
     apple: "/icon.svg",
@@ -35,7 +38,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "TouristGuide",
+    title: "HostForGuest",
   },
 };
 
@@ -53,15 +56,17 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
-        <ErrorBoundary>
+        <RouteErrorBoundary>
           <AuthProvider>
-            <div id="root">
-              <main id="main-content" tabIndex={-1} className="outline-none">
-                {children}
-              </main>
-            </div>
+            <ToastProvider>
+              <div id="root">
+                <main id="main-content" tabIndex={-1} className="outline-none">
+                  {children}
+                </main>
+              </div>
+            </ToastProvider>
           </AuthProvider>
-        </ErrorBoundary>
+        </RouteErrorBoundary>
       </body>
     </html>
   );

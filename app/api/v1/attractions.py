@@ -335,10 +335,27 @@ async def search_attractions(
     """
     try:
         attraction_service = AttractionService(db)
-        search_results = await attraction_service.advanced_search(search_request)
-        
-        logger.info(f"Attraction search returned {len(search_results.results)} results")
-        return search_results
+        # Unpack search request into individual parameters for the service method
+        city = search_request.city or search_request.query
+        category_tags = [search_request.category] if search_request.category else None
+        results_list = await attraction_service.search_attractions(
+            city=city,
+            region=None,
+            attraction_type=search_request.attraction_type,
+            category_tags=category_tags,
+            seasonal_filter=search_request.season,
+            skip=search_request.skip,
+            limit=search_request.limit,
+        )
+
+        logger.info(f"Attraction search returned {len(results_list)} results")
+        return AttractionSearchResponse(
+            results=results_list,
+            total_count=len(results_list),
+            page=1,
+            per_page=search_request.limit,
+            query=search_request.query,
+        )
         
     except Exception as e:
         logger.error(f"Failed to search attractions: {str(e)}")

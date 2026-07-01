@@ -7,7 +7,7 @@ and preference collection for the B2B SaaS platform.
 
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,15 @@ from app.models.host import HostProfile
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Store timestamps in DB columns that use TIMESTAMP WITHOUT TIME ZONE."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 # New guest-group codes: shared link, multiple devices / retries (within cap)
 DEFAULT_GUEST_GROUP_CODE_EXPIRE_HOURS = 720  # 30d (AccessCodeCreate max)
@@ -175,17 +184,17 @@ class GuestGroupService:
                 host_profile_id=prof.id if prof else None,
                 group_name=group_data.group_name,
                 group_size=group_data.group_size,
-                check_in_date=group_data.check_in_date,
-                check_out_date=group_data.check_out_date,
+                check_in_date=_naive_utc(group_data.check_in_date),
+                check_out_date=_naive_utc(group_data.check_out_date),
                 lead_guest_name=group_data.lead_guest_name,
                 lead_guest_email=group_data.lead_guest_email,
                 lead_guest_phone=group_data.lead_guest_phone,
                 preferred_language=group_data.preferred_language,
-                supported_languages=group_data.supported_languages,
-                age_groups=group_data.age_groups,
-                interests=group_data.interests,
-                mobility_requirements=group_data.mobility_requirements,
-                dietary_restrictions=group_data.dietary_restrictions,
+                supported_languages=group_data.supported_languages or ["en", "hr"],
+                age_groups=group_data.age_groups or [],
+                interests=group_data.interests or [],
+                mobility_requirements=group_data.mobility_requirements or [],
+                dietary_restrictions=group_data.dietary_restrictions or [],
                 budget_level=group_data.budget_level,
                 preferred_activities=group_data.preferred_activities,
                 avoided_activities=group_data.avoided_activities,
@@ -325,10 +334,11 @@ class GuestGroupService:
                 stmt = update(GuestGroup).where(GuestGroup.id == group_id).values(**update_data)
                 await self.db.execute(stmt)
                 await self.db.commit()
-                
-                # Refresh group data
-                await self.db.refresh(group)
-                
+
+                group = await self.get_guest_group_by_id(group_id)
+                if not group:
+                    return None
+
                 logger.info(f"Guest group updated successfully: {group_id}")
                 prof = await self._profile_for_host_id(group.host_id)
                 return await self.guest_group_to_response(group, profile=prof)
@@ -887,6 +897,15 @@ class GuestGroupService:
             return 0
     
     # E-visitor Data Management
+    @staticmethod
+    def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+        """PostgreSQL TIMESTAMP WITHOUT TIME ZONE expects naive UTC datetimes."""
+        if dt is None:
+            return None
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+
     async def create_guest_evisitor_data(
         self, 
         guest_group_id: uuid.UUID, 
@@ -914,20 +933,20 @@ class GuestGroupService:
                 guest_group_id=guest_group_id,
                 first_name=evisitor_data.first_name,
                 last_name=evisitor_data.last_name,
-                date_of_birth=evisitor_data.date_of_birth,
+                date_of_birth=self._naive_utc(evisitor_data.date_of_birth),
                 nationality=evisitor_data.nationality,
                 id_type=evisitor_data.id_type,
                 id_number=evisitor_data.id_number,
                 id_issuing_country=evisitor_data.id_issuing_country,
-                id_expiry_date=evisitor_data.id_expiry_date,
+                id_expiry_date=self._naive_utc(evisitor_data.id_expiry_date),
                 address_line1=evisitor_data.address_line1,
                 address_line2=evisitor_data.address_line2,
                 city=evisitor_data.city,
                 state_province=evisitor_data.state_province,
                 postal_code=evisitor_data.postal_code,
                 country=evisitor_data.country,
-                arrival_date=evisitor_data.arrival_date,
-                departure_date=evisitor_data.departure_date,
+                arrival_date=self._naive_utc(evisitor_data.arrival_date),
+                departure_date=self._naive_utc(evisitor_data.departure_date),
                 email=evisitor_data.email,
                 phone=evisitor_data.phone
             )

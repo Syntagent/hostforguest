@@ -8,7 +8,7 @@ Google Maps integration, transportation planning, and collaborative features.
 import logging
 import os
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, and_, or_
 from sqlalchemy.orm import selectinload
@@ -35,6 +35,15 @@ from app.services.ai_service_fallback import AIServiceWithFallback
 from app.services.guest_group_service import host_owns_guest_group
 
 logger = logging.getLogger(__name__)
+
+
+def _naive_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize datetimes for TIMESTAMP WITHOUT TIME ZONE columns."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _strip_markdown_json_fence(text: str) -> str:
@@ -731,8 +740,8 @@ class ItineraryService:
                 activity_type=activity_data.activity_type,
                 category=activity_data.category,
                 sequence_order=next_order,
-                scheduled_start_time=activity_data.scheduled_start_time,
-                scheduled_end_time=activity_data.scheduled_end_time,
+                scheduled_start_time=_naive_utc(activity_data.scheduled_start_time),
+                scheduled_end_time=_naive_utc(activity_data.scheduled_end_time),
                 estimated_duration=activity_data.estimated_duration,
                 location_name=activity_data.location_name,
                 address=activity_data.address,
@@ -1501,17 +1510,13 @@ Rules:
     ) -> Tuple[ItineraryCreate, List[DayPlanCreate], List[ActivityCreate]]:
         """Generate an optimized itinerary structure (guest-specific or generic template)."""
         is_generic = guest_group is None
-        # Template: optional date range; use placeholder span for structure only
+        host_ref = await self._get_host(host_id)
+        host_city = (host_ref.city if host_ref and host_ref.city else None) or "Lovran"
+
         if is_generic:
             start_date = None
             end_date = None
-            base_label = (
-                (host.city or "Lovran")
-                + ", Croatia"
-            )
-            host_ref = await self._get_host(host_id)
-            if host_ref and host_ref.city:
-                base_label = f"{host_ref.city}, Croatia"
+            base_label = f"{host_city}, Croatia"
         else:
             start_date = date.today() + timedelta(days=1)
             end_date = start_date + timedelta(days=request.duration_days - 1)

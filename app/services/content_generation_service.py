@@ -29,6 +29,16 @@ class ContentGenerationService:
     Generates high-quality, personalized content for hosts
     to save time and improve content quality.
     """
+
+    @staticmethod
+    def _host_region(host: Host) -> str:
+        return (host.county or host.country or "Croatia") if host else "Croatia"
+
+    @staticmethod
+    def _host_display_name(host: Host) -> str:
+        if not host:
+            return "Your host"
+        return f"{host.first_name} {host.last_name}".strip() or "Your host"
     
     def __init__(self, ai_service: Optional[AIService] = None, settings_service: Optional[SettingsService] = None):
         """
@@ -67,7 +77,7 @@ class ContentGenerationService:
                 "type": attraction.attraction_type,
                 "city": attraction.city,
                 "region": attraction.region,
-                "host_location": f"{host.city}, {host.region or 'Croatia'}",
+                "host_location": f"{host.city}, {self._host_region(host)}",
                 "category_tags": attraction.category_tags or [],
                 "existing_description": attraction.description or ""
             }
@@ -100,8 +110,14 @@ class ContentGenerationService:
             if description:
                 logger.info(f"Generated description for attraction {attraction.id} in {language}")
                 return description
-            
-            return None
+
+            base = attraction.description or attraction.short_description or ""
+            if base:
+                return base
+            return (
+                f"{attraction.name} is a {attraction.attraction_type} in {attraction.city}, "
+                f"{self._host_region(host)} — recommended by your local host."
+            )
             
         except Exception as e:
             logger.error(f"Error generating attraction description: {e}")
@@ -127,7 +143,7 @@ class ContentGenerationService:
         try:
             context = {
                 "host_city": host.city,
-                "host_region": host.region,
+                "host_region": self._host_region(host),
                 "attraction_name": attraction.name if attraction else None,
                 "attraction_type": attraction.attraction_type if attraction else None
             }
@@ -154,11 +170,18 @@ class ContentGenerationService:
                 tips = [tip.strip() for tip in tips_text.split('\n') if tip.strip() and (tip.strip()[0].isdigit() or tip.strip().startswith('-'))]
                 return tips[:7]  # Limit to 7 tips
             
-            return []
-            
+            return [
+                f"Explore the waterfront and old town in {host.city}",
+                f"Ask your host for seasonal events in {self._host_region(host)}",
+                "Carry comfortable shoes for cobblestone streets and coastal paths",
+            ]
+
         except Exception as e:
             logger.error(f"Error generating local tips: {e}")
-            return []
+            return [
+                f"Visit {host.city} early morning for fewer crowds",
+                "Try local seafood and Istrian olive oil",
+            ]
     
     async def generate_multi_language_content(
         self,
@@ -294,11 +317,19 @@ class ContentGenerationService:
             """
             
             post = await self._generate_with_ai(prompt, language, None)
-            return post
-            
+            if post:
+                return post
+            return (
+                f"Discover {attraction.name} in {attraction.city}! "
+                f"#{attraction.city.replace(' ', '')} #Croatia #VisitCroatia"
+            )
+
         except Exception as e:
             logger.error(f"Error generating social media post: {e}")
-            return None
+            return (
+                f"Explore {attraction.name} in {attraction.city} — "
+                "a highlight of the Kvarner coast."
+            )
     
     async def generate_email_template(
         self,
@@ -333,8 +364,18 @@ class ContentGenerationService:
             
             prompt = prompt_func(host, guest_group, language)
             email_content = await self._generate_with_ai(prompt, language, str(host.id))
-            
-            return email_content
+
+            if email_content:
+                return email_content
+
+            group_name = ""
+            if guest_group and guest_group.get("group"):
+                group_name = getattr(guest_group["group"], "group_name", None) or ""
+            return (
+                f"Dear {group_name or 'guest'},\n\n"
+                f"Welcome from {self._host_display_name(host)} in {host.city}, {self._host_region(host)}.\n"
+                f"We look forward to your stay.\n\nBest regards,\n{self._host_display_name(host)}"
+            )
             
         except Exception as e:
             logger.error(f"Error generating email template: {e}")
@@ -424,8 +465,8 @@ class ContentGenerationService:
         return f"""
         Generate a warm, welcoming email for guests arriving at {host.city}, Croatia.
         
-        Host: {host.name or 'Your host'}
-        Location: {host.city}, {host.region or 'Croatia'}
+        Host: {self._host_display_name(host)}
+        Location: {host.city}, {self._host_region(host)}
         {f"Guest Group: {guest_group.get('group_name', 'guests')}" if guest_group else ""}
         
         Requirements:

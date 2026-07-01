@@ -1,5 +1,5 @@
 """
-Main API router for TouristGuideLocal v1.
+Main API router for HostForGuest v1.
 
 Includes all API endpoints for the Croatian tourist host platform.
 """
@@ -32,6 +32,7 @@ from app.api.v1 import (
     performance,
     channel_integrations,
     channel_webhooks,
+    accommodation_voice,
 )
 
 api_router = APIRouter()
@@ -46,6 +47,7 @@ api_router.include_router(recommendations.router, prefix="/recommendations", tag
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 api_router.include_router(itineraries.router, prefix="/itineraries", tags=["itineraries"])
 api_router.include_router(host_onboarding.router, prefix="/onboarding", tags=["host-onboarding"])
+api_router.include_router(accommodation_voice.router)
 
 # Real-time data endpoints
 api_router.include_router(realtime_data.router, prefix="/realtime", tags=["real-time-data"])

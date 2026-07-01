@@ -119,7 +119,7 @@ async def generate_attraction_description(
         host_service = HostService(db)
         
         # Get attraction
-        attraction = await attraction_service.get_by_id(uuid.UUID(request.attraction_id))
+        attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
         if not attraction:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -127,7 +127,7 @@ async def generate_attraction_description(
             )
         
         # Get host
-        host = await host_service.get_by_id(attraction.created_by_host_id)
+        host = await host_service.get_host_by_id(attraction.created_by_host_id)
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -191,7 +191,7 @@ async def generate_local_tips(
         attraction_service = AttractionService(db)
         
         # Get host
-        host = await host_service.get_by_id(uuid.UUID(request.host_id))
+        host = await host_service.get_host_by_id(uuid.UUID(request.host_id))
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -201,7 +201,7 @@ async def generate_local_tips(
         # Get attraction if provided
         attraction = None
         if request.attraction_id:
-            attraction = await attraction_service.get_by_id(uuid.UUID(request.attraction_id))
+            attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
         
         # Generate tips
         tips = await content_service.generate_local_tips(
@@ -289,7 +289,7 @@ async def generate_social_media_post(
         attraction_service = AttractionService(db)
         
         # Get attraction
-        attraction = await attraction_service.get_by_id(uuid.UUID(request.attraction_id))
+        attraction = await attraction_service.get_attraction_by_id(uuid.UUID(request.attraction_id))
         if not attraction:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -347,7 +347,7 @@ async def generate_email_template(
         host_service = HostService(db)
         
         # Get host
-        host = await host_service.get_by_id(uuid.UUID(request.host_id))
+        host = await host_service.get_host_by_id(uuid.UUID(request.host_id))
         if not host:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

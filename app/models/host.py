@@ -301,6 +301,7 @@ class HostLogin(SQLModel):
 
 class HostProfileCreate(SQLModel):
     """Host profile creation model."""
+    property_name: Optional[str] = Field(default=None, max_length=255)
     property_type: Optional[str] = Field(default=None, max_length=50)
     number_of_rooms: Optional[int] = Field(default=None, ge=1)
     max_guests: Optional[int] = Field(default=None, ge=1)
@@ -308,6 +309,7 @@ class HostProfileCreate(SQLModel):
     amenities: List[str] = Field(default_factory=list)
     expertise_areas: List[str] = Field(default_factory=list)
     favorite_local_spots: List[Dict[str, Any]] = Field(default_factory=list)
+    location_story: Optional[str] = None
 
 
 class HostProfileUpdate(SQLModel):

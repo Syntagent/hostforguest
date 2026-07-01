@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import Link from "next/link";
+import Image from "next/image";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn, isPlausibleGpsLatLng } from "@/lib/utils";
@@ -14,6 +16,7 @@ import {
   Link2,
   Lock,
   LogIn,
+  LogOut,
   Map,
   MapPin,
   RefreshCw,
@@ -24,23 +27,31 @@ import {
   Users,
   Wrench,
   Plus,
+  Pencil,
   X,
   Route,
   Palette,
 } from "lucide-react";
-import { hostsApi, guestGroupsApi, attractionsApi, realtimeApi, HostProfile, GuestGroup, Attraction, GuestEVisitorData, GuestEVisitorDataCreate, API_BASE_URL } from "@/lib/api";
+import { hostsApi, guestGroupsApi, attractionsApi, HostProfile, GuestGroup, Attraction, GuestEVisitorData, GuestEVisitorDataCreate, API_BASE_URL } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
+import { useToast } from "@/components/ui/toast";
 import type { CreateGroupFormData, DashboardAnalytics } from "./dashboard-types";
 import { AppLayout } from "@/components/layout/app-layout";
 import { HostDashboardMainContent } from "./widgets/host-dashboard-main-content";
 import { HostDashboardModals } from "./modals/host-dashboard-modals";
+import type { DashboardTab } from "./dashboard-tabs";
+import { useDashboardTabUrl } from "./use-dashboard-tab-url";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { isHostProfileReady } from "@/lib/host-account-procedure";
+import { AccommodationTab as AccommodationAgentTab } from "./accommodation-tab";
 
 interface HostDashboardProps {
   className?: string;
 }
 
 export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
-  const { user: currentHost, logout, devLogin } = useAuth();
+  const { user: currentHost, logout } = useAuth();
+  const { showToast } = useToast();
   const [profile, setProfile] = useState<HostProfile | null>(null);
   const [guestGroups, setGuestGroups] = useState<GuestGroup[]>([]);
   const [attractions, setAttractions] = useState<Attraction[]>([]);
@@ -50,8 +61,11 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   /** After first successful load cycle, never swap the whole page for a skeleton (avoids "blank" UI while refresh runs). */
   const [dashboardReady, setDashboardReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  type DashboardTab = 'overview' | 'accommodation' | 'channels' | 'groups' | 'attractions' | 'routes' | 'maintenance' | 'adaptation' | 'insights' | 'map' | 'discover' | 'cleaning';
-  const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
+  const { activeTab, selectTab } = useDashboardTabUrl();
+  const profileReady = useMemo(
+    () => isHostProfileReady(profile, currentHost),
+    [profile, currentHost]
+  );
 
   // Guest Groups state
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
@@ -133,14 +147,6 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
     phone: ''
   });
 
-  const [devTokenPresent, setDevTokenPresent] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
-    setDevTokenPresent(
-      !!(typeof window !== "undefined" && localStorage.getItem("session_token"))
-    );
-  }, [currentHost]);
-
   useEffect(() => {
     if (!currentHost?.id) return;
     loadDashboardData();
@@ -158,54 +164,20 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
         return;
       }
 
-      // Load host analytics data
-      const analyticsResponse = await hostsApi.getAnalytics();
-      if (analyticsResponse.success && analyticsResponse.data) {
-        setAnalytics(analyticsResponse.data);
-      } else if (analyticsResponse.status === 401) {
-        console.error('Authentication failed for analytics');
+      const bundle = await hostsApi.getDashboardStats();
+      if (bundle.status === 401) {
         logout();
         return;
       }
-
-      // Load host profile
-      const hostResponse = await hostsApi.getProfile();
-      if (hostResponse.success && hostResponse.data) {
-        setProfile(hostResponse.data);
-      } else if (hostResponse.status === 401) {
-        console.error('Authentication failed for profile');
-        logout();
-        return;
-      }
-
-      // Load guest groups
-      const groupsResponse = await guestGroupsApi.getByHost();
-      if (groupsResponse.success && groupsResponse.data) {
-        setGuestGroups(groupsResponse.data);
-      } else if (groupsResponse.status === 401) {
-        console.error('Authentication failed for guest groups');
-        logout();
-        return;
-      }
-
-      // Load attractions
-      const attractionsResponse = await attractionsApi.getByHost();
-      if (attractionsResponse.success && attractionsResponse.data) {
-        setAttractions(attractionsResponse.data);
-      } else if (attractionsResponse.status === 401) {
-        console.error('Authentication failed for attractions');
-        logout();
-        return;
-      }
-
-      // Load real-time updates from Crawl4AI
-      const realtimeResponse = await realtimeApi.getUpdates();
-      if (realtimeResponse.success && realtimeResponse.data) {
-        setRealtimeUpdates(realtimeResponse.data.slice(0, 5)); // Latest 5 updates
-      } else if (realtimeResponse.status === 401) {
-        console.error('Authentication failed for real-time updates');
-        logout();
-        return;
+      if (bundle.success && bundle.data) {
+        const d = bundle.data;
+        if (d.analytics) setAnalytics(d.analytics as DashboardAnalytics);
+        if (d.profile) setProfile(d.profile as HostProfile);
+        if (d.guest_groups) setGuestGroups(d.guest_groups);
+        if (d.attractions) setAttractions(d.attractions);
+        if (d.realtime_updates) setRealtimeUpdates(d.realtime_updates);
+      } else {
+        setError(bundle.error || "Failed to load dashboard data.");
       }
     } catch (error) {
       console.error('Error loading dashboard data:', error);
@@ -217,8 +189,20 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   };
 
   const handleCreateGroup = async () => {
+    const group_name = createGroupData.group_name?.trim();
+    if (!group_name) {
+      showToast({
+        type: "warning",
+        title: "Group name required",
+        message: "Add a name before creating the guest group.",
+      });
+      return;
+    }
     try {
-      const response = await guestGroupsApi.create(createGroupData);
+      const response = await guestGroupsApi.create({
+        group_name,
+        group_size: createGroupData.group_size,
+      });
       if (response.success && response.data) {
         setGuestGroups([...guestGroups, response.data]);
         setShowCreateGroupModal(false);
@@ -234,26 +218,52 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
             language_preference: 'en'
           }]
         });
-        // Reload dashboard data to update analytics
+        showToast({
+          type: "success",
+          title: "Guest group saved",
+          message: `"${response.data.group_name}" was created successfully.`,
+        });
         await loadDashboardData();
+        return;
       }
+      if (response.status === 401) {
+        showToast({ type: "error", title: "Session expired", message: "Please log in again." });
+        logout();
+        return;
+      }
+      showToast({
+        type: "error",
+        title: "Could not save group",
+        message: response.error || "Please check the group name and try again.",
+      });
     } catch (error) {
       console.error('Error creating guest group:', error);
+      showToast({
+        type: "error",
+        title: "Network error",
+        message: "Could not reach the server while creating the guest group.",
+      });
     }
   };
 
   const copyAccessCode = (accessCode: string) => {
     const text = String(accessCode ?? "").trim();
     if (!text) {
-      window.alert(
-        "No access code is available for this group yet. Open View Details, or generate a new code from the group actions."
-      );
+      showToast({
+        type: "warning",
+        title: "No access code yet",
+        message: "Open View Details or generate a new code from the group actions.",
+      });
       return;
     }
     void (async () => {
       try {
         await navigator.clipboard.writeText(text);
-        window.alert("Access code copied to clipboard.");
+        showToast({
+          type: "success",
+          title: "Access code copied",
+          message: "The code is ready to paste for your guest.",
+        });
       } catch {
         try {
           const ta = document.createElement("textarea");
@@ -267,7 +277,11 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           const ok = document.execCommand("copy");
           document.body.removeChild(ta);
           if (ok) {
-            window.alert("Access code copied to clipboard.");
+            showToast({
+              type: "success",
+              title: "Access code copied",
+              message: "The code is ready to paste for your guest.",
+            });
           } else {
             window.prompt("Copy this access code (Ctrl+C, then Enter):", text);
           }
@@ -283,7 +297,11 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
     try {
       const res = await guestGroupsApi.regenerateAccessCode(groupId);
       if (!res.success || !res.data) {
-        window.alert(res.error || "Could not generate access code. Is the API running the latest version?");
+        showToast({
+          type: "error",
+          title: "Could not generate code",
+          message: res.error || "Check that the API is running the latest version.",
+        });
         return;
       }
       const raw = res.data as Record<string, unknown>;
@@ -294,9 +312,11 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
             ? String((raw as { Code: string }).Code).trim()
             : "";
       if (!code) {
-        window.alert(
-          "The API responded but did not include an access code. Check the Network tab for POST …/regenerate-code."
-        );
+        showToast({
+          type: "error",
+          title: "Missing access code",
+          message: "The API responded without a code. Check POST /regenerate-code.",
+        });
         return;
       }
       setGuestGroups((prev) =>
@@ -315,14 +335,19 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
       } catch {
         clipboardOk = false;
       }
-      window.alert(
-        clipboardOk
-          ? `Access code copied to clipboard.\n\n${code}\n\nYou can also use Copy in group details.`
-          : `New access code (copy manually — select text below):\n\n${code}`,
-      );
+      showToast({
+        type: clipboardOk ? "success" : "info",
+        title: clipboardOk ? "Access code copied" : "New access code",
+        message: clipboardOk ? code : `Copy manually: ${code}`,
+        duration: 7000,
+      });
     } catch (e) {
       console.error(e);
-      window.alert("Could not generate access code.");
+      showToast({
+        type: "error",
+        title: "Could not generate code",
+        message: "Try again after the API finishes loading.",
+      });
     } finally {
       setRegeneratingGroupId(null);
     }
@@ -861,38 +886,48 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
     return '€'.repeat(level);
   };
 
+  const averageRating = analytics?.satisfaction?.average_rating ?? 0;
+  const totalReviews = analytics?.satisfaction?.total_reviews ?? 0;
+  const ratingDelta = averageRating - 4.6;
+  const formattedRatingDelta =
+    ratingDelta === 0 ? "0.0" : `${ratingDelta > 0 ? "+" : ""}${ratingDelta.toFixed(1)}`;
+  const activeGuestGroups = analytics?.guest_groups?.active ?? 0;
+  const totalGuestGroups = analytics?.guest_groups?.total ?? 0;
+  const totalAttractions = analytics?.attractions?.total ?? 0;
+  const recommendationsThisMonth = analytics?.recommendations?.this_month ?? 0;
+
   const statsCards = [
     {
       title: "Active Guest Groups",
-      value: analytics?.guest_groups?.active ?? 0,
+      value: activeGuestGroups,
       description: "Groups currently exploring",
       icon: <Users className="h-5 w-5" />,
-      trend: analytics?.guest_groups?.total !== null && analytics?.guest_groups?.total !== undefined ? `+${Math.floor(analytics.guest_groups.total * 0.12)}` : "+0",
+      trend: totalGuestGroups > 0 ? `+${Math.floor(totalGuestGroups * 0.12)}` : undefined,
       trendUp: true
     },
     {
       title: "Total Attractions",
-      value: analytics?.attractions?.total ?? 0,
+      value: totalAttractions,
       description: "Local experiences shared",
       icon: <Landmark className="h-5 w-5" />,
-      trend: analytics?.attractions?.total !== null && analytics?.attractions?.total !== undefined ? `+${Math.min(3, Math.floor(analytics.attractions.total * 0.1))}` : "+0",
+      trend: totalAttractions > 0 ? `+${Math.min(3, Math.floor(totalAttractions * 0.1))}` : undefined,
       trendUp: true
     },
     {
       title: "Recommendations Given",
-      value: analytics?.recommendations?.this_month ?? 0,
+      value: recommendationsThisMonth,
       description: "This month",
       icon: <Lightbulb className="h-5 w-5" />,
-      trend: analytics?.recommendations?.this_month !== null && analytics?.recommendations?.this_month !== undefined ? `+${Math.floor(analytics.recommendations.this_month * 0.23)}%` : "+0%",
+      trend: recommendationsThisMonth > 0 ? `+${Math.floor(recommendationsThisMonth * 0.23)}%` : undefined,
       trendUp: true
     },
     {
       title: "Guest Satisfaction",
-      value: analytics?.satisfaction?.average_rating !== null && analytics?.satisfaction?.average_rating !== undefined ? `${analytics.satisfaction.average_rating}/5` : "0.0/5",
-      description: "Average rating",
+      value: totalReviews > 0 ? `${averageRating}/5` : "No ratings",
+      description: totalReviews > 0 ? `${totalReviews} guest review${totalReviews === 1 ? "" : "s"}` : "Awaiting guest reviews",
       icon: <Star className="h-5 w-5" />,
-      trend: analytics?.satisfaction?.average_rating !== null && analytics?.satisfaction?.average_rating !== undefined ? `+${(analytics.satisfaction.average_rating - 4.6).toFixed(1)}` : "+0.0",
-      trendUp: true
+      trend: totalReviews > 0 ? formattedRatingDelta : undefined,
+      trendUp: ratingDelta >= 0
     }
   ];
 
@@ -983,22 +1018,6 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
             You need to be logged in to access your dashboard. Please log in with your credentials.
           </p>
 
-          {/* Development: Show dev login option */}
-          {process.env.NODE_ENV === 'development' && (
-            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-              <p className="text-sm text-yellow-800 mb-3">
-                <strong>Development Mode:</strong> Use the test account for quick access
-              </p>
-              <Button
-                onClick={devLogin}
-                className="w-full bg-yellow-500 hover:bg-yellow-600 text-white"
-              >
-                <Wrench className="mr-2 h-4 w-4" />
-                Dev Login (Test Account)
-              </Button>
-            </div>
-          )}
-
           <div className="space-y-3">
             <Button
               onClick={() => window.location.href = '/login'}
@@ -1034,7 +1053,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   return (
     <div className={cn("min-h-screen", className)}>
       <AppLayout
-        title={`Dobro dosli, ${currentHost?.full_name || profile?.business_name || "Host"}!`}
+        title={currentHost?.full_name || profile?.business_name || "Host"}
         subtitle={`Your Croatian hospitality dashboard • ${profile?.location || currentHost?.email || "No location yet"}`}
         navItems={[
           { id: "overview", label: "Overview", icon: <ChartNoAxesColumn /> },
@@ -1051,33 +1070,43 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           { id: "insights", label: "Insights", icon: <Compass /> },
         ]}
         activeItem={activeTab}
-        onSelectItem={(id) => setActiveTab(id as DashboardTab)}
+        onSelectItem={(id) => selectTab(id as DashboardTab)}
         headerActions={
           <>
-            {process.env.NODE_ENV === "development" && (
-              <div className="rounded-2xl bg-muted px-3 py-2 text-xs text-muted-foreground">
-                Auth: {currentHost ? "ok" : "missing"} • Token:{" "}
-                {devTokenPresent === null ? "..." : devTokenPresent ? "present" : "missing"}
-                {loading && dashboardReady ? " • refreshing…" : ""}
-              </div>
-            )}
-            {!currentHost && (
-              <Button variant="outline" onClick={devLogin}>
-                Dev Login
-              </Button>
-            )}
-            <Button variant="outline" onClick={logout}>
-              Logout
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={logout}
+              className="h-8 w-8 min-h-0 rounded-xl p-0 sm:h-auto sm:w-auto sm:min-h-10 sm:px-4"
+              aria-label="Logout"
+              title="Logout"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:ml-1 sm:inline">Logout</span>
             </Button>
           </>
         }
       >
+        {dashboardReady && !profileReady && (
+          <Alert className="mx-4 mb-4 border-amber-200 bg-amber-50 text-amber-950 sm:mx-5">
+            <AlertTitle>Property profile incomplete</AlertTitle>
+            <AlertDescription>
+              Your account is signed in, but guests need a completed property profile (location,
+              stay details).{" "}
+              <Link href="/onboarding?from=login" className="font-medium underline">
+                Complete onboarding
+              </Link>{" "}
+              to unlock the full dashboard.
+            </AlertDescription>
+          </Alert>
+        )}
         <HostDashboardMainContent
           activeTab={activeTab}
           statsCards={statsCards}
           guestGroups={guestGroups}
           realtimeUpdates={realtimeUpdates}
           loadDashboardData={loadDashboardData}
+          dashboardLoading={loading && dashboardReady}
           accommodationInfo={accommodationInfo}
           setProfile={setProfile}
           profile={profile}
@@ -1099,7 +1128,7 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
           onToggleViewMode={() => setViewMode(viewMode === "list" ? "map" : "list")}
           onPlaceSelect={handlePlaceSelect}
           onAddPlaceToAttractions={handleAddPlaceToAttractions}
-          AccommodationTab={AccommodationTab}
+          AccommodationTab={AccommodationAgentTab}
         />
       </AppLayout>
 
@@ -1156,13 +1185,15 @@ export const HostDashboard: React.FC<HostDashboardProps> = ({ className }) => {
   );
 };
 
+// Legacy inline tab retained temporarily while the extracted Stay tab is validated.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const AccommodationTab: React.FC<{
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- nested API-shaped object; narrow when onboarding types land
   accommodationInfo: any;
   onRefresh: () => void;
   setProfile: React.Dispatch<React.SetStateAction<HostProfile | null>>;
   profile: HostProfile | null;
 }> = ({ accommodationInfo, onRefresh, setProfile, profile }) => {
+  const { showToast } = useToast();
   const [isEditing, setIsEditing] = React.useState(false);
   const [editData, setEditData] = React.useState(accommodationInfo);
   const [showAISuggestions, setShowAISuggestions] = React.useState(false);
@@ -1186,6 +1217,65 @@ const AccommodationTab: React.FC<{
     ]
   });
   const [rulesModalBanner, setRulesModalBanner] = React.useState<string | null>(null);
+  const [geocodeStatus, setGeocodeStatus] = React.useState<
+    "idle" | "loading" | "exact" | "approx" | "error"
+  >("idle");
+  const geocodeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runAccommodationGeocode = React.useCallback(
+    async (fields?: { address?: string; city?: string; county?: string }) => {
+      const address = (fields?.address ?? editData.address ?? "").trim();
+      const city = (fields?.city ?? editData.city ?? "").trim();
+      const county = (fields?.county ?? editData.county ?? "").trim();
+      if (!address && !city) {
+        setGeocodeStatus("idle");
+        return;
+      }
+
+      setGeocodeStatus("loading");
+      try {
+        const response = await hostsApi.geocodeLocation({ address, city, county });
+        if (response.success && response.data) {
+          setEditData((prev: typeof editData) => ({
+            ...prev,
+            latitude: response.data!.latitude,
+            longitude: response.data!.longitude,
+          }));
+          setGeocodeStatus(response.data.precision === "address" ? "exact" : "approx");
+        } else {
+          setGeocodeStatus("error");
+        }
+      } catch {
+        setGeocodeStatus("error");
+      }
+    },
+    [editData.address, editData.city, editData.county]
+  );
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    if (geocodeTimerRef.current) {
+      clearTimeout(geocodeTimerRef.current);
+    }
+    const address = (editData.address || "").trim();
+    const city = (editData.city || "").trim();
+    const county = (editData.county || "").trim();
+    if (!address && !city) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    geocodeTimerRef.current = setTimeout(() => {
+      void runAccommodationGeocode({ address, city, county });
+    }, 900);
+    return () => {
+      if (geocodeTimerRef.current) {
+        clearTimeout(geocodeTimerRef.current);
+      }
+    };
+  }, [isEditing, editData.address, editData.city, editData.county, runAccommodationGeocode]);
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const googleMapsBrowserKey =
@@ -1237,15 +1327,6 @@ const AccommodationTab: React.FC<{
     }
   }, []);
 
-  // Debug: Monitor accommodationInfo changes (only in development)
-  React.useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.log("AccommodationTab: accommodationInfo changed:", accommodationInfo);
-      console.log("AccommodationTab: editData state:", editData);
-      console.log("AccommodationTab: isEditing state:", isEditing);
-    }
-  }, [accommodationInfo, editData, isEditing]);
-
   const handleEdit = () => {
     // Map the complex accommodationInfo structure to the flat API structure
     const apiData = {
@@ -1276,43 +1357,23 @@ const AccommodationTab: React.FC<{
       gallery_images: accommodationInfo.gallery_images || profile?.gallery_images || []
     };
 
-    console.log('✏️ Edit button clicked');
-    console.log("Original accommodationInfo:", accommodationInfo);
-    console.log("Mapped apiData:", apiData);
-
     setEditData(apiData);
     setIsEditing(true);
   };
 
   const handleSave = async () => {
     try {
-      // Enhanced logging to debug the 422 error
-      console.log("Attempting to save accommodation data:");
-      console.log("editData object:", JSON.stringify(editData, null, 2));
-      console.log("editData keys:", Object.keys(editData));
-      console.log("editData values:", Object.values(editData));
-      console.log("Current profile prop:", profile);
-      console.log("Current accommodationInfo:", accommodationInfo);
-
       // Call API to save accommodation data
       const response = await hostsApi.updateProfile(editData);
 
-      console.log("API Response:", response);
-      console.log("API Response status:", response.success);
-      console.log("API Response data:", response.data);
-      console.log("API Response error:", response.error);
-
       if (response.success && response.data) {
-        console.log('✅ Accommodation data saved successfully:', response.data);
         setIsEditing(false);
 
         // Update the local profile state immediately with the saved data
         if (response.data) {
-          console.log("Updating profile state with new data...");
           setProfile((prevProfile) => {
             if (!prevProfile) return prevProfile;
             const updatedProfile = { ...prevProfile, ...response.data } as HostProfile;
-            console.log("New profile state:", updatedProfile);
             return updatedProfile;
           });
 
@@ -1320,23 +1381,20 @@ const AccommodationTab: React.FC<{
 
         // Refresh the dashboard data to ensure everything is in sync
         // This will update the accommodationInfo since it's derived from the profile
-        console.log("Refreshing dashboard data...");
         onRefresh();
 
-        // Show success message
-        alert('Accommodation data saved successfully!');
+        showToast({
+          type: "success",
+          title: "Accommodation saved",
+          message: "Your property profile has been updated.",
+        });
       } else {
-        console.error('❌ Failed to save accommodation data:');
-        console.error('❌ Response error:', JSON.stringify(response.error, null, 2));
-        console.error('❌ Full response:', JSON.stringify(response, null, 2));
-
         // Show more detailed error information
         let errorMessage = 'Failed to save accommodation data';
         if (response.error) {
           if (Array.isArray(response.error)) {
             errorMessage = `Validation errors: ${response.error
               .map((e: unknown) => {
-                console.log("Individual error:", JSON.stringify(e, null, 2));
                 if (e && typeof e === "object" && "message" in e) {
                   return String((e as { message?: unknown }).message ?? e);
                 }
@@ -1354,13 +1412,19 @@ const AccommodationTab: React.FC<{
           }
         }
 
-        // You could add a toast notification here with errorMessage
-        alert(`Error: ${errorMessage}`);
+        showToast({
+          type: "error",
+          title: "Save failed",
+          message: errorMessage,
+        });
       }
     } catch (error) {
       console.error("Error saving accommodation data:", error);
-      console.error("Error stack:", error instanceof Error ? error.stack : "No stack trace");
-      alert(`Network error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      showToast({
+        type: "error",
+        title: "Network error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   };
 
@@ -1512,60 +1576,102 @@ const AccommodationTab: React.FC<{
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-3 sm:space-y-6 lg:space-y-8">
       {/* Header with Actions */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Accommodation Management</h2>
-          <p className="text-gray-600">Manage your property details and enhance guest experiences</p>
-        </div>
-        <div className="flex gap-3">
-          <Button
-            variant="outline"
-            onClick={() => {
-              setRulesModalBanner(null);
-              setShowRulesModal(true);
-            }}
-            className="flex items-center gap-2"
-          >
-            Property Rules
-          </Button>
-          <Button
-            variant="outline"
-            onClick={generateAISuggestions}
-            disabled={isGeneratingAI}
-            className="flex items-center gap-2"
-          >
-            {isGeneratingAI ? (
-              <>
-                <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                AI Thinking...
-              </>
-            ) : (
-              <>
-                AI Enhance
-              </>
-            )}
-          </Button>
-          {!isEditing ? (
-            <Button onClick={handleEdit} className="flex items-center gap-2">
-              ✏️ Edit Details
+      <div className="rounded-2xl border border-border/70 bg-card/80 p-3 shadow-sm sm:rounded-3xl sm:p-5">
+        <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary/70 sm:text-[11px]">Stay</p>
+            <h2 className="truncate text-base font-semibold text-foreground sm:mt-1 sm:text-xl">Property profile</h2>
+            <p className="hidden text-sm text-muted-foreground sm:block">
+              Keep property details, rules, photos and location ready for guests.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-1.5 sm:flex sm:flex-wrap sm:justify-end sm:gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setRulesModalBanner(null);
+                setShowRulesModal(true);
+              }}
+              className="min-h-0 w-full rounded-xl px-2 py-2 text-xs sm:w-auto sm:rounded-2xl sm:px-4 sm:text-sm"
+            >
+              Rules
             </Button>
-          ) : (
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleCancel}>
-                Cancel
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={generateAISuggestions}
+              disabled={isGeneratingAI}
+              className="min-h-0 w-full rounded-xl px-2 py-2 text-xs sm:w-auto sm:rounded-2xl sm:px-4 sm:text-sm"
+            >
+              {isGeneratingAI ? (
+                <>
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                  AI...
+                </>
+              ) : (
+                "AI"
+              )}
+            </Button>
+            {!isEditing ? (
+              <Button onClick={handleEdit} size="sm" className="min-h-0 w-full rounded-xl px-2 py-2 text-xs sm:w-auto sm:rounded-2xl sm:px-4 sm:text-sm">
+                <Pencil className="h-4 w-4" />
+                Edit
               </Button>
-              <Button onClick={handleSave} className="flex items-center gap-2">
-                Save Changes
-              </Button>
-            </div>
-          )}
+            ) : (
+              <div className="col-span-3 grid grid-cols-2 gap-1.5 sm:flex sm:gap-2">
+                <Button variant="outline" size="sm" onClick={handleCancel} className="min-h-0 rounded-xl px-2 py-2 text-xs sm:rounded-2xl sm:px-4 sm:text-sm">
+                  Cancel
+                </Button>
+                <Button size="sm" onClick={handleSave} className="min-h-0 rounded-xl px-2 py-2 text-xs sm:rounded-2xl sm:px-4 sm:text-sm">
+                  Save
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
+      {!isEditing && (
+        <Card className="sm:hidden">
+          <CardContent className="p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-foreground">
+                  {accommodationInfo.property?.name || accommodationInfo.property_name || "Your accommodation"}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {[accommodationInfo.property?.type || accommodationInfo.property_type, accommodationInfo.property?.location?.city]
+                    .filter(Boolean)
+                    .join(" · ") || "Property details"}
+                </p>
+              </div>
+              <div className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                {accommodationInfo.property?.capacity?.maxGuests || accommodationInfo.max_guests || "—"} guests
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-xl bg-muted/60 p-2">
+                <p className="font-semibold text-foreground">{accommodationInfo.services.amenities.length}</p>
+                <p className="text-muted-foreground">amenities</p>
+              </div>
+              <div className="rounded-xl bg-muted/60 p-2">
+                <p className="font-semibold text-foreground">{accommodationInfo.services.servicesOffered.length}</p>
+                <p className="text-muted-foreground">services</p>
+              </div>
+              <div className="rounded-xl bg-muted/60 p-2">
+                <p className="font-semibold text-foreground">{accommodationInfo.services.languages.length}</p>
+                <p className="text-muted-foreground">languages</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Accommodation Overview */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className={cn("grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3 lg:gap-6", !isEditing && "hidden sm:grid")}>
         <Card className="bg-gradient-to-br from-blue-50 to-indigo-50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -1704,6 +1810,8 @@ const AccommodationTab: React.FC<{
                       ...prev,
                       address: e.target.value
                     }))}
+                    onBlur={() => { void runAccommodationGeocode(); }}
+                    placeholder="Street and number (GPS updates automatically)"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 ) : (
@@ -1732,6 +1840,22 @@ const AccommodationTab: React.FC<{
                     ) : null}
                     {isEditing && (
                       <div className="mt-2 space-y-2">
+                        {geocodeStatus === "loading" && (
+                          <p className="text-xs text-blue-600">Looking up GPS from address…</p>
+                        )}
+                        {geocodeStatus === "exact" && (
+                          <p className="text-xs text-green-600">GPS set automatically from address.</p>
+                        )}
+                        {geocodeStatus === "approx" && (
+                          <p className="text-xs text-amber-600">
+                            Approximate GPS set (city/area level). You can fine-tune coordinates below.
+                          </p>
+                        )}
+                        {geocodeStatus === "error" && (
+                          <p className="text-xs text-red-600">
+                            Could not locate this address. Add city and county, or enter GPS manually.
+                          </p>
+                        )}
                         <p className="text-xs font-medium text-gray-600">GPS coordinates (WGS84)</p>
                         <input
                           type="number"
@@ -1802,7 +1926,13 @@ const AccommodationTab: React.FC<{
       </div>
 
       {/* Detailed Information */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <details open={isEditing || undefined} className="group rounded-2xl border border-border/70 bg-card/60 sm:contents">
+        <summary className="flex cursor-pointer items-center justify-between px-3 py-2.5 text-sm font-semibold text-foreground sm:hidden">
+          More property details
+          <span className="text-xs font-medium text-muted-foreground group-open:hidden">Show</span>
+          <span className="hidden text-xs font-medium text-muted-foreground group-open:inline">Hide</span>
+        </summary>
+        <div className="hidden grid-cols-1 gap-3 px-3 pb-3 group-open:grid sm:grid sm:px-0 sm:pb-0 sm:gap-4 lg:grid-cols-2 lg:gap-8">
         {/* Amenities & Services */}
         <Card>
           <CardHeader>
@@ -1816,7 +1946,7 @@ const AccommodationTab: React.FC<{
                 <h4 className="font-medium text-gray-900 mb-3">Property Amenities</h4>
                 {isEditing ? (
                   <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {['wifi', 'parking', 'kitchen', 'balcony', 'air_conditioning', 'tv', 'washing_machine', 'garden'].map((amenity) => (
                         <label key={amenity} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100">
                           <input
@@ -1875,7 +2005,7 @@ const AccommodationTab: React.FC<{
                   </div>
                 ) : (
                   accommodationInfo.services.amenities.length > 0 ? (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {accommodationInfo.services.amenities.map((amenity: string, index: number) => (
                         <div key={index} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
                           <span className="text-green-500">✓</span>
@@ -1894,7 +2024,7 @@ const AccommodationTab: React.FC<{
                 <h4 className="font-medium text-gray-900 mb-3">Services Offered</h4>
                 {isEditing ? (
                   <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {['airport_transfer', 'guided_tours', 'cleaning_service', 'breakfast', 'laundry_service', 'bike_rental', 'car_rental', 'shuttle_service'].map((service) => (
                         <label key={service} className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg cursor-pointer hover:bg-blue-100">
                           <input
@@ -1953,7 +2083,7 @@ const AccommodationTab: React.FC<{
                   </div>
                 ) : (
                   accommodationInfo.services.servicesOffered.length > 0 ? (
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {accommodationInfo.services.servicesOffered.map((service: string, index: number) => (
                         <div key={index} className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg">
                           <span className="text-blue-500">Info</span>
@@ -2182,47 +2312,50 @@ const AccommodationTab: React.FC<{
             </div>
           </CardContent>
         </Card>
-      </div>
+        </div>
+      </details>
 
       {/* Images and Map section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2 lg:gap-8">
         <Card>
-          <CardHeader>
-            <CardTitle>Property Images</CardTitle>
-            <CardDescription>Manage photos of your accommodation</CardDescription>
+          <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
+            <div className="min-w-0">
+              <CardTitle>Photos</CardTitle>
+              <CardDescription className="hidden sm:block">Manage photos of your accommodation</CardDescription>
+            </div>
+            {isEditing && (
+              <>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleImageUpload}
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="min-h-0 shrink-0 rounded-xl px-3 py-2 text-xs sm:rounded-2xl sm:text-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Plus className="h-4 w-4" /> Add
+                </Button>
+              </>
+            )}
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              <div className="flex justify-between items-center mb-4">
-                <h4 className="font-medium text-gray-900">Current Photos</h4>
-                {isEditing && (
-                  <>
-                    <input
-                      type="file"
-                      ref={fileInputRef}
-                      onChange={handleImageUpload}
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                    />
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      className="flex items-center gap-2"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Plus className="h-4 w-4" /> Add Photos
-                    </Button>
-                  </>
-                )}
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            <div className="space-y-3">
+              <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 sm:mx-0 sm:grid sm:grid-cols-3 sm:gap-4 sm:overflow-visible sm:px-0 sm:pb-0">
                 {(editData.gallery_images || []).map((imgUrl: string, index: number) => (
-                  <div key={index} className="aspect-square relative rounded-md overflow-hidden bg-gray-100 group">
-                    <img 
+                  <div key={index} className="relative aspect-square w-36 shrink-0 overflow-hidden rounded-2xl bg-gray-100 shadow-sm group sm:w-auto">
+                    <Image
                       src={imgUrl} 
                       alt={`Property photo ${index + 1}`} 
-                      className="object-cover w-full h-full"
+                      fill
+                      sizes="(max-width: 640px) 9rem, 33vw"
+                      className="object-cover"
+                      unoptimized
                     />
                     {isEditing && (
                       <div className="absolute inset-0 bg-black bg-opacity-40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -2239,7 +2372,7 @@ const AccommodationTab: React.FC<{
                   </div>
                 ))}
                 {(!editData.gallery_images || editData.gallery_images.length === 0) && (
-                  <div className="col-span-full py-8 text-center text-gray-500 border-2 border-dashed border-gray-200 rounded-md">
+                  <div className="col-span-full w-full rounded-2xl border-2 border-dashed border-border px-3 py-3 text-center text-sm text-muted-foreground sm:px-4 sm:py-5">
                     No photos uploaded yet. {isEditing && "Click 'Add Photos' to upload."}
                   </div>
                 )}
@@ -2248,13 +2381,13 @@ const AccommodationTab: React.FC<{
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="hidden sm:block">
           <CardHeader>
             <CardTitle>Map View</CardTitle>
             <CardDescription>Property location on map</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px] w-full bg-gray-100 rounded-md overflow-hidden relative">
+            <div className="relative h-52 w-full overflow-hidden rounded-2xl bg-gray-100 sm:h-[300px]">
               {(() => {
                 const mc = accommodationInfo.property?.location?.coordinates;
                 return mc && isPlausibleGpsLatLng(mc.lat, mc.lng);
@@ -2284,13 +2417,13 @@ const AccommodationTab: React.FC<{
       </div>
 
       {/* Location Analytics Preview */}
-      <Card className="bg-gradient-to-br from-yellow-50 to-orange-50">
+      <Card className="hidden bg-gradient-to-br from-yellow-50 to-orange-50 sm:block">
         <CardHeader>
           <CardTitle>Location Analytics Preview</CardTitle>
           <CardDescription>How your location enables personalized recommendations</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-6">
             <div className="text-center">
               <div className="mb-2 flex justify-center">
                 <MapPin className="h-7 w-7 text-amber-600" />

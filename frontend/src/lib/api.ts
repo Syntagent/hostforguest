@@ -1,10 +1,14 @@
 // API Client for TouristGuideLocal Backend
 function resolveApiBaseUrl(): string {
+  // Browser dev: always use same-origin `/api/*` proxy (avoids CORS when UI is 127.0.0.1:3055
+  // but .env points at http://localhost:8000).
+  if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
+    return "";
+  }
   const raw = process.env.NEXT_PUBLIC_API_URL;
   if (typeof raw === "string" && raw.trim() !== "") {
     return raw.replace(/\/$/, "");
   }
-  // Dev: same-origin `/api/*` → Next.js rewrites to FastAPI (avoids 127.0.0.1 vs localhost mismatches).
   if (process.env.NODE_ENV === "development") {
     return "";
   }
@@ -90,9 +94,29 @@ class ApiClient {
     }
   }
 
+  private resolveEndpointFromRedirect(location: string, requestUrl: string): string | null {
+    if (!location) return null;
+    try {
+      const resolved = new URL(location, requestUrl);
+      const base = new URL(this.baseURL || requestUrl);
+      if (resolved.origin !== base.origin) {
+        return `${resolved.pathname}${resolved.search}`;
+      }
+      const basePath = base.pathname.replace(/\/$/, "");
+      let path = resolved.pathname;
+      if (basePath && path.startsWith(basePath)) {
+        path = path.slice(basePath.length) || "/";
+      }
+      return `${path}${resolved.search}`;
+    } catch {
+      return location.startsWith("/") ? location : null;
+    }
+  }
+
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    redirectRetry = false
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseURL}${endpoint}`;
 
@@ -115,7 +139,21 @@ class ApiClient {
       const response = await fetch(url, {
         ...options,
         headers,
+        redirect: redirectRetry ? "follow" : "manual",
       });
+
+      if (
+        !redirectRetry &&
+        (response.status === 307 || response.status === 308)
+      ) {
+        const nextEndpoint = this.resolveEndpointFromRedirect(
+          response.headers.get("Location") ?? "",
+          url
+        );
+        if (nextEndpoint) {
+          return this.request(nextEndpoint, options, true);
+        }
+      }
 
       const rawText = await response.text();
       let data: unknown = {};
@@ -357,6 +395,73 @@ export interface HostProfile {
   welcome_message?: string;
   host_story?: string;
   local_tips?: string[];
+}
+
+export type AccommodationChecklistStatus = "missing" | "in_progress" | "draft" | "done" | "skipped";
+
+export interface AccommodationChecklistItemState {
+  id: string;
+  status: AccommodationChecklistStatus;
+  label?: string;
+  notes?: string;
+}
+
+export interface AccommodationAgentMessage {
+  role: "assistant" | "user" | "system";
+  content: string;
+}
+
+export interface AccommodationPatch {
+  property_name?: string;
+  property_type?: string;
+  max_guests?: number;
+  number_of_rooms?: number;
+  city?: string;
+  county?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  location_story?: string;
+  amenities?: string[];
+  services_offered?: string[];
+  expertise_areas?: string[];
+  languages?: string[];
+  welcome_message?: string;
+  gallery_images?: string[];
+}
+
+export interface AccommodationAgentMessageRequest {
+  message: string;
+  focused_item_id?: string | null;
+  checklist_state: AccommodationChecklistItemState[];
+  accommodation_snapshot: Record<string, unknown>;
+  conversation_history: AccommodationAgentMessage[];
+}
+
+export interface AccommodationAgentMessageResponse {
+  success: boolean;
+  reply: string;
+  quick_replies: string[];
+  suggested_patch: AccommodationPatch;
+  suggestion_options: { id: string; label: string; patch: AccommodationPatch }[];
+  checklist_updates: AccommodationChecklistItemState[];
+  next_focus_id?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface AccommodationEnhancementResponse {
+  success: boolean;
+  enhancement_type: string;
+  enhanced_content: {
+    description?: string;
+    amenities?: string[];
+    services?: string[];
+    specialties?: string[];
+    languages?: string[];
+    welcome_message?: string;
+  };
+  original_data?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 /** Accommodation row (host_profiles) linked to a guest group — same source as Accommodation tab. */
@@ -864,6 +969,36 @@ export const hostsApi = {
   updateProfile: (profileData: Partial<HostProfile>) =>
     apiClient.put<HostProfile>('/api/v1/hosts/me/profile', profileData),
 
+  geocodeLocation: (params: { address?: string; city?: string; county?: string }) => {
+    const qs = new URLSearchParams();
+    if (params.address?.trim()) qs.set('address', params.address.trim());
+    if (params.city?.trim()) qs.set('city', params.city.trim());
+    if (params.county?.trim()) qs.set('county', params.county.trim());
+    const query = qs.toString();
+    return apiClient.get<{
+      latitude: number;
+      longitude: number;
+      matched_query: string;
+      precision: string;
+    }>(`/api/v1/hosts/me/geocode${query ? `?${query}` : ''}`);
+  },
+
+  getDashboardStats: (refresh = false) =>
+    apiClient.get<{
+      analytics: Record<string, unknown>;
+      profile: HostProfile | null;
+      guest_groups: GuestGroup[];
+      attractions: Attraction[];
+      realtime_updates: Array<{
+        id: string;
+        title: string;
+        content: string;
+        description?: string;
+        created_at: string | null;
+      }>;
+      cached_at: string;
+    }>(`/api/v1/hosts/dashboard/stats${refresh ? '?refresh=true' : ''}`),
+
   getAnalytics: () =>
     apiClient.get<{
       guest_groups: {
@@ -890,9 +1025,8 @@ export const guestGroupsApi = {
   create: (groupData: {
     group_name: string;
     group_size: number;
-    preferences: GuestPreference[];
   }) =>
-    apiClient.post<GuestGroup>('/api/v1/guest-groups', groupData),
+    apiClient.post<GuestGroup>('/api/v1/guest-groups/', groupData),
 
   getByHost: () =>
     apiClient.get<GuestGroup[]>('/api/v1/guest-groups/host'),
@@ -1263,7 +1397,73 @@ export const itinerariesApi = {
       `/api/v1/itineraries/activities/${activityId}/check-in?access_code=${encodeURIComponent(accessCode)}`,
       {}
     ),
+
+  updateItinerary: (
+    itineraryId: string,
+    body: {
+      title?: string;
+      description?: string | null;
+      base_location?: string;
+      base_latitude?: number;
+      base_longitude?: number;
+    }
+  ) => apiClient.put<HostItineraryRow>(`/api/v1/itineraries/${itineraryId}`, body),
+
+  listRoutePoints: (itineraryId: string) =>
+    apiClient.get<RoutePointDTO[]>(`/api/v1/itineraries/${itineraryId}/route-points`),
+
+  createRoutePoint: (
+    itineraryId: string,
+    body: {
+      day_plan_id: string;
+      name: string;
+      latitude: number;
+      longitude: number;
+      description?: string;
+      order_index?: number;
+      estimated_duration?: number;
+    }
+  ) =>
+    apiClient.post<RoutePointDTO>(
+      `/api/v1/itineraries/${itineraryId}/route-points`,
+      body
+    ),
+
+  updateRoutePoint: (
+    pointId: string,
+    body: Partial<{
+      title: string;
+      description: string;
+      latitude: number;
+      longitude: number;
+      sequence_order: number;
+      estimated_duration: number;
+    }>
+  ) => apiClient.put<RoutePointDTO>(`/api/v1/itineraries/route-points/${pointId}`, body),
+
+  deleteRoutePoint: (pointId: string) =>
+    apiClient.delete(`/api/v1/itineraries/route-points/${pointId}`),
+
+  reorderRoutePoints: (
+    itineraryId: string,
+    body: { day_plan_id: string; ordered_activity_ids: string[] }
+  ) =>
+    apiClient.put<{ success: boolean }>(
+      `/api/v1/itineraries/${itineraryId}/route-points/reorder`,
+      body
+    ),
 };
+
+export interface RoutePointDTO {
+  id: string;
+  day_plan_id: string;
+  name: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  description?: string | null;
+  order_index: number;
+  estimated_duration: number;
+}
 
 export const realtimeApi = {
   getUpdates: (city?: string, contentTypes?: string) => {
@@ -1330,6 +1530,15 @@ export const onboardingApi = {
   validateProfile: (profileData: any) =>
     apiClient.post('/api/v1/onboarding/validate-profile', profileData),
 
+  enhanceAccommodation: (currentData: Record<string, unknown>, enhancementType = 'comprehensive') =>
+    apiClient.post<AccommodationEnhancementResponse>('/api/v1/onboarding/accommodation/ai-enhance', {
+      current_data: currentData,
+      enhancement_type: enhancementType,
+    }),
+
+  sendAccommodationAgentMessage: (payload: AccommodationAgentMessageRequest) =>
+    apiClient.post<AccommodationAgentMessageResponse>('/api/v1/onboarding/accommodation/agent/message', payload),
+
   completeOnboarding: (onboardingData: any) =>
     apiClient.post('/api/v1/onboarding/complete-onboarding', onboardingData),
 };
@@ -1356,6 +1565,19 @@ export const locationsApi = {
       count: number;
       guest_group_id: string;
     }>(`/api/v1/locations/guest-group/${guestGroupId}${queryString ? `?${queryString}` : ''}`);
+  },
+
+  geocode: (params: { address: string; city?: string; county?: string }) => {
+    const qs = new URLSearchParams({ address: params.address.trim() });
+    if (params.city?.trim()) qs.set('city', params.city.trim());
+    if (params.county?.trim()) qs.set('county', params.county.trim());
+    return apiClient.get<{
+      lat: number;
+      lng: number;
+      formatted_address: string;
+      precision: string;
+      matched_query: string;
+    }>(`/api/v1/locations/geocode?${qs.toString()}`);
   },
 
   getDetails: (locationId: string, source: 'database' | 'google_places') =>

@@ -45,7 +45,9 @@ class RecommendationCandidates:
         self,
         request: RecommendationRequest,
         guest_group: Dict[str, Any],
-        host: Host
+        host: Host,
+        max_price_level: Optional[int] = None,
+        query_terms: Optional[str] = None,
     ) -> List[Attraction]:
         """
         Get candidate attractions using vector search, preference overlap, and traditional filtering.

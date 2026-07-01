@@ -6,11 +6,12 @@ profile management, and CRUD operations.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+import time
+from typing import List, Optional, Dict, Any, Tuple
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
@@ -34,6 +35,92 @@ from app.models.host import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 security = HTTPBearer()
+
+# In-process dashboard bundle cache: host_id -> (monotonic_ts, payload)
+_dashboard_stats_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_DASHBOARD_STATS_TTL_SEC = 60
+
+
+async def _build_host_analytics(current_host: Host, db: AsyncSession) -> Dict[str, Any]:
+    """Shared analytics payload for /analytics and /dashboard/stats."""
+    from app.services.guest_group_service import GuestGroupService
+    from app.services.attraction_service import AttractionService
+    from app.models.recommendation import RecommendationSet
+    from app.models.attraction import Attraction, AttractionReview
+    from sqlalchemy import select, func, and_
+
+    guest_group_service = GuestGroupService(db)
+    attraction_service = AttractionService(db)
+
+    guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
+    attractions = await attraction_service.get_host_attractions(current_host.id)
+
+    active_groups = len([g for g in guest_groups if g.status == "active"])
+
+    total_recommendations_query = select(func.count(RecommendationSet.id)).where(
+        RecommendationSet.host_id == current_host.id
+    )
+    total_recommendations_result = await db.execute(total_recommendations_query)
+    total_recommendations = total_recommendations_result.scalar() or 0
+
+    current_month_start = datetime.utcnow().replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    monthly_recommendations_query = select(func.count(RecommendationSet.id)).where(
+        and_(
+            RecommendationSet.host_id == current_host.id,
+            RecommendationSet.created_at >= current_month_start,
+        )
+    )
+    monthly_recommendations_result = await db.execute(monthly_recommendations_query)
+    monthly_recommendations = monthly_recommendations_result.scalar() or 0
+
+    review_stats = await attraction_service.get_host_review_stats(current_host.id)
+
+    if review_stats and review_stats.total_reviews_received > 0:
+        avg_rating_query = (
+            select(func.avg(AttractionReview.rating))
+            .select_from(
+                AttractionReview.join(
+                    Attraction, AttractionReview.attraction_id == Attraction.id
+                )
+            )
+            .where(
+                and_(
+                    Attraction.created_by_host_id == current_host.id,
+                    AttractionReview.status == "APPROVED",
+                )
+            )
+        )
+        avg_rating_result = await db.execute(avg_rating_query)
+        average_rating = avg_rating_result.scalar() or 0.0
+        total_reviews = review_stats.total_reviews_received
+    else:
+        average_rating = current_host.average_rating or 0.0
+        total_reviews = 0
+
+    analytics = {
+        "guest_groups": {
+            "total": len(guest_groups),
+            "active": active_groups,
+            "inactive": len(guest_groups) - active_groups,
+        },
+        "attractions": {"total": len(attractions), "categories": {}},
+        "recommendations": {
+            "total_given": total_recommendations,
+            "this_month": monthly_recommendations,
+        },
+        "satisfaction": {
+            "average_rating": round(average_rating, 1),
+            "total_reviews": total_reviews,
+        },
+    }
+    for attraction in attractions:
+        category = attraction.attraction_type or "Uncategorized"
+        analytics["attractions"]["categories"][category] = (
+            analytics["attractions"]["categories"].get(category, 0) + 1
+        )
+    return analytics
 
 
 async def get_current_host(
@@ -225,7 +312,8 @@ async def logout_host(
 
 @router.post("/refresh")
 async def refresh_session(
-    refresh_data: Dict[str, str],
+    request: Request,
+    refresh_data: Optional[Dict[str, str]] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -239,11 +327,20 @@ async def refresh_session(
         Dict with new session data
     """
     try:
+        refresh_data = refresh_data or {}
         refresh_token = refresh_data.get("refresh_token")
+        if not refresh_token:
+            session_token = request.headers.get("X-Session-Token")
+            if session_token:
+                from app.services.session_service import SessionService
+                session_svc = SessionService(db)
+                existing = await session_svc.validate_session(session_token)
+                if existing and existing.refresh_token:
+                    refresh_token = existing.refresh_token
         if not refresh_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Refresh token required"
+                detail="Refresh token required (body or valid X-Session-Token)"
             )
         
         host_service = HostService(db)
@@ -443,92 +540,7 @@ async def get_host_analytics(
     logger.info(f"Host analytics request for: {current_host.email}")
     
     try:
-        # Import services here to avoid circular imports
-        from app.services.guest_group_service import GuestGroupService
-        from app.services.attraction_service import AttractionService
-        
-        guest_group_service = GuestGroupService(db)
-        attraction_service = AttractionService(db)
-        
-        # Get basic analytics data
-        guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
-        attractions = await attraction_service.get_host_attractions(current_host.id)
-        
-        # Calculate analytics
-        active_groups = len([g for g in guest_groups if g.status == 'active'])
-        total_attractions = len(attractions)
-        
-        # Get real recommendation counts
-        from app.models.recommendation import Recommendation, RecommendationSet
-        from app.models.attraction import AttractionReview
-        from sqlalchemy import select, func, and_
-        from datetime import datetime, timedelta
-        
-        # Count total recommendations given by this host
-        total_recommendations_query = select(func.count(RecommendationSet.id)).where(
-            RecommendationSet.host_id == current_host.id
-        )
-        total_recommendations_result = await db.execute(total_recommendations_query)
-        total_recommendations = total_recommendations_result.scalar() or 0
-        
-        # Count recommendations given this month
-        current_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        monthly_recommendations_query = select(func.count(RecommendationSet.id)).where(
-            and_(
-                RecommendationSet.host_id == current_host.id,
-                RecommendationSet.created_at >= current_month_start
-            )
-        )
-        monthly_recommendations_result = await db.execute(monthly_recommendations_query)
-        monthly_recommendations = monthly_recommendations_result.scalar() or 0
-        
-        # Get real review statistics
-        review_stats = await attraction_service.get_host_review_stats(current_host.id)
-        
-        # Calculate real satisfaction metrics
-        if review_stats and review_stats.total_reviews_received > 0:
-            # Get average rating from actual reviews by joining with attractions
-            avg_rating_query = select(func.avg(AttractionReview.rating)).select_from(
-                AttractionReview.join(Attraction, AttractionReview.attraction_id == Attraction.id)
-            ).where(
-                and_(
-                    Attraction.created_by_host_id == current_host.id,
-                    AttractionReview.status == "APPROVED"
-                )
-            )
-            avg_rating_result = await db.execute(avg_rating_query)
-            average_rating = avg_rating_result.scalar() or 0.0
-            total_reviews = review_stats.total_reviews_received
-        else:
-            # Fallback to host's stored average rating
-            average_rating = current_host.average_rating or 0.0
-            total_reviews = 0
-        
-        analytics = {
-            "guest_groups": {
-                "total": len(guest_groups),
-                "active": active_groups,
-                "inactive": len(guest_groups) - active_groups
-            },
-            "attractions": {
-                "total": total_attractions,
-                "categories": {}
-            },
-            "recommendations": {
-                "total_given": total_recommendations,
-                "this_month": monthly_recommendations
-            },
-            "satisfaction": {
-                "average_rating": round(average_rating, 1),
-                "total_reviews": total_reviews
-            }
-        }
-        
-        # Count attractions by category
-        for attraction in attractions:
-            category = attraction.attraction_type or "Uncategorized"
-            analytics["attractions"]["categories"][category] = analytics["attractions"]["categories"].get(category, 0) + 1
-        
+        analytics = await _build_host_analytics(current_host, db)
         logger.info(f"Analytics retrieved successfully for: {current_host.email}")
         return analytics
         
@@ -538,6 +550,79 @@ async def get_host_analytics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve analytics data"
         )
+
+
+@router.get("/dashboard/stats", response_model=Dict[str, Any])
+async def get_dashboard_stats(
+    current_host: Host = Depends(get_current_host),
+    db: AsyncSession = Depends(get_db),
+    refresh: bool = Query(False, description="Bypass 60s in-process cache"),
+):
+    """
+    Single-call dashboard bundle (analytics, groups, attractions, profile, realtime).
+
+    Cached in-process for 60 seconds per host unless refresh=true.
+    """
+    cache_key = str(current_host.id)
+    now = time.monotonic()
+    if not refresh:
+        cached = _dashboard_stats_cache.get(cache_key)
+        if cached and (now - cached[0]) < _DASHBOARD_STATS_TTL_SEC:
+            return cached[1]
+
+    try:
+        from app.services.guest_group_service import GuestGroupService
+        from app.services.attraction_service import AttractionService
+        from app.models.attraction import AttractionResponse
+
+        host_service = HostService(db)
+        guest_group_service = GuestGroupService(db)
+        attraction_service = AttractionService(db)
+
+        analytics = await _build_host_analytics(current_host, db)
+        profile = await host_service.get_host_profile(current_host.id)
+        guest_groups = await guest_group_service.get_host_guest_groups(current_host.id)
+        attractions = await attraction_service.get_host_attractions(current_host.id)
+
+        realtime_updates: List[Dict[str, Any]] = []
+        try:
+            from app.services.events_feed_service import EventsFeedService
+
+            city = current_host.city or (profile.city if profile else None) or "Lovran"
+            updates = await EventsFeedService(db).get_updates(city=city, limit=5)
+            realtime_updates = [
+                {
+                    "id": str(u.get("id", "")),
+                    "title": u.get("title", ""),
+                    "content": (u.get("content") or "")[:500],
+                    "description": (u.get("summary") or u.get("content") or "")[:300],
+                    "created_at": u.get("created_at"),
+                }
+                for u in updates
+            ]
+        except Exception as rt_err:
+            logger.warning("Dashboard realtime snippet skipped: %s", rt_err)
+
+        payload = {
+            "analytics": analytics,
+            "profile": HostProfileResponse.model_validate(profile).model_dump()
+            if profile
+            else None,
+            "guest_groups": [g.model_dump() for g in guest_groups],
+            "attractions": [
+                AttractionResponse.model_validate(a).model_dump() for a in attractions
+            ],
+            "realtime_updates": realtime_updates,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _dashboard_stats_cache[cache_key] = (now, payload)
+        return payload
+    except Exception as e:
+        logger.error("Dashboard stats failed for %s: %s", current_host.email, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load dashboard stats",
+        ) from e
 
 
 @router.get("/{host_id}", response_model=HostResponse)
@@ -662,12 +747,45 @@ async def get_current_host_extended_profile(
     profile = await host_service.get_host_profile(current_host.id)
     
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Host profile not found"
+        # Return empty profile instead of 404 so frontend can show create form
+        now = datetime.now(timezone.utc)
+        return HostProfileResponse(
+            id=uuid.uuid4(),
+            host_id=current_host.id,
+            created_at=now,
+            updated_at=now,
         )
     
     return HostProfileResponse.model_validate(profile)
+
+
+@router.get("/me/geocode")
+async def geocode_accommodation_address(
+    address: Optional[str] = None,
+    city: Optional[str] = None,
+    county: Optional[str] = None,
+    current_host: Host = Depends(get_current_host),
+):
+    """
+    Resolve GPS coordinates from accommodation address fields.
+
+    Used by the Accommodation tab to auto-fill latitude/longitude while typing.
+    """
+    from app.services.geocoding_service import GeocodingService
+
+    _ = current_host  # auth gate only
+    result = GeocodingService.geocode(address=address, city=city, county=county)
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not locate this address. Add city and county, then try again.",
+        )
+    return {
+        "latitude": result.latitude,
+        "longitude": result.longitude,
+        "matched_query": result.matched_query,
+        "precision": result.precision,
+    }
 
 
 @router.put("/me/profile", response_model=HostProfileResponse)

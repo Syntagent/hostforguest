@@ -1,0 +1,41 @@
+# VPS production: full stack on localhost-only ports (Cloudflare Tunnel in front).
+# Usage:
+#   docker compose -p hostforguest-prod -f docker-compose.yml -f docker-compose.vps-prod.yml \
+#     --profile docker-api up -d --build
+
+services:
+  postgres:
+    container_name: hostforguest_prod_postgres
+    ports: !override
+      - "127.0.0.1:5439:5432"
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: "${POSTGRES_HOST_AUTH_METHOD:-md5}"
+
+  api:
+    container_name: hostforguest_prod_api
+    ports: !override
+      - "127.0.0.1:8006:8000"
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      # Must not use bare "postgres" — dev/prod DBs share tourist_guide_network DNS alias.
+      POSTGRES_SERVER: hostforguest_prod_postgres
+      POSTGRES_PORT: "5432"
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      CORS_ORIGINS: "${CORS_ORIGINS:-https://hostforguest.syntagent.com}"
+
+  frontend:
+    container_name: hostforguest_prod_frontend
+    ports: !override
+      - "127.0.0.1:3007:3000"
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-https://hostforguest.syntagent.com}"
+
+  channel_sync:
+    container_name: hostforguest_prod_channel_sync
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      POSTGRES_SERVER: hostforguest_prod_postgres
+      POSTGRES_PORT: "5432"

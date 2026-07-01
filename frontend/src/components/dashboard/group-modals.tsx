@@ -39,16 +39,6 @@ export const CreateGroupModal: React.FC<{
     }
   }, [isOpen, data?.preferences?.length, onChange, data]);
 
-  useEffect(() => {
-    const preferencesLength = data?.preferences?.length || 0;
-    if (data.group_size !== preferencesLength) {
-      onChange({
-        ...data,
-        group_size: preferencesLength,
-      });
-    }
-  }, [data?.preferences?.length, onChange, data]);
-
   if (!isOpen) return null;
 
   return (
@@ -124,9 +114,14 @@ export const CreateGroupModal: React.FC<{
               min={1}
               max={20}
               value={data.group_size}
-              onChange={(e) =>
-                onChange({ ...data, group_size: parseInt(e.target.value, 10) || 1 })
-              }
+              onChange={(e) => {
+                const parsed = Number.parseInt(e.target.value, 10);
+                if (!Number.isFinite(parsed)) return;
+                onChange({
+                  ...data,
+                  group_size: Math.min(20, Math.max(1, parsed)),
+                });
+              }}
               className="w-full rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <p className="mt-1 text-sm text-gray-500">Number of guests in this group</p>

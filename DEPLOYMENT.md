@@ -52,6 +52,15 @@ npm run dev
 UI: `http://127.0.0.1:3055`
 API docs: `http://127.0.0.1:8000/api/v1/docs`
 
+## VPS (this server) — Cloudflare Tunnel only
+
+See **[docs/VPS_CLOUDFLARE.md](docs/VPS_CLOUDFLARE.md)** for hostnames, ports, and tunnel ingress.
+
+| Hostname | Cloudflare → |
+|----------|----------------|
+| `hostforguest.syntagent.com` | UI `127.0.0.1:3007`, `/api` → `127.0.0.1:8006` |
+| `hostforguest-dev.syntagent.com` | `127.0.0.1:3055` |
+
 ## Docker Server Smoke Test
 
 For a simple server deployment behind a reverse proxy:

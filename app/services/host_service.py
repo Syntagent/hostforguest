@@ -30,6 +30,7 @@ from app.models.host import (
 from app.models.settings import HostSettings
 from app.core.config import settings
 from app.services.session_service import SessionService
+from app.services.geocoding_service import GeocodingService
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,29 @@ def _coerce_placeholder_gps_to_none(
     except (TypeError, ValueError):
         pass
     return lat, lng
+
+
+def _apply_geocode_if_needed(profile: HostProfile) -> None:
+    """Fill latitude/longitude from address when GPS was not provided."""
+    clat, clng = _coerce_placeholder_gps_to_none(profile.latitude, profile.longitude)
+    profile.latitude, profile.longitude = clat, clng
+    if clat is not None and clng is not None:
+        return
+    if not ((profile.address or "").strip() or (profile.city or "").strip()):
+        return
+    result = GeocodingService.geocode(
+        address=profile.address,
+        city=profile.city,
+        county=profile.county,
+    )
+    if result:
+        profile.latitude = result.latitude
+        profile.longitude = result.longitude
+        logger.info(
+            "Geocoded host profile via %s (%s)",
+            result.matched_query,
+            result.precision,
+        )
 
 
 def _normalize_email(email: Optional[str]) -> str:
@@ -446,13 +470,15 @@ class HostService:
             # Create profile
             profile = HostProfile(
                 host_id=host_id,
+                property_name=profile_data.property_name,
                 property_type=profile_data.property_type,
                 number_of_rooms=profile_data.number_of_rooms,
                 max_guests=profile_data.max_guests,
                 services_offered=profile_data.services_offered,
                 amenities=profile_data.amenities,
                 expertise_areas=profile_data.expertise_areas,
-                favorite_local_spots=profile_data.favorite_local_spots
+                favorite_local_spots=profile_data.favorite_local_spots,
+                location_story=profile_data.location_story,
             )
             
             self.db.add(profile)
@@ -485,29 +511,33 @@ class HostService:
                 logger.warning(f"Profile update failed: Host not found {host_id}")
                 return None
             
-            # Get existing profile
-            existing_profile = await self.get_host_profile(host_id)
-            if not existing_profile:
-                logger.warning(f"Profile update failed: Profile not found for host {host_id}")
-                return None
-            
-            # Update only provided fields
             update_data = profile_data.model_dump(exclude_unset=True)
+            existing_profile = await self.get_host_profile(host_id)
+
+            if not existing_profile:
+                create_fields = {
+                    field: value
+                    for field, value in update_data.items()
+                    if hasattr(HostProfile, field)
+                }
+                profile = HostProfile(host_id=host_id, **create_fields)
+                _apply_geocode_if_needed(profile)
+                self.db.add(profile)
+                await self.db.commit()
+                await self.db.refresh(profile)
+                logger.info(f"Host profile created via upsert for host: {host_id}")
+                return HostProfileResponse.model_validate(profile)
+
             for field, value in update_data.items():
                 if hasattr(existing_profile, field):
                     setattr(existing_profile, field, value)
 
-            clat, clng = _coerce_placeholder_gps_to_none(
-                existing_profile.latitude, existing_profile.longitude
-            )
-            existing_profile.latitude, existing_profile.longitude = clat, clng
-            
-            # Update timestamp
+            _apply_geocode_if_needed(existing_profile)
             existing_profile.updated_at = datetime.utcnow()
-            
+
             await self.db.commit()
             await self.db.refresh(existing_profile)
-            
+
             logger.info(f"Host profile updated successfully for host: {host_id}")
             return HostProfileResponse.model_validate(existing_profile)
             

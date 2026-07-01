@@ -111,8 +111,11 @@ class EnhancedAttractionSuggestionsRequest(BaseModel):
     city: str = Field(..., description="Host's city")
     address: Optional[str] = Field(None, description="Property address")
     region: Optional[CroatianRegion] = Field(None, description="Croatian region")
+    property_name: Optional[str] = Field(None, description="Property/business name")
+    property_type: Optional[str] = Field(None, description="Type of accommodation")
     coordinates: Optional[GooglePlaceLocation] = Field(None, description="GPS coordinates")
     interests: List[str] = Field(default_factory=list, description="Host interests/specialties")
+    languages: List[str] = Field(default_factory=list, description="Languages spoken by the host")
     local_experience: Optional[LocalExperience] = Field(None, description="Local experience level")
     knowledge_level: KnowledgeLevel = Field(default=KnowledgeLevel.EXPERT, description="Knowledge level")
     location_story: Optional[str] = Field(None, description="Host's location story")
@@ -225,10 +228,71 @@ class AttractionSuggestionsRequest(BaseModel):
 class AIEnhancementResponse(BaseModel):
     """Response for AI accommodation enhancement"""
     success: bool
-    enhanced_description: str
-    suggested_amenities: List[str]
-    suggested_services: List[str]
-    enhanced_specialties: List[str]
-    welcome_message: str
+    enhancement_type: str = "comprehensive"
+    enhanced_content: Dict[str, Any] = Field(default_factory=dict)
+    original_data: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     reasoning: Optional[str] = None
+
+
+class ChecklistItemState(BaseModel):
+    """Client-visible state for an accommodation onboarding checklist item."""
+    id: str
+    status: Literal["missing", "in_progress", "draft", "done", "skipped"] = "missing"
+    label: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class AgentMessage(BaseModel):
+    """Conversation message exchanged with the accommodation agent."""
+    role: Literal["assistant", "user", "system"]
+    content: str
+
+
+class AccommodationPatch(BaseModel):
+    """Allowed profile patch fields emitted by the accommodation agent."""
+    property_name: Optional[str] = None
+    property_type: Optional[str] = None
+    max_guests: Optional[int] = None
+    number_of_rooms: Optional[int] = None
+    city: Optional[str] = None
+    county: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_story: Optional[str] = None
+    amenities: Optional[List[str]] = None
+    services_offered: Optional[List[str]] = None
+    expertise_areas: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
+    welcome_message: Optional[str] = None
+    gallery_images: Optional[List[str]] = None
+
+
+class AccommodationSuggestionOption(BaseModel):
+    """One selectable agent suggestion."""
+    id: str
+    label: str
+    patch: AccommodationPatch
+
+
+class AccommodationAgentMessageRequest(BaseModel):
+    """Request for one turn of the Stay-tab onboarding agent."""
+    message: str = Field(..., min_length=1, description="Host message or selected quick reply")
+    focused_item_id: Optional[str] = Field(None, description="Checklist item currently being improved")
+    checklist_state: List[ChecklistItemState] = Field(default_factory=list)
+    accommodation_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    conversation_history: List[AgentMessage] = Field(default_factory=list)
+
+
+class AccommodationAgentMessageResponse(BaseModel):
+    """Patch-safe conversational response for the Stay-tab onboarding agent."""
+    success: bool
+    reply: str
+    quick_replies: List[str] = Field(default_factory=list)
+    suggested_patch: AccommodationPatch = Field(default_factory=AccommodationPatch)
+    suggestion_options: List[AccommodationSuggestionOption] = Field(default_factory=list)
+    checklist_updates: List[ChecklistItemState] = Field(default_factory=list)
+    next_focus_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 

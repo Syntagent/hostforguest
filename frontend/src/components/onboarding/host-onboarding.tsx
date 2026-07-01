@@ -8,7 +8,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Button } from "@/components/ui/button";
 import { FeatureSection } from "@/components/ui/feature-section";
 import { cn } from "@/lib/utils";
-import { onboardingApi, authApi, apiClient, API_BASE_URL } from "@/lib/api";
+import { onboardingApi, authApi, API_BASE_URL, locationsApi } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 
 interface OnboardingStep {
   id: number;
@@ -20,15 +21,36 @@ interface OnboardingStep {
 interface HostOnboardingProps {
   className?: string;
   onComplete?: (hostData: any) => void;
+  /** When true, always show registration even if a session exists (e2e / new host signup). */
+  forceRegistration?: boolean;
 }
 
 export const HostOnboarding: React.FC<HostOnboardingProps> = ({
   className,
-  onComplete
+  onComplete,
+  forceRegistration = false,
 }) => {
-  const [currentStep, setCurrentStep] = useState(1); // Skip welcome step, start directly at Basic Info
+  const { user: currentHost, loading: authLoading } = useAuth();
+  const [currentStep, setCurrentStep] = useState(1); // Skip welcome step, start at registration
   const [hostData, setHostData] = useState<any>({});
   const [loading, setLoading] = useState(false);
+  const [authStepApplied, setAuthStepApplied] = useState(false);
+
+  // Signed-in hosts already have an account — skip registration, go to property profile.
+  React.useEffect(() => {
+    if (forceRegistration || authLoading || !currentHost || authStepApplied) return;
+    setHostData((prev: Record<string, unknown>) => ({
+      ...prev,
+      full_name: currentHost.full_name,
+      email: currentHost.email,
+      first_name: currentHost.first_name,
+      last_name: currentHost.last_name,
+      registered: true,
+      host_id: currentHost.id,
+    }));
+    setCurrentStep(2);
+    setAuthStepApplied(true);
+  }, [forceRegistration, authLoading, currentHost, authStepApplied]);
 
   const steps: OnboardingStep[] = [
     {
@@ -98,8 +120,11 @@ export const HostOnboarding: React.FC<HostOnboardingProps> = ({
         city: hostData.city || '',
         region: hostData.region || 'Istria',
         address: hostData.location || hostData.address || '',
+        property_name: hostData.business_name || '',
+        property_type: hostData.property_type || 'apartment',
         coordinates: hostData.coordinates || null,
         interests: hostData.specialties || hostData.interests || [],
+        languages: hostData.languages || [],
         local_experience: hostData.local_experience || null,
         preferred_guests: hostData.preferred_guests || [],
         location_story: hostData.location_story || '',
@@ -212,7 +237,7 @@ const WelcomeStep: React.FC<{
       transition={{ duration: 0.5 }}
     >
       <HeroSection
-        title="Dobro došli u TouristGuideLocal! 🇭🇷"
+        title="Dobro došli u HostForGuest! 🇭🇷"
         subtitle="Welcome to the Future of Croatian Hospitality"
         description="Transform your hosting experience with AI-powered local guide services. Help your guests discover authentic Croatian experiences while building your reputation as a premium host."
         backgroundGradient="from-blue-600 via-teal-600 to-green-600"
@@ -238,6 +263,7 @@ const RegistrationStep: React.FC<{
   onNext: () => void;
   onPrev: () => void;
 }> = ({ step, hostData, updateHostData, onNext, onPrev }) => {
+  const { login: authLogin } = useAuth();
   const [formData, setFormData] = useState({
     email: hostData.email || '',
     password: '',
@@ -294,17 +320,9 @@ const RegistrationStep: React.FC<{
       });
 
       if (response.success && response.data) {
-        // Automatically log them in after registration
-        const loginResponse = await authApi.login(formData.email, formData.password);
+        const loginResult = await authLogin(formData.email, formData.password);
 
-        if (loginResponse.success && loginResponse.data) {
-          // Store the session tokens
-          apiClient.setSessionTokens(
-            loginResponse.data.session_token,
-            loginResponse.data.refresh_token
-          );
-
-          // Update host data with registration info
+        if (loginResult.ok) {
           updateHostData({
             email: formData.email,
             full_name: formData.full_name,
@@ -313,11 +331,12 @@ const RegistrationStep: React.FC<{
             registered: true,
             host_id: response.data.id
           });
-
-          // Move to next step
           onNext();
         } else {
-          setError('Registration successful but login failed. Please try logging in manually.');
+          setError(
+            loginResult.error ||
+              "Registration successful but login failed. Please try logging in manually."
+          );
         }
       } else {
         // Handle different error formats
@@ -510,6 +529,10 @@ const BasicInfoStep: React.FC<{
 
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+  const [geocodeStatus, setGeocodeStatus] = useState<
+    "idle" | "loading" | "exact" | "approx" | "error"
+  >("idle");
+  const geocodeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const propertyTypes = ['apartment', 'villa', 'house', 'room', 'studio'];
   const croatianRegions = ['Istria', 'Dalmatia', 'Kvarner', 'Central Croatia', 'Slavonia'];
@@ -579,6 +602,50 @@ const BasicInfoStep: React.FC<{
   };
 
   const status = getCompletionStatus();
+
+  const runAddressGeocode = React.useCallback(
+    async (fields?: { location?: string; city?: string; region?: string }) => {
+      const address = (fields?.location ?? formData.location ?? "").trim();
+      const city = (fields?.city ?? formData.city ?? "").trim();
+      if (!address && !city) {
+        setGeocodeStatus("idle");
+        return;
+      }
+      setGeocodeStatus("loading");
+      const res = await locationsApi.geocode({
+        address: address || city,
+        city: city || undefined,
+        county: fields?.region ?? formData.region,
+      });
+      if (res.success && res.data) {
+        setFormData((prev) => ({
+          ...prev,
+          coordinates: { lat: res.data!.lat, lng: res.data!.lng },
+          verified_location: res.data!.precision === "address",
+        }));
+        setGeocodeStatus(res.data.precision === "address" ? "exact" : "approx");
+      } else {
+        setGeocodeStatus("error");
+      }
+    },
+    [formData.location, formData.city, formData.region]
+  );
+
+  React.useEffect(() => {
+    if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
+    const address = (formData.location || "").trim();
+    const city = (formData.city || "").trim();
+    if (!address && !city) {
+      setGeocodeStatus("idle");
+      return;
+    }
+    geocodeTimerRef.current = setTimeout(() => {
+      void runAddressGeocode();
+    }, 900);
+    return () => {
+      if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
+    };
+  }, [formData.location, formData.city, formData.region, runAddressGeocode]);
 
   const verifyWithGooglePlaces = async (location: string) => {
     if (!location.trim()) return;
@@ -788,6 +855,7 @@ const BasicInfoStep: React.FC<{
                     type="text"
                     value={formData.location}
                     onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    onBlur={() => { void runAddressGeocode(); }}
                     className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="e.g., Oprić 71, 51450 Lovran, Croatia"
                   />
@@ -796,11 +864,30 @@ const BasicInfoStep: React.FC<{
                     onClick={() => verifyWithGooglePlaces(formData.location)}
                     className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   >
-                    📍 Verify
+                    📍 Google
                   </Button>
                 </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                  {geocodeStatus === "loading" && (
+                    <span className="text-gray-500">Locating address…</span>
+                  )}
+                  {geocodeStatus === "exact" && (
+                    <span className="text-green-700">📍 Location verified</span>
+                  )}
+                  {geocodeStatus === "approx" && (
+                    <span className="text-amber-700">📍 Location verified (approximate)</span>
+                  )}
+                  {geocodeStatus === "error" && (
+                    <span className="text-amber-800">⚠️ Could not verify — add city or use Google verify</span>
+                  )}
+                  {formData.coordinates && geocodeStatus !== "loading" && (
+                    <span className="text-xs text-gray-500">
+                      {formData.coordinates.lat.toFixed(5)}, {formData.coordinates.lng.toFixed(5)}
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-gray-500 mt-1">
-                  Optional: Verify with Google Places for enhanced location details
+                  Coordinates auto-fill when you finish typing. Optional: Google Places for place details.
                 </p>
               </div>
             </div>

@@ -132,8 +132,8 @@ class CommunicationService:
             
             # Build welcome kit content
             welcome_kit = {
-                "host_name": host.name or "Your Host",
-                "host_location": f"{host.city}, {host.region or 'Croatia'}",
+                "host_name": f"{host.first_name} {host.last_name}".strip() or "Your Host",
+                "host_location": f"{host.city}, {host.county or host.country or 'Croatia'}",
                 "guest_group_name": guest_group.group_name or "Guests",
                 "check_in_date": guest_group.check_in_date.isoformat() if guest_group.check_in_date else None,
                 "check_out_date": guest_group.check_out_date.isoformat() if guest_group.check_out_date else None,
