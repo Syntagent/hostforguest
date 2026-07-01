@@ -130,7 +130,7 @@ class RecommendationCandidates:
                 if attraction.status != AttractionStatus.APPROVED and not own_draft_or_pending:
                     continue
                 if request.current_location and host.city:
-                    if attraction.city and attraction.city.lower() != host.city.lower():
+                    if attraction.city and attraction.city.lower() != request.current_location.lower():
                         continue
                 if request.season:
                     current_month = datetime.now().month
@@ -270,7 +270,7 @@ class RecommendationCandidates:
                 )
             )
             if request.current_location and host.city:
-                stmt = stmt.where(Attraction.city == host.city)
+                stmt = stmt.where(Attraction.city == request.current_location)
             stmt = stmt.order_by(
                 desc(Attraction.recommendation_count),
                 desc(Attraction.guest_rating)
