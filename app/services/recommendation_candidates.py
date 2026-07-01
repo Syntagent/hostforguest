@@ -214,12 +214,8 @@ class RecommendationCandidates:
                     attr_lon = getattr(attraction, "longitude", None)
                     keep = False
                     if host_lat and host_lon and attr_lat and attr_lon:
-                        from math import radians, sin, cos, sqrt, atan2
-                        R = 6371.0
-                        dlat = radians(attr_lat - host_lat)
-                        dlon = radians(attr_lon - host_lon)
-                        a = sin(dlat/2)**2 + cos(radians(host_lat)) * cos(radians(attr_lat)) * sin(dlon/2)**2
-                        km = R * 2 * atan2(sqrt(a), sqrt(1-a))
+                        from app.services.osrm_service import haversine_km
+                        km = haversine_km(host_lat, host_lon, attr_lat, attr_lon)
                         radius = request.preferred_radius_km or 15.0
                         keep = km <= radius
                     if not keep:
